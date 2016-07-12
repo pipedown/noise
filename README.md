@@ -18,6 +18,11 @@ nature of JSON, and will allow:
 Installation
 ------------
 
+### Dependencies
+
+ * [RocksDB](http://rocksdb.org/)
+
+
 ### Build
 
     cargo build
