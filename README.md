@@ -28,6 +28,16 @@ Installation
     cargo test
 
 
+Contributing
+------------
+
+### Commit messages
+
+Commit messages are important as soon as you need to dig into the history
+of certain parts of the system. Hence please follow the guidelines of
+[How to Write a Git Commit Message](http://chris.beams.io/posts/git-commit/).
+
+
 License
 -------
 
