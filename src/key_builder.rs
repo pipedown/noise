@@ -8,11 +8,13 @@ pub enum SegmentType {
     DocSeq,
 }
 
+#[derive(Debug)]
 struct Segment {
     type_: SegmentType,
     offset: usize,
 }
 
+#[derive(Debug)]
 pub struct KeyBuilder {
     array_depth: usize,
     segments: Vec<Segment>,

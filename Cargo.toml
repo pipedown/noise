@@ -11,3 +11,4 @@ description = "Nested Object Inverted Search Engine"
 [dependencies]
 rocksdb = "0.4.1"
 rustc-serialize= "*"
+stemmer = "*"
