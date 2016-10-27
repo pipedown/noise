@@ -7,8 +7,14 @@ homepage = "https://github.com/pipedown/noise.git"
 license = "MIT OR Apache-2.0"
 readme = "README.md"
 description = "Nested Object Inverted Search Engine"
+build = "build.rs"
+
 
 [dependencies]
 rocksdb = "0.4.1"
 rustc-serialize= "*"
 stemmer = "*"
+capnp = "0.7.4"
+
+[build-dependencies]
+capnpc = "0.7.2"
