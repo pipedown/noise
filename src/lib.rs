@@ -9,9 +9,3 @@ mod index;
 mod records_capnp {
     include!(concat!(env!("OUT_DIR"), "/records_capnp.rs"));
 }
-
-#[test]
-fn it_works() {
-}
-
-    
