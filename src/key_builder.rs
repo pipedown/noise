@@ -118,7 +118,7 @@ impl KeyBuilder {
 #[cfg(test)]
 mod tests {
     use super::{KeyBuilder, SegmentType};
-    
+
     #[test]
     fn test_new_key_builder() {
         let kb = KeyBuilder::new();
@@ -130,23 +130,23 @@ mod tests {
         let mut kb = KeyBuilder::new();
         assert_eq!(kb.segments_count(), 0, "No segments so far");
         assert_eq!(kb.key(), "W", "Key for segments is correct");
-        
+
         kb.push_object_key("first".to_string());
         assert_eq!(kb.segments_count(), 1, "One segment");
         assert_eq!(kb.key(), "W.first", "Key for one segments is correct");
-        
+
         kb.push_object_key("second".to_string());
         assert_eq!(kb.segments_count(), 2, "Two segments");
         assert_eq!(kb.key(), "W.first.second", "Key for two segments is correct");
-        
+
         kb.push_array();
         assert_eq!(kb.segments_count(), 3, "Three segments ");
         assert_eq!(kb.key(), "W.first.second$", "Key for three segments is correct");
-        
+
         kb.push_word("astemmedword".to_string());
         assert_eq!(kb.segments_count(), 4, "Four segments");
         assert_eq!(kb.key(), "W.first.second$!astemmedword#", "Key for four segments is correct");
-        
+
         kb.push_doc_seq(123);
         assert_eq!(kb.segments_count(), 5, "Five segments");
         assert_eq!(kb.key(), "W.first.second$!astemmedword#123",
@@ -182,7 +182,7 @@ mod tests {
         kb.pop_doc_seq();
         assert_eq!(kb.segments_count(), 4, "Four segments");
         assert_eq!(kb.key(), "W.first.second$!astemmedword#", "Key for four segments is correct");
-        
+
         kb.pop_word();
         assert_eq!(kb.segments_count(), 3, "Three segments ");
         assert_eq!(kb.key(), "W.first.second$", "Key for three segments is correct");
@@ -190,7 +190,7 @@ mod tests {
         kb.pop_array();
         assert_eq!(kb.segments_count(), 2, "Two segments");
         assert_eq!(kb.key(), "W.first.second", "Key for two segments is correct");
-        
+
         kb.pop_object_key();
         assert_eq!(kb.segments_count(), 1, "One segment");
         assert_eq!(kb.key(), "W.first", "Key for one segments is correct");
@@ -204,11 +204,11 @@ mod tests {
     fn test_last_pushed_segment_type() {
         let mut kb = KeyBuilder::new();
         assert_eq!(kb.last_pushed_segment_type(), None, "No segments");
-        
+
         kb.push_object_key("first".to_string());
         assert_eq!(kb.last_pushed_segment_type(), Some(SegmentType::ObjectKey),
                    "Last segment is an object key");
-        
+
         kb.push_object_key("second".to_string());
         assert_eq!(kb.last_pushed_segment_type(), Some(SegmentType::ObjectKey),
                    "Last segment is an object key");
@@ -220,7 +220,7 @@ mod tests {
         kb.push_word("astemmedword".to_string());
         assert_eq!(kb.last_pushed_segment_type(), Some(SegmentType::Word),
                    "Last segment is a word");
-        
+
         kb.push_doc_seq(123);
         assert_eq!(kb.last_pushed_segment_type(), Some(SegmentType::DocSeq),
                    "Last segment is a doc sequence");
