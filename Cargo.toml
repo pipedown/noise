@@ -11,10 +11,19 @@ build = "build.rs"
 
 
 [dependencies]
-rocksdb = "0.4.1"
-rustc-serialize= "*"
-stemmer = "*"
 capnp = "0.7.4"
+rustc-serialize= "0.3.19"
+stemmer = "0.3.2"
+unicode-normalization = "0.1.2"
+
+[dependencies.rocksdb]
+git = "https://github.com/vmx/rust-rocksdb.git"
+branch = "vmx"
+
+[dependencies.unicode-segmentation]
+git = "https://github.com/vmx/unicode-segmentation.git"
+branch = "unicode-word-indices"
+
 
 [build-dependencies]
 capnpc = "0.7.2"
