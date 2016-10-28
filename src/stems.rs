@@ -10,8 +10,6 @@ use self::unicode_segmentation::UnicodeSegmentation;
 
 pub struct Stems<'a> {
     words: unicode_segmentation::UnicodeWordIndices<'a>,
-    // The current cursor position
-    current: usize,
     stemmer: Stemmer,
 }
 
@@ -33,7 +31,6 @@ impl<'a> Stems<'a> {
     pub fn new(text: &str) -> Stems {
         Stems{
             words: text.unicode_word_indices(),
-            current: 0,
             stemmer: Stemmer::new("english").unwrap(),
         }
     }
@@ -83,7 +80,6 @@ mod tests {
     #[test]
     fn test_stems_lowercase() {
         let input = "These words deeply test smoothly that stemming";
-        let stems = Stems::new(input);
         let result = Stems::new(input).collect::<Vec<StemmedWord>>();
         let expected = vec![
             StemmedWord { stemmed_offset: 0, suffix_offset: 5,
@@ -111,7 +107,6 @@ mod tests {
     #[test]
     fn test_stems_mixedcase() {
         let input = "THEse Words deeplY test smOOthly that stemmING";
-        let stems = Stems::new(input);
         let result = Stems::new(input).collect::<Vec<StemmedWord>>();
         let expected = vec![
             StemmedWord { stemmed_offset: 0, suffix_offset: 5,
@@ -139,7 +134,6 @@ mod tests {
     #[test]
     fn test_stems_nonchars() {
         let input = "  @#$!== \t+-";
-        let stems = Stems::new(input);
         let result = Stems::new(input).collect::<Vec<StemmedWord>>();
         assert_eq!(result.len(), 0);
     }
@@ -179,7 +173,6 @@ mod tests {
     #[test]
     fn test_stems_unicode_lowercase_has_more_bytes() {
         let input = "İ";
-        let stems = Stems::new(input);
         let result = Stems::new(input).collect::<Vec<StemmedWord>>();
         let expected = vec![
             StemmedWord { stemmed_offset: 0, suffix_offset: 3,
@@ -216,7 +209,6 @@ mod tests {
         // The input is: Ρ̓ῤῤ (11 bytes), lowercases is ῤῤῤ (9 bytes)
         let input = "\u{03A1}\u{0313}\u{03C1}\u{0313}\u{1FE4}";
         let result = Stems::new(input).collect::<Vec<StemmedWord>>();
-        let stemmed = Stems::new(input);
         let expected = vec![
             StemmedWord { stemmed_offset: 0, suffix_offset: 9,
                           stemmed: String::from("\u{1FE4}\u{1FE4}\u{1FE4}"), suffix: String::from("") },

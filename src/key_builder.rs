@@ -35,9 +35,10 @@ impl KeyBuilder {
         return kb;
     }
 
-    pub fn segments_count(&self) -> usize {
-        self.segments.len()
-    }
+    // NOTE vmx 2016-10-28: This one is just a port of the C++ prototype, but not yet needed here
+    //fn segments_count(&self) -> usize {
+    //    self.segments.len()
+    //}
 
     pub fn key(&self) -> String {
         self.fullkey.clone()
@@ -128,27 +129,27 @@ mod tests {
     #[test]
     fn test_segments_push() {
         let mut kb = KeyBuilder::new();
-        assert_eq!(kb.segments_count(), 0, "No segments so far");
+        assert_eq!(kb.segments.len(), 0, "No segments so far");
         assert_eq!(kb.key(), "W", "Key for segments is correct");
 
         kb.push_object_key("first".to_string());
-        assert_eq!(kb.segments_count(), 1, "One segment");
+        assert_eq!(kb.segments.len(), 1, "One segment");
         assert_eq!(kb.key(), "W.first", "Key for one segments is correct");
 
         kb.push_object_key("second".to_string());
-        assert_eq!(kb.segments_count(), 2, "Two segments");
+        assert_eq!(kb.segments.len(), 2, "Two segments");
         assert_eq!(kb.key(), "W.first.second", "Key for two segments is correct");
 
         kb.push_array();
-        assert_eq!(kb.segments_count(), 3, "Three segments ");
+        assert_eq!(kb.segments.len(), 3, "Three segments ");
         assert_eq!(kb.key(), "W.first.second$", "Key for three segments is correct");
 
         kb.push_word("astemmedword".to_string());
-        assert_eq!(kb.segments_count(), 4, "Four segments");
+        assert_eq!(kb.segments.len(), 4, "Four segments");
         assert_eq!(kb.key(), "W.first.second$!astemmedword#", "Key for four segments is correct");
 
         kb.push_doc_seq(123);
-        assert_eq!(kb.segments_count(), 5, "Five segments");
+        assert_eq!(kb.segments.len(), 5, "Five segments");
         assert_eq!(kb.key(), "W.first.second$!astemmedword#123",
                    "Key for five segments is correct");
     }
@@ -175,28 +176,28 @@ mod tests {
         kb.push_array();
         kb.push_word("astemmedword".to_string());
         kb.push_doc_seq(123);
-        assert_eq!(kb.segments_count(), 5, "Five segments");
+        assert_eq!(kb.segments.len(), 5, "Five segments");
         assert_eq!(kb.key(), "W.first.second$!astemmedword#123",
                    "Key for five segments is correct");
 
         kb.pop_doc_seq();
-        assert_eq!(kb.segments_count(), 4, "Four segments");
+        assert_eq!(kb.segments.len(), 4, "Four segments");
         assert_eq!(kb.key(), "W.first.second$!astemmedword#", "Key for four segments is correct");
 
         kb.pop_word();
-        assert_eq!(kb.segments_count(), 3, "Three segments ");
+        assert_eq!(kb.segments.len(), 3, "Three segments ");
         assert_eq!(kb.key(), "W.first.second$", "Key for three segments is correct");
 
         kb.pop_array();
-        assert_eq!(kb.segments_count(), 2, "Two segments");
+        assert_eq!(kb.segments.len(), 2, "Two segments");
         assert_eq!(kb.key(), "W.first.second", "Key for two segments is correct");
 
         kb.pop_object_key();
-        assert_eq!(kb.segments_count(), 1, "One segment");
+        assert_eq!(kb.segments.len(), 1, "One segment");
         assert_eq!(kb.key(), "W.first", "Key for one segments is correct");
 
         kb.pop_object_key();
-        assert_eq!(kb.segments_count(), 0, "No segments so far");
+        assert_eq!(kb.segments.len(), 0, "No segments so far");
         assert_eq!(kb.key(), "W", "Key for segments is correct");
     }
 

@@ -140,11 +140,11 @@ impl Shredder {
         Ok(&"thedocid")
     }
 
-    pub fn add_to_batch(&self, batch: &rocksdb::WriteBatch) {
+    pub fn add_to_batch(&self, batch: &rocksdb::WriteBatch) -> Result<(), String> {
         for (key_path, word_path_infos) in &self.map {
             let mut message = ::capnp::message::Builder::new_default();
             {
-                let mut capn_payload = message.init_root::<payload::Builder>();
+                let capn_payload = message.init_root::<payload::Builder>();
                 let mut capn_arrayoffsets_to_wordinfo = capn_payload.init_arrayoffsets_to_wordinfos(
                     word_path_infos.len() as u32);
                 for (infos_pos, (arrayoffsets, wordinfos)) in word_path_infos.iter().enumerate() {
@@ -169,10 +169,10 @@ impl Shredder {
                 }
             }
             let mut bytes = Vec::new();
-            ::capnp::serialize_packed::write_message(&mut bytes, &message);
-            batch.put(&key_path.clone().into_bytes(), &bytes);
+            ::capnp::serialize_packed::write_message(&mut bytes, &message).unwrap();
+            try!(batch.put(&key_path.clone().into_bytes(), &bytes));
         }
-
+        Ok(())
     }
 }
 
@@ -191,7 +191,7 @@ mod tests {
         //let json = r#"{"foo": {"bar": 1}}"#;
         let json = r#"{"some": ["array", "data", ["also", "nested"]]}"#;
         let docseq = 123;
-        shredder.shred(json, docseq);
+        shredder.shred(json, docseq).unwrap();
         let expected = vec![
             ("W.some$!array#123", vec![
                 (vec![0], vec![WordInfo {
@@ -214,7 +214,7 @@ mod tests {
         let mut shredder = super::Shredder::new();
         let json = r#"{"A":[{"B":"B2VMX two three","C":"..C2"},{"B": "b1","C":"..C2"}]}"#;
         let docseq = 1234;
-        shredder.shred(json, docseq);
+        shredder.shred(json, docseq).unwrap();
         let expected = vec![
             ("W.A$.B!b1#1234", vec![
                 (vec![0], vec![

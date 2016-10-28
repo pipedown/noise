@@ -31,13 +31,13 @@ impl Header {
             header.set_high_seq(self.high_seq);
         }
         let mut bytes = Vec::new();
-        ::capnp::serialize_packed::write_message(&mut bytes, &message);
+        ::capnp::serialize_packed::write_message(&mut bytes, &message).unwrap();
         bytes
     }
 }
 
 
-struct Index {
+pub struct Index {
     read_options: rocksdb::ReadOptions,
     write_options: rocksdb::WriteOptions,
     high_doc_seq: u64,
@@ -46,12 +46,12 @@ struct Index {
     batch: rocksdb::WriteBatch,
 }
 
-enum OpenOptions {
+pub enum OpenOptions {
     Create
 }
 
 impl Index {
-    fn new() -> Index {
+    pub fn new() -> Index {
         Index {
             read_options: rocksdb::ReadOptions::new(),
             write_options: rocksdb::WriteOptions::new(),
@@ -103,8 +103,8 @@ impl Index {
 
     // NOTE vmx 2016-10-13: As one index is tied to one database, this should be a method
     // without a parameter
-    pub fn delete(name: &str) {
-        rocksdb::DB::destroy(&rocksdb::Options::new(), name);
+    pub fn delete(name: &str) -> Result<(), String> {
+        rocksdb::DB::destroy(&rocksdb::Options::new(), name)
     }
 
     pub fn add(&mut self, json: &str) -> Result<(), String> {
@@ -116,7 +116,7 @@ impl Index {
             self.high_doc_seq += 1;
             self.id_str_to_id_seq.insert(format!("I{}", docid), format!("S{}", self.high_doc_seq));
         }
-        shredder.add_to_batch(&self.batch);
+        try!(shredder.add_to_batch(&self.batch));
         Ok(())
     }
 
@@ -129,10 +129,10 @@ impl Index {
 
         // Look up all doc ids and 'delete' from the seq_to_ids keyspace
         for key in self.id_str_to_id_seq.keys() {
-            // TODO vmx 2016-10-17: USe multiget onec the Rusts wrapper supports it
+            // TODO vmx 2016-10-17: USe multiget once the Rusts wrapper supports it
             match rocks.get_opt(key.as_bytes(), &self.read_options) {
                 Ok(Some(seq)) => {
-                    self.batch.delete(&*seq);
+                    try!(self.batch.delete(&*seq));
                 },
                 _ => {}
             }
@@ -140,13 +140,13 @@ impl Index {
 
         // Add the ids_to_seq keyspace entries
         for (id, seq) in &self.id_str_to_id_seq {
-            self.batch.put(id.as_bytes(), seq.as_bytes());
-            self.batch.put(seq.as_bytes(), id.as_bytes());
+            try!(self.batch.put(id.as_bytes(), seq.as_bytes()));
+            try!(self.batch.put(seq.as_bytes(), id.as_bytes()));
         }
 
         let mut header = Header::new();
         header.high_seq = self.high_doc_seq;
-        self.batch.put(b"HDB", &*header.serialize());
+        try!(self.batch.put(b"HDB", &*header.serialize()));
 
         let status = rocks.write_opt(&self.batch, &self.write_options);
         self.batch.clear();
@@ -174,14 +174,12 @@ impl Index {
 mod tests {
     extern crate rocksdb;
     use super::{Index, OpenOptions};
-    use self::rocksdb::{WriteOptions};
 
     #[test]
     fn test_open() {
         let mut index = Index::new();
         //let db = super::Index::open("firstnoisedb", Option::None).unwrap();
-        let write_options = WriteOptions::new();
         index.open("firstnoisedb", Some(OpenOptions::Create)).unwrap();
-        index.flush();
+        index.flush().unwrap();
     }
 }
