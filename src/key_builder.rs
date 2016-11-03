@@ -8,15 +8,15 @@ pub enum SegmentType {
     DocSeq,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Segment {
     type_: SegmentType,
     offset: usize,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct KeyBuilder {
-    array_depth: usize,
+    pub array_depth: usize,
     segments: Vec<Segment>,
     fullkey: String,
 }
@@ -68,13 +68,13 @@ impl KeyBuilder {
         self.array_depth += 1;
     }
 
-    pub fn push_word(&mut self, stemmed_word: String) {
+    pub fn push_word(&mut self, stemmed_word: &str) {
         debug_assert!(self.segments.len() > 0);
         debug_assert!(self.segments.last().unwrap().type_ == SegmentType::ObjectKey ||
                       self.segments.last().unwrap().type_ == SegmentType::Array);
         self.segments.push(Segment{ type_: SegmentType::Word, offset: self.fullkey.len() });
         self.fullkey.push('!');
-        self.fullkey += stemmed_word.as_str();
+        self.fullkey += stemmed_word;
         self.fullkey.push('#');
     }
 

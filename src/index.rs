@@ -41,7 +41,7 @@ pub struct Index {
     read_options: rocksdb::ReadOptions,
     write_options: rocksdb::WriteOptions,
     high_doc_seq: u64,
-    rocks: Option<rocksdb::DB>,
+    pub rocks: Option<rocksdb::DB>,
     id_str_to_id_seq: HashMap<String, String>,
     batch: rocksdb::WriteBatch,
 }

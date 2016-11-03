@@ -52,7 +52,7 @@ impl Shredder {
     fn add_entries(&mut self, text: String, docseq: u64) {
         let stems = Stems::new(text.as_str());
         for stem in stems {
-            self.keybuilder.push_word(stem.stemmed.to_string());
+            self.keybuilder.push_word(&stem.stemmed);
             self.keybuilder.push_doc_seq(docseq);
             let map_path_array_offsets = self.map.entry(self.keybuilder.key())
                                                         .or_insert(ArrayOffsetsToWordInfo::new());
