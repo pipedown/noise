@@ -69,8 +69,8 @@ impl DocResult {
 //struct QueryRuntimeFilter {}
 
 trait QueryRuntimeFilter {
-    fn first_result<'a>(&'a mut self, start_id: u64) -> Result<Option<DocResult>, Error<'a>>;
-    fn next_result<'a>(&'a mut self) -> Result<Option<DocResult>, Error<'a>>;
+    fn first_result(&mut self, start_id: u64) -> Result<Option<DocResult>, Error>;
+    fn next_result(&mut self) -> Result<Option<DocResult>, Error>;
 }
 
 pub struct Query {}
@@ -181,13 +181,13 @@ impl<'a> QueryRuntimeFilter for ExactMatchFilter<'a> {
 }
 
 
-struct AndFilter {
-    filters: Vec<Box<QueryRuntimeFilter>>,
+struct AndFilter<'a> {
+    filters: Vec<Box<QueryRuntimeFilter + 'a>>,
     array_depth: u64,
 }
 
-impl AndFilter {
-    fn new(filters: Vec<Box<QueryRuntimeFilter>>, array_depth: u64) -> AndFilter {
+impl<'a> AndFilter<'a> {
+    fn new(filters: Vec<Box<QueryRuntimeFilter + 'a>>, array_depth: u64) -> AndFilter<'a> {
         AndFilter {
             filters: filters,
             array_depth: array_depth,
@@ -195,7 +195,7 @@ impl AndFilter {
    }
 }
 
-impl QueryRuntimeFilter for AndFilter {
+impl<'a> QueryRuntimeFilter for AndFilter<'a> {
     fn first_result(&mut self, start_id: u64) -> Result<Option<DocResult>, Error> {
         Ok(None)
     }
@@ -206,20 +206,20 @@ impl QueryRuntimeFilter for AndFilter {
 
 
 
-struct Parser<'a, 'b> {
+struct Parser<'a> {
     query: &'a str,
     offset: usize,
     kb: KeyBuilder,
-    snapshot: &'b Snapshot<'b>,
+    snapshot: &'a Snapshot<'a>,
 }
 
-impl<'a, 'b> Parser<'a, 'b> {
-    fn new(query: &'a str, snapshot: &'b Snapshot) -> Parser<'a, 'b> {
+impl<'a> Parser<'a> {
+    fn new(query: &'a str, snapshot: &'a Snapshot<'a>) -> Parser<'a> {
         Parser{
             query: query,
             offset: 0,
             kb: KeyBuilder::new(),
-            snapshot: snapshot,
+            snapshot: &snapshot,
         }
     }
 
@@ -287,7 +287,7 @@ impl<'a, 'b> Parser<'a, 'b> {
         }
     }
 
-    fn compare(&mut self) -> Result<Box<QueryRuntimeFilter>, String> {
+    fn compare<'b>(&'b mut self) -> Result<Box<QueryRuntimeFilter + 'a>, String> {
         match self.consume_field() {
             Some(field) => {
                 if self.consume(".") {
@@ -301,7 +301,7 @@ impl<'a, 'b> Parser<'a, 'b> {
                             self.kb.push_object_key(field);
 
                             let stems = Stems::new(&literal);
-                            let mut filters: Vec<Box<QueryRuntimeFilter>> = Vec::new();
+                            let mut filters: Vec<Box<QueryRuntimeFilter + 'a>> = Vec::new();
                             for stem in stems {
                                 let iter = self.snapshot.iter();
                                 let filter = Box::new(ExactMatchFilter::new(
@@ -313,8 +313,8 @@ impl<'a, 'b> Parser<'a, 'b> {
 
                             match filters.len() {
                                 0 => panic!("Cannot create a ExactMatchFilter"),
-                                1 => Ok(filters[0]),
-                                _ => Ok(Box::new(AndFilter::new(
+                                1 => Ok(filters.pop().unwrap()),
+                                _ => Ok(Box::new(AndFilter::<'a>::new(
                                     filters, self.kb.array_depth as u64))),
                                 //_ => Ok(filters[0]),
                                 //_ => Err("just get it compiled".to_string()),
@@ -336,10 +336,6 @@ impl<'a, 'b> Parser<'a, 'b> {
         }
     }
     
-    fn boolean<T: QueryRuntimeFilter>() -> Option<T> {
-        
-        None
-    }
 
 
     fn build_filter(&mut self) -> Result<QueryResults, String> {
@@ -350,7 +346,7 @@ impl<'a, 'b> Parser<'a, 'b> {
 
 impl Query {
     //pub fn get_matches<'a>(query: &str, index: &'a Index) -> Result<QueryResults, String> {
-    pub fn get_matches<'a, 'b>(query: &str, snapshot: &'b Snapshot) -> Result<QueryResults, String> {
+    pub fn get_matches<'a>(query: &str, snapshot: &'a Snapshot) -> Result<QueryResults, String> {
     //        match &index.rocks {
 //            &Some(ref rocks) => {
 //                let snapshot = Snapshot::new(rocks);
