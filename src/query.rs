@@ -14,15 +14,15 @@ use rocksdb::rocksdb::Snapshot;
 use records_capnp::payload;
 
 #[derive(Debug)]
-enum Error<'a> {
-    Parse(&'a str),
+enum Error {
+    Parse(String),
     Capnp(capnp::Error),
 }
 
-impl<'a> error::Error for Error<'a> {
+impl error::Error for Error {
     fn description(&self) -> &str {
         match *self {
-            Error::Parse(description) => description,
+            Error::Parse(ref description) => description,
             Error::Capnp(ref err) => err.description(),
         }
     }
@@ -35,13 +35,13 @@ impl<'a> error::Error for Error<'a> {
     }
 }
 
-impl<'a> From<capnp::Error> for Error<'a> {
-    fn from(err: capnp::Error) -> Error<'a> {
+impl From<capnp::Error> for Error {
+    fn from(err: capnp::Error) -> Error {
         Error::Capnp(err)
     }
 }
 
-impl<'a> fmt::Display for Error<'a> {
+impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
             Error::Parse(ref err) => write!(f, "Parse error: {}", err),
@@ -61,6 +61,31 @@ impl DocResult {
         DocResult {
             seq: 0,
             array_paths: Vec::new(),
+        }
+    }
+
+    fn truncate_array_paths(&mut self, array_depth: usize) {
+        for array_path in self.array_paths.iter_mut() {
+            debug_assert!(array_path.len() >= array_depth);
+            array_path.resize(array_depth, 0);
+        }
+    }
+
+    fn intersect_array_paths(aa: &DocResult, bb: &DocResult) -> Option<DocResult> {
+        let mut doc_result = DocResult::new();
+        debug_assert_eq!(aa.seq, bb.seq);
+        doc_result.seq = aa.seq;
+        for array_path_a in &aa.array_paths {
+            for array_path_b in &bb.array_paths {
+                if array_path_a == array_path_b {
+                    doc_result.array_paths.push(array_path_a.clone());
+                }
+            }
+        }
+        if doc_result.array_paths.is_empty() {
+            None
+        } else {
+            Some(doc_result)
         }
     }
 }
@@ -181,25 +206,89 @@ impl<'a> QueryRuntimeFilter for ExactMatchFilter<'a> {
 }
 
 
-struct AndFilter<'a> {
-    filters: Vec<Box<QueryRuntimeFilter + 'a>>,
-    array_depth: u64,
-}
 
-impl<'a> AndFilter<'a> {
-    fn new(filters: Vec<Box<QueryRuntimeFilter + 'a>>, array_depth: u64) -> AndFilter<'a> {
-        AndFilter {
-            filters: filters,
-            array_depth: array_depth,
-        }
-   }
-}
+struct DummyFilter {}
 
-impl<'a> QueryRuntimeFilter for AndFilter<'a> {
+impl QueryRuntimeFilter for DummyFilter {
     fn first_result(&mut self, start_id: u64) -> Result<Option<DocResult>, Error> {
         Ok(None)
     }
     fn next_result(&mut self) -> Result<Option<DocResult>, Error> {
+        Ok(None)
+    }
+}
+
+
+struct AndFilter<'a> {
+    filters: Vec<Box<QueryRuntimeFilter + 'a>>,
+    current_filter: usize,
+    array_depth: usize,
+}
+
+impl<'a> AndFilter<'a> {
+    fn new(filters: Vec<Box<QueryRuntimeFilter + 'a>>, array_depth: usize) -> AndFilter<'a> {
+        AndFilter {
+            filters: filters,
+            current_filter: 0,
+            array_depth: array_depth,
+        }
+   }
+
+    fn result(&mut self, base: Option<DocResult>) -> Result<Option<DocResult>, Error> {
+        let mut matches_count = self.filters.len();
+        // TODO vmx 2016-11-04: Make it nicer
+        let mut base_result = match base {
+            Some(base_result) => base_result,
+            None => return Ok(None),
+        };
+        loop {
+            base_result.truncate_array_paths(self.array_depth);
+
+            self.current_filter += 1;
+            if self.current_filter > self.filters.len() {
+                self.current_filter = 0;
+            }
+
+            let next = try!(self.filters[self.current_filter].first_result(base_result.seq));
+            let mut next_result = match next {
+                Some(next_result) => next_result,
+                None => return Ok(None),
+            };
+            next_result.truncate_array_paths(self.array_depth);
+
+            if base_result.seq == next_result.seq {
+                match DocResult::intersect_array_paths(&base_result, &next_result) {
+                    Some(new_result) => {
+                        base_result = new_result;
+                        matches_count -= 1;
+                    },
+                    None => {
+                        let new_result = try!(self.filters[self.current_filter].first_result(base_result.seq));
+                        base_result = match new_result {
+                            Some(base_result) => base_result,
+                            None => return Ok(None),
+                        };
+                        matches_count = self.filters.len()
+                    }
+                }
+            } else {
+                base_result = next_result;
+                matches_count = self.filters.len();
+            }
+        }
+    }
+}
+
+impl<'a> QueryRuntimeFilter for AndFilter<'a> {
+    fn first_result(&mut self, start_id: u64) -> Result<Option<DocResult>, Error> {
+        let base_result = try!(self.filters[self.current_filter].first_result(start_id));
+        self.result(base_result)
+        //Ok(None)
+    }
+
+    fn next_result(&mut self) -> Result<Option<DocResult>, Error> {
+        //let base_result = try!(self.filters[self.current_filter].next_result());
+        //self.result(base_result)
         Ok(None)
     }
 }
@@ -287,6 +376,10 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn array() {
+        //XXX GO ON HERE 2016-11-04
+    }
+
     fn compare<'b>(&'b mut self) -> Result<Box<QueryRuntimeFilter + 'a>, String> {
         match self.consume_field() {
             Some(field) => {
@@ -315,19 +408,23 @@ impl<'a> Parser<'a> {
                                 0 => panic!("Cannot create a ExactMatchFilter"),
                                 1 => Ok(filters.pop().unwrap()),
                                 _ => Ok(Box::new(AndFilter::<'a>::new(
-                                    filters, self.kb.array_depth as u64))),
-                                //_ => Ok(filters[0]),
-                                //_ => Err("just get it compiled".to_string()),
+                                    filters, self.kb.array_depth))),
                             }
                         },
                         // Empty literal
-                        Ok(None) => {Err("not implemetned yet".to_string())},
+                        Ok(None) => {Err("Expected string".to_string())},
                         Err(error) => {
                             Err(error)
                         }
                     }
+                } else if self.could_consume("[") {
+                    self.kb.push_object_key(field);
+                    //let ret = self.array();
+                    self.kb.pop_object_key();
+                    //ret
+                    Err("Not yet implemented".to_string())
                 } else {
-                    Err("not yet implemented".to_string())
+                    Err("Expected comparison or array operator".to_string())
                 }
             },
             None => {
@@ -335,8 +432,6 @@ impl<'a> Parser<'a> {
             }
         }
     }
-    
-
 
     fn build_filter(&mut self) -> Result<QueryResults, String> {
         self.whitespace();
