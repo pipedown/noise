@@ -408,6 +408,21 @@ impl<'a> Parser<'a> {
         Ok(filter)
     }
 
+    fn factor(&mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
+        if self.consume("(") {
+            let filter = try!(self.bool());
+            if !self.consume(")") {
+                Err(Error::Parse("Expected ')'".to_string()))
+            } else {
+                Ok(filter)
+            }
+        } else if self.could_consume("[") {
+            self.array()
+        } else {
+            Err(Error::Parse("Missing Expression".to_string()))
+        }
+    }
+
     fn compare<'b>(&'b mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
         match self.consume_field() {
             Some(field) => {
@@ -455,7 +470,7 @@ impl<'a> Parser<'a> {
                 }
             },
             None => {
-                Err(Error::Parse("Expected comparison or array operator".to_string()))
+                self.factor()
             }
         }
     }
