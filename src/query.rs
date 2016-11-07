@@ -355,7 +355,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn consume_string_literal(&mut self) -> Result<Option<String>, String> {
+    fn consume_string_literal(&mut self) -> Result<Option<String>, Error> {
         // Does not unescape yet
         let mut lit = String::new();
         if self.consume("\"") {
@@ -369,18 +369,46 @@ impl<'a> Parser<'a> {
                 self.whitespace();
                 Ok(Some(lit))
             } else {
-                Err("Expected \"".to_string())
+                Err(Error::Parse("Expected \"".to_string()))
             }
         } else {
             Ok(None)
         }
     }
 
-    fn array() {
-        //XXX GO ON HERE 2016-11-04
+    fn bool(&mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
+        let left = try!(self.compare());
+        let mut filters = vec![left];
+        loop {
+            if !self.consume("&") {
+                break;
+            }
+
+            let right = try!(self.compare());
+            filters.push(right);
+        }
+        if filters.len() == 1 {
+            Ok(filters.pop().unwrap())
+        } else {
+            Ok(Box::new(AndFilter::new(filters, self.kb.array_depth)))
+        }
     }
 
-    fn compare<'b>(&'b mut self) -> Result<Box<QueryRuntimeFilter + 'a>, String> {
+
+    fn array(&mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
+        if !self.consume("[") {
+            return Err(Error::Parse("Expected '['".to_string()));
+        }
+        self.kb.push_array();
+        let filter = try!(self.bool());
+        self.kb.pop_array();
+        if self.consume("]") {
+            return Err(Error::Parse("Expected ']'".to_string()));
+        }
+        Ok(filter)
+    }
+
+    fn compare<'b>(&'b mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
         match self.consume_field() {
             Some(field) => {
                 if self.consume(".") {
@@ -412,23 +440,22 @@ impl<'a> Parser<'a> {
                             }
                         },
                         // Empty literal
-                        Ok(None) => {Err("Expected string".to_string())},
+                        Ok(None) => {Err(Error::Parse("Expected string".to_string()))},
                         Err(error) => {
                             Err(error)
                         }
                     }
                 } else if self.could_consume("[") {
                     self.kb.push_object_key(field);
-                    //let ret = self.array();
+                    let ret = self.array();
                     self.kb.pop_object_key();
-                    //ret
-                    Err("Not yet implemented".to_string())
+                    ret
                 } else {
-                    Err("Expected comparison or array operator".to_string())
+                    Err(Error::Parse("Expected comparison or array operator".to_string()))
                 }
             },
             None => {
-                Err("Expected comparison or array operator".to_string())
+                Err(Error::Parse("Expected comparison or array operator".to_string()))
             }
         }
     }
