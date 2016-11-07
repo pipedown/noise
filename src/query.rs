@@ -475,9 +475,9 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn build_filter(&mut self) -> Result<QueryResults, String> {
+    fn build_filter(&mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
         self.whitespace();
-        Ok(QueryResults{})
+        self.bool()
     }
 }
 
