@@ -9,14 +9,15 @@ use key_builder::KeyBuilder;
 use stems::{StemmedWord, Stems};
 
 // TODO vmx 2016-11-02: Make it import "rocksdb" properly instead of needing to import the individual tihngs
-use rocksdb::{DBIterator, SeekKey};
-use rocksdb::rocksdb::Snapshot;
+use rocksdb::{self, DBIterator, IteratorMode, Snapshot};
 use records_capnp::payload;
 
+
 #[derive(Debug)]
-enum Error {
+pub enum Error {
     Parse(String),
     Capnp(capnp::Error),
+    Rocks(rocksdb::Error),
 }
 
 impl error::Error for Error {
@@ -24,6 +25,10 @@ impl error::Error for Error {
         match *self {
             Error::Parse(ref description) => description,
             Error::Capnp(ref err) => err.description(),
+            // XXX vmx 2016-11-07: It should be fixed on the RocksDB wrapper
+            // that it has the std::error:Error implemented and hence
+            // and err.description()
+            Error::Rocks(_) => "This is an rocksdb error",
         }
     }
 
@@ -31,6 +36,9 @@ impl error::Error for Error {
         match *self {
             Error::Parse(_) => None,
             Error::Capnp(ref err) => Some(err as &error::Error),
+            // NOTE vmx 2016-11-07: Looks like the RocksDB Wrapper needs to be
+            // patched to be based on the std::error::Error trait
+            Error::Rocks(ref err) => None,
         }
     }
 }
@@ -41,17 +49,24 @@ impl From<capnp::Error> for Error {
     }
 }
 
+impl From<rocksdb::Error> for Error {
+    fn from(err: rocksdb::Error) -> Error {
+        Error::Rocks(err)
+    }
+}
+
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
             Error::Parse(ref err) => write!(f, "Parse error: {}", err),
             Error::Capnp(ref err) => write!(f, "Capnproto error: {}", err),
+            Error::Rocks(ref err) => write!(f, "RocksDB error: {}", err),
         }
     }
 }
 
 
-struct DocResult {
+pub struct DocResult {
     seq: u64,
     array_paths: Vec<Vec<u64>>,
 }
@@ -93,14 +108,56 @@ impl DocResult {
 //trait QueryRuntimeFilter {
 //struct QueryRuntimeFilter {}
 
-trait QueryRuntimeFilter {
+pub trait QueryRuntimeFilter {
     fn first_result(&mut self, start_id: u64) -> Result<Option<DocResult>, Error>;
     fn next_result(&mut self) -> Result<Option<DocResult>, Error>;
 }
 
 pub struct Query {}
 
-pub struct QueryResults {
+pub struct QueryResults<'a> {
+    filter: Box<QueryRuntimeFilter + 'a>,
+    first_has_been_called: bool,
+    snapshot: Snapshot<'a>,
+}
+
+impl<'a> QueryResults<'a> {
+    fn new(filter: Box<QueryRuntimeFilter + 'a>, snapshot: Snapshot<'a>) -> QueryResults<'a> {
+        QueryResults{
+            filter: filter,
+            first_has_been_called: false,
+            snapshot: snapshot,
+        }
+    }
+
+    fn get_next(&mut self) -> Result<Option<u64>, Error> {
+        let doc_result;
+        if self.first_has_been_called {
+            doc_result = try!(self.filter.next_result());
+        } else {
+            self.first_has_been_called = true;
+            doc_result = try!(self.filter.first_result(0));
+        }
+        match doc_result {
+            Some(doc_result) => Ok(Some(doc_result.seq)),
+            None => Ok(None),
+        }
+    }
+
+    fn get_next_id(&mut self) -> Result<Option<String>, Error> {
+        let seq = try!(self.get_next());
+        match seq {
+            Some(seq) => {
+                let key = format!("S{}", seq);
+                match try!(self.snapshot.get(&key.as_bytes())) {
+                    // If there is an id, it's UTF-8
+                    Some(id) => Ok(Some(id.to_utf8().unwrap().to_string())),
+                    None => Ok(None)
+                }
+            },
+            None => Ok(None),
+        }
+    }
 }
 
 //struct SnapshotIteratorCreator {
@@ -122,16 +179,16 @@ pub struct QueryResults {
 
 
 
-struct ExactMatchFilter<'a> {
-    iter: DBIterator<'a>,
+struct ExactMatchFilter {
+    iter: DBIterator,
     kb: KeyBuilder,
     stemmed_offset: u64,
     suffix: String,
     suffix_offset: u64,
 }
 
-impl<'a> ExactMatchFilter<'a> {
-    fn new(iter: DBIterator<'a>, stemmed_word: &StemmedWord, mut kb: KeyBuilder) -> ExactMatchFilter<'a> {
+impl ExactMatchFilter {
+    fn new(iter: DBIterator, stemmed_word: &StemmedWord, mut kb: KeyBuilder) -> ExactMatchFilter {
         kb.push_word(&stemmed_word.stemmed);
         ExactMatchFilter{
             iter: iter,
@@ -143,13 +200,14 @@ impl<'a> ExactMatchFilter<'a> {
     }
 }
 
-impl<'a> QueryRuntimeFilter for ExactMatchFilter<'a> {
+impl QueryRuntimeFilter for ExactMatchFilter {
     fn first_result(&mut self, start_id: u64) -> Result<Option<DocResult>, Error> {
         // Build the full key
         self.kb.push_doc_seq(start_id);
 
         // Seek in index to >= entry
-        self.iter.seek(SeekKey::from(self.kb.key().as_bytes()));
+        self.iter.set_mode(IteratorMode::From(self.kb.key().as_bytes(),
+                           rocksdb::Direction::Forward));
 
         // Revert
         self.kb.pop_doc_seq();
@@ -168,13 +226,15 @@ impl<'a> QueryRuntimeFilter for ExactMatchFilter<'a> {
             // New scope needed as the iter.next() below invalidates the
             // current key and value
             {
-                let key = self.iter.key();
+                let (key, value) = match self.iter.next() {
+                    Some((key, value)) => (key, value),
+                    None => return Ok(None),
+                };
                 if !key.starts_with(self.kb.key().as_bytes()) {
                     return Ok(None)
                 }
                 let seq = &key[self.kb.key().len()..];
 
-                let value = self.iter.value();
                 // NOTE vmx 2016-10-13: I'm not really sure why the dereferencing is needed
                 // and why we pass on mutable reference of it to `read_message()`
                 let mut ref_value = &*value;
@@ -283,32 +343,30 @@ impl<'a> QueryRuntimeFilter for AndFilter<'a> {
     fn first_result(&mut self, start_id: u64) -> Result<Option<DocResult>, Error> {
         let base_result = try!(self.filters[self.current_filter].first_result(start_id));
         self.result(base_result)
-        //Ok(None)
     }
 
     fn next_result(&mut self) -> Result<Option<DocResult>, Error> {
-        //let base_result = try!(self.filters[self.current_filter].next_result());
-        //self.result(base_result)
-        Ok(None)
+        let base_result = try!(self.filters[self.current_filter].next_result());
+        self.result(base_result)
     }
 }
 
 
 
 struct Parser<'a> {
-    query: &'a str,
+    query: String,
     offset: usize,
     kb: KeyBuilder,
-    snapshot: &'a Snapshot<'a>,
+    snapshot: Snapshot<'a>,
 }
 
 impl<'a> Parser<'a> {
-    fn new(query: &'a str, snapshot: &'a Snapshot<'a>) -> Parser<'a> {
+    fn new(query: String, snapshot: Snapshot<'a>) -> Parser<'a> {
         Parser{
             query: query,
             offset: 0,
             kb: KeyBuilder::new(),
-            snapshot: &snapshot,
+            snapshot: snapshot,
         }
     }
 
@@ -376,7 +434,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn bool(&mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
+    fn bool<'b>(&'b mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
         let left = try!(self.compare());
         let mut filters = vec![left];
         loop {
@@ -395,7 +453,7 @@ impl<'a> Parser<'a> {
     }
 
 
-    fn array(&mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
+    fn array<'b>(&'b mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
         if !self.consume("[") {
             return Err(Error::Parse("Expected '['".to_string()));
         }
@@ -408,7 +466,7 @@ impl<'a> Parser<'a> {
         Ok(filter)
     }
 
-    fn factor(&mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
+    fn factor<'b>(&'b mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
         if self.consume("(") {
             let filter = try!(self.bool());
             if !self.consume(")") {
@@ -439,7 +497,7 @@ impl<'a> Parser<'a> {
                             let stems = Stems::new(&literal);
                             let mut filters: Vec<Box<QueryRuntimeFilter + 'a>> = Vec::new();
                             for stem in stems {
-                                let iter = self.snapshot.iter();
+                                let iter = self.snapshot.iterator(IteratorMode::Start);
                                 let filter = Box::new(ExactMatchFilter::new(
                                    iter, &stem, self.kb.clone()));
                                 filters.push(filter);
@@ -450,7 +508,7 @@ impl<'a> Parser<'a> {
                             match filters.len() {
                                 0 => panic!("Cannot create a ExactMatchFilter"),
                                 1 => Ok(filters.pop().unwrap()),
-                                _ => Ok(Box::new(AndFilter::<'a>::new(
+                                _ => Ok(Box::new(AndFilter::new(
                                     filters, self.kb.array_depth))),
                             }
                         },
@@ -475,31 +533,25 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn build_filter(&mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
+    fn build_filter(mut self) -> Result<(Box<QueryRuntimeFilter + 'a>, Snapshot<'a>), Error> {
         self.whitespace();
-        self.bool()
+        Ok((self.bool().unwrap(), self.snapshot))
     }
 }
 
 impl Query {
-    //pub fn get_matches<'a>(query: &str, index: &'a Index) -> Result<QueryResults, String> {
-    pub fn get_matches<'a>(query: &str, snapshot: &'a Snapshot) -> Result<QueryResults, String> {
-    //        match &index.rocks {
-//            &Some(ref rocks) => {
-//                let snapshot = Snapshot::new(rocks);
-//                let parser = Parser::new(query, &snapshot);
-//                Ok(QueryResults{})
-//            },
-//            &None => {
-//                Err("You must open the index first".to_string())
-//            },
-//        }
-        //let rocks = &index.rocks.unwrap();
-        // This one would work as well
-        //let rocks = index.rocks.as_ref().unwrap();
-        //let snapshot = Snapshot::new(rocks);
-        let parser = Parser::new(query, &snapshot);
-        Ok(QueryResults{})
+    pub fn get_matches<'a>(query: String, index: &'a Index) -> Result<QueryResults<'a>, Error> {
+        match index.rocks {
+            Some(ref rocks) => {
+                let snapshot = Snapshot::new(&rocks);
+                let parser = Parser::new(query, snapshot);
+                let (filter, snapshot2) = try!(parser.build_filter());
+                Ok(QueryResults::new(filter, snapshot2))
+            },
+            None => {
+                Err(Error::Parse("You must open the index first".to_string()))
+            },
+        }
     }
 }
 

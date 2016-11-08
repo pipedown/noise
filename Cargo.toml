@@ -17,8 +17,10 @@ stemmer = "0.3.2"
 unicode-normalization = "0.1.2"
 
 [dependencies.rocksdb]
-git = "https://github.com/vmx/rust-rocksdb.git"
-branch = "vmx"
+#git = "https://github.com/vmx/rust-rocksdb.git"
+#branch = "vmx"
+path = "../spacejam-rocksdb"
+#git = "https://github.com/spacejam/rust-rocksdb.git"
 
 [dependencies.unicode-segmentation]
 git = "https://github.com/vmx/unicode-segmentation.git"

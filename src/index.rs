@@ -7,7 +7,8 @@ use records_capnp::header;
 use self::rocksdb::Writable;
 
 use json_shred::{Shredder};
-
+// TODO vmx 2016-11-07: Move errors into their own module
+use query::Error;
 
 const NOISE_HEADER_VERSION: u64 = 1;
 
@@ -38,7 +39,6 @@ impl Header {
 
 
 pub struct Index {
-    read_options: rocksdb::ReadOptions,
     write_options: rocksdb::WriteOptions,
     high_doc_seq: u64,
     pub rocks: Option<rocksdb::DB>,
@@ -53,27 +53,26 @@ pub enum OpenOptions {
 impl Index {
     pub fn new() -> Index {
         Index {
-            read_options: rocksdb::ReadOptions::new(),
             write_options: rocksdb::WriteOptions::new(),
             high_doc_seq: 0,
             rocks: None,
             id_str_to_id_seq: HashMap::new(),
-            batch: rocksdb::WriteBatch::new(),
+            batch: rocksdb::WriteBatch::default(),
         }
     }
     // NOTE vmx 2016-10-13: Perhpas the name should be specified on `new()` as it is bound
     // to a single instance. The next question would then be if `open()` really makes sense
     // or if it should be combined with `new()`.
     //fn open(&mut self, name: &str, open_options: Option<OpenOptions>) -> Result<DB, String> {
-    pub fn open(&mut self, name: &str, open_options: Option<OpenOptions>) -> Result<(), String> {
-        let mut rocks_options = rocksdb::Options::new();
+    pub fn open(&mut self, name: &str, open_options: Option<OpenOptions>) -> Result<(), Error> {
+        let mut rocks_options = rocksdb::Options::default();
         println!("still here1");
         let rocks = match rocksdb::DB::open(&rocks_options, name) {
             Ok(rocks) => rocks,
             Err(error) => {
                 match open_options {
                     Some(OpenOptions::Create) => (),
-                    _ => return Err(error),
+                    _ => return Err(Error::Rocks(error)),
                 }
 
                 rocks_options.create_if_missing(true);
@@ -88,7 +87,7 @@ impl Index {
         };
 
         // validate header is there
-        let value = try!(rocks.get_opt(b"HDB", &self.read_options)).unwrap();
+        let value = try!(rocks.get(b"HDB")).unwrap();
         // NOTE vmx 2016-10-13: I'm not really sure why the dereferencing is needed
         // and why we pass on mutable reference of it to `read_message()`
         let mut ref_value = &*value;
@@ -103,8 +102,9 @@ impl Index {
 
     // NOTE vmx 2016-10-13: As one index is tied to one database, this should be a method
     // without a parameter
-    pub fn delete(name: &str) -> Result<(), String> {
-        rocksdb::DB::destroy(&rocksdb::Options::new(), name)
+    pub fn delete(name: &str) -> Result<(), Error> {
+        let ret = try!(rocksdb::DB::destroy(&rocksdb::Options::default(), name));
+        Ok(ret)
     }
 
     pub fn add(&mut self, json: &str) -> Result<(), String> {
@@ -121,7 +121,7 @@ impl Index {
     }
 
     // Store the current batch
-    pub fn flush(&mut self) -> Result<(), String> {
+    pub fn flush(&mut self) -> Result<(), Error> {
         // Flush can only be called if the index is open
         // NOTE vmx 2016-10-17: Perhaps that shouldn't panic?
         assert!(&self.rocks.is_some());
@@ -130,7 +130,7 @@ impl Index {
         // Look up all doc ids and 'delete' from the seq_to_ids keyspace
         for key in self.id_str_to_id_seq.keys() {
             // TODO vmx 2016-10-17: USe multiget once the Rusts wrapper supports it
-            match rocks.get_opt(key.as_bytes(), &self.read_options) {
+            match rocks.get(key.as_bytes()) {
                 Ok(Some(seq)) => {
                     try!(self.batch.delete(&*seq));
                 },
@@ -148,10 +148,10 @@ impl Index {
         header.high_seq = self.high_doc_seq;
         try!(self.batch.put(b"HDB", &*header.serialize()));
 
-        let status = rocks.write_opt(&self.batch, &self.write_options);
+        let status = try!(rocks.write(&self.batch));
         self.batch.clear();
         self.id_str_to_id_seq.clear();
-        status
+        Ok(status)
     }
 
     pub fn fetch_id(&self, seq: u64) ->  Result<Option<String>, String> {
@@ -161,7 +161,7 @@ impl Index {
         let rocks = self.rocks.as_ref().unwrap();
 
         let key = format!("S{}", seq);
-        match try!(rocks.get_opt(&key.as_bytes(), &self.read_options)) {
+        match try!(rocks.get(&key.as_bytes())) {
             // If there is an id, it's UTF-8
             Some(id) => Ok(Some(id.to_utf8().unwrap().to_string())),
             None => Ok(None)
