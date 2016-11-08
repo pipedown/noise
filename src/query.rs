@@ -571,15 +571,16 @@ mod tests {
         let mut index = Index::new();
         index.open("test_whitespace", Some(OpenOptions::Create)).unwrap();
         let rocks = &index.rocks.unwrap();
-        let snapshot = Snapshot::new(rocks);
+        let mut snapshot = Snapshot::new(rocks);
 
-        let mut query = " \n \t test";
-        let mut parser = Parser::new(query, &snapshot);
+        let mut query = " \n \t test".to_string();
+        let mut parser = Parser::new(query, snapshot);
         parser.whitespace();
         assert_eq!(parser.offset, 5);
 
-        query = "test";
-        parser = Parser::new(query, &snapshot);
+        snapshot = Snapshot::new(rocks);
+        query = "test".to_string();
+        parser = Parser::new(query, snapshot);
         parser.whitespace();
         assert_eq!(parser.offset, 0);
     }

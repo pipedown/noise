@@ -144,7 +144,7 @@ mod tests {
         assert_eq!(kb.segments.len(), 3, "Three segments ");
         assert_eq!(kb.key(), "W.first.second$", "Key for three segments is correct");
 
-        kb.push_word("astemmedword".to_string());
+        kb.push_word("astemmedword");
         assert_eq!(kb.segments.len(), 4, "Four segments");
         assert_eq!(kb.key(), "W.first.second$!astemmedword#", "Key for four segments is correct");
 
@@ -165,7 +165,7 @@ mod tests {
     #[should_panic(expected = "assertion failed: self.segments.len() > 0")]
     fn test_segments_push_word_panic() {
         let mut kb = KeyBuilder::new();
-        kb.push_word("astemmedword".to_string());
+        kb.push_word("astemmedword");
     }
 
     #[test]
@@ -174,7 +174,7 @@ mod tests {
         kb.push_object_key("first".to_string());
         kb.push_object_key("second".to_string());
         kb.push_array();
-        kb.push_word("astemmedword".to_string());
+        kb.push_word("astemmedword");
         kb.push_doc_seq(123);
         assert_eq!(kb.segments.len(), 5, "Five segments");
         assert_eq!(kb.key(), "W.first.second$!astemmedword#123",
@@ -218,7 +218,7 @@ mod tests {
         assert_eq!(kb.last_pushed_segment_type(), Some(SegmentType::Array),
                    "Last segment is an array");
 
-        kb.push_word("astemmedword".to_string());
+        kb.push_word("astemmedword");
         assert_eq!(kb.last_pushed_segment_type(), Some(SegmentType::Word),
                    "Last segment is a word");
 
