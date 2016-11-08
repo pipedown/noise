@@ -37,14 +37,10 @@ impl<'a> Stems<'a> {
 
     /// Return the *byte* length of the common prefix between two strings
     fn common_prefix_len(aa: &str, bb: &str) -> usize {
-        let mut count = 0;
-        for (charsa, charsb) in aa.chars().zip(bb.chars()) {
-            if charsa != charsb {
-                break;
-            }
-            count += charsa.len_utf8();
-          }
-        count
+        aa.chars()
+            .zip(bb.chars())
+            .take_while(|&(a, b)| a == b)
+            .fold(0, |acc, (a, _)| acc + a.len_utf8())
     }
 }
 
