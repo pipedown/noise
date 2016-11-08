@@ -21,6 +21,7 @@ Installation
 ### Dependencies
 
  * [RocksDB](http://rocksdb.org/)
+ * [capnp-tool](https://capnproto.org/capnp-tool.html) 
 
 
 ### Build
