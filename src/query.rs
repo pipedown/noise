@@ -144,7 +144,7 @@ impl<'a> QueryResults<'a> {
         }
     }
 
-    fn get_next_id(&mut self) -> Result<Option<String>, Error> {
+    pub fn get_next_id(&mut self) -> Result<Option<String>, Error> {
         let seq = try!(self.get_next());
         match seq {
             Some(seq) => {
@@ -372,12 +372,14 @@ impl<'a> Parser<'a> {
 
     fn whitespace(&mut self) {
         loop {
-            if let Some(char) = self.query[self.offset..].chars().next() {
-                // Stop when the character isn't a whitespace
-                if !char.is_whitespace() {
-                    break;
-                }
-                self.offset += char.len_utf8();
+            match self.query[self.offset..].chars().next() {
+                Some(char) => {
+                    if !char.is_whitespace() {
+                        break;
+                    }
+                    self.offset += char.len_utf8();
+                },
+                None => break,
             }
         }
     }
@@ -418,9 +420,10 @@ impl<'a> Parser<'a> {
         let mut lit = String::new();
         if self.consume("\"") {
             for char in self.query[self.offset..].chars() {
-                if char != '"' {
-                    lit.push(char);
+                if char == '"' {
+                    break;
                 }
+                lit.push(char);
                 self.offset += char.len_utf8();
             }
             if self.consume("\"") {
