@@ -82,7 +82,6 @@ impl Shredder {
 
 
     pub fn shred(&mut self, json: &str, docseq: u64) -> Result<&str, String> {
-        println!("{}", json);
         let mut parser = Parser::new(json.chars());
         let mut token = parser.next();
 
@@ -95,22 +94,24 @@ impl Shredder {
                 Some(JsonEvent::ObjectStart) => {
                     match parser.stack().top() {
                         Some(StackElement::Key(key)) => {
-                            println!("object start: {:?}", key);
                             self.keybuilder.push_object_key(key.to_string());
                             self.inc_top_array_offset();
                         },
-                        _ => {
-                            panic!("XXX This is probably an object end");
-                        }
+                        // We won't hit this case as we are within an object and not within
+                        // an array
+                        Some(StackElement::Index(_)) => {}
+                        // It's an empty object
+                        None => {
+                            // Just push something to make `ObjectEnd` happy
+                            self.keybuilder.push_object_key("".to_string());
+                        },
                     }
                 },
                 Some(JsonEvent::ObjectEnd) => {
                     self.keybuilder.pop_object_key();
                 },
                 Some(JsonEvent::ArrayStart) => {
-                    println!("array start");
                     self.keybuilder.push_array();
-                    //self.inc_top_array_offset();
                     self.path_array_offsets.push(0);
                 },
                 Some(JsonEvent::ArrayEnd) => {
@@ -120,7 +121,6 @@ impl Shredder {
                 Some(JsonEvent::StringValue(value)) => {
                     self.add_entries(value, docseq);
                     self.inc_top_array_offset();
-                    //self.keybuilder.pop_object_key();
                 },
                 not_implemented => {
                     panic!("Not yet implemented other JSON types! {:?}", not_implemented);
@@ -254,5 +254,14 @@ mod tests {
                 assert_eq!(wordinfo.1, &expected[ii].1[jj].1);
             }
         }
+    }
+
+    #[test]
+    fn test_shred_empty_object() {
+        let mut shredder = super::Shredder::new();
+        let json = r#"{}"#;
+        let docseq = 123;
+        shredder.shred(json, docseq).unwrap();
+        // TODO vmx 2016-11-08: Finish this test
     }
 }
