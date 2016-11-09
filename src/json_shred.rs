@@ -169,6 +169,7 @@ impl Shredder {
                     }
                 },
                 Some(JsonEvent::ArrayStart) => {
+                    try!(self.maybe_push_key(parser.stack().top()));
                     if self.ignore_children > 0 {
                         self.ignore_children += 1;
                     } else {
@@ -311,18 +312,18 @@ mod tests {
                 (vec![0], vec![
                     WordInfo {
                         stemmed_offset: 0, suffix_text: "".to_string(), suffix_offset: 5 }])]),
-            ("W.A$.B!c2#1234", vec![
-                (vec![0], vec![
-                    WordInfo {
-                        stemmed_offset: 2, suffix_text: "".to_string(), suffix_offset: 4 },
-                    WordInfo {
-                        stemmed_offset: 2, suffix_text: "".to_string(), suffix_offset: 4 }])]),
             ("W.A$.B!three#1234", vec![
                 (vec![0], vec![WordInfo {
                     stemmed_offset: 10, suffix_text: "".to_string(), suffix_offset: 15 }])]),
             ("W.A$.B!two#1234", vec![
                 (vec![0], vec![WordInfo {
                     stemmed_offset: 6, suffix_text: "".to_string(), suffix_offset: 9 }])]),
+            ("W.A$.C!c2#1234", vec![
+                (vec![0], vec![
+                    WordInfo {
+                        stemmed_offset: 2, suffix_text: "".to_string(), suffix_offset: 4 },
+                    WordInfo {
+                        stemmed_offset: 2, suffix_text: "".to_string(), suffix_offset: 4 }])]),
             ];
         compare_shredded(&shredder.map, &expected);
     }
