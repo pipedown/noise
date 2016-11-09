@@ -6,9 +6,8 @@ use records_capnp::header;
 // Needed for a trait in order to `dekete/put()` into a `rocksdb::WriteBatch`
 use self::rocksdb::Writable;
 
+use error::Error;
 use json_shred::{Shredder};
-// TODO vmx 2016-11-07: Move errors into their own module
-use query::Error;
 
 const NOISE_HEADER_VERSION: u64 = 1;
 

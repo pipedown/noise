@@ -7,10 +7,10 @@ use self::rustc_serialize::json::{JsonEvent, Parser, StackElement};
 // Needed for a trait in order to `put()` into a `rocksdb::WriteBatch`
 use self::rocksdb::Writable;
 
+use error::Error;
 use key_builder::{KeyBuilder, SegmentType};
 use records_capnp::payload;
 use stems::Stems;
-use query::{Error};
 
 // Good example of using rustc_serialize: https://github.com/ajroetker/beautician/blob/master/src/lib.rs
 // Callback based JSON streaming parser: https://github.com/gyscos/json-streamer.rs
