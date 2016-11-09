@@ -350,6 +350,6 @@ mod tests {
         let json = r#"{}"#;
         let docseq = 123;
         shredder.shred(json, docseq).unwrap();
-        // TODO vmx 2016-11-08: Finish this test
+        assert!(shredder.map.is_empty());
     }
 }
