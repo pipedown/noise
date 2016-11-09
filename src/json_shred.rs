@@ -330,7 +330,7 @@ mod tests {
 
     fn compare_shredded(result_map: &WordPathInfoMap,
                         expected: &Vec<(&str, Vec<(Vec<u64>, Vec<WordInfo>)>)>) {
-        // HashMap have an arbitraty order of the elements
+        // HashMap have an arbitrary order of the elements
         let mut result: Vec<(&String, &ArrayOffsetsToWordInfo)> = result_map.into_iter().collect();
         result.sort_by(|a, b| Ord::cmp(&a.0, &b.0));
         for (ii, &(key, values)) in result.iter().enumerate() {
