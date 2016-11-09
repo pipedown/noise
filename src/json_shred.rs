@@ -10,6 +10,7 @@ use self::rocksdb::Writable;
 use key_builder::{KeyBuilder, SegmentType};
 use records_capnp::payload;
 use stems::Stems;
+use query::{Error};
 
 // Good example of using rustc_serialize: https://github.com/ajroetker/beautician/blob/master/src/lib.rs
 // Callback based JSON streaming parser: https://github.com/gyscos/json-streamer.rs
@@ -33,11 +34,26 @@ type ArrayOffsets = Vec<u64>;
 type ArrayOffsetsToWordInfo = HashMap<ArrayOffsets, Vec<WordInfo>>;
 type WordPathInfoMap = HashMap<String, ArrayOffsetsToWordInfo>;
 
+
+enum ObjectKeyTypes {
+    /// _id field
+    Id,
+    /// Normal key
+    Key(String),
+    /// Reserved key starting with underscore
+    Ignore,
+    /// No key found
+    NoKey,
+}
+
 #[derive(Debug)]
 pub struct Shredder {
     keybuilder: KeyBuilder,
     map: WordPathInfoMap,
     path_array_offsets: ArrayOffsets,
+    // Top-level fields prefixed with an underscore are ignored
+    ignore_children: u64,
+    doc_id: String,
 }
 
 
@@ -47,9 +63,11 @@ impl Shredder {
             keybuilder: KeyBuilder::new(),
             map: WordPathInfoMap::new(),
             path_array_offsets: Vec::new(),
+            ignore_children: 0,
+            doc_id: String::new(),
         }
     }
-    fn add_entries(&mut self, text: String, docseq: u64) {
+    fn add_entries(&mut self, text: &String, docseq: u64) {
         let stems = Stems::new(text.as_str());
         for stem in stems {
             self.keybuilder.push_word(&stem.stemmed);
@@ -80,54 +98,123 @@ impl Shredder {
         }
     }
 
+    // Extract key if it exists and indicates if it's a special type of key
+    fn extract_key(&mut self, stack_element: Option<StackElement>) -> ObjectKeyTypes {
+        if self.keybuilder.last_pushed_segment_type().unwrap() == SegmentType::ObjectKey {
+            match stack_element {
+                Some(StackElement::Key(key)) => {
+                    if self.keybuilder.segments.len() == 1 && key.starts_with("_") {
+                        if key == "_id" {
+                            ObjectKeyTypes::Id
+                        } else {
+                            ObjectKeyTypes::Ignore
+                        }
+                    } else {
+                        ObjectKeyTypes::Key(key.to_string())
+                    }
+                },
+                _ => ObjectKeyTypes::NoKey,
+            }
+        } else {
+            ObjectKeyTypes::NoKey
+        }
+    }
 
-    pub fn shred(&mut self, json: &str, docseq: u64) -> Result<&str, String> {
+    // If we are inside an object we need to push the key to the key builder
+    // Don't push them if they are reserved fields (starting with underscore)
+    fn maybe_push_key(&mut self, stack_element: Option<StackElement>) -> Result<(), Error> {
+        if self.keybuilder.last_pushed_segment_type().unwrap() == SegmentType::ObjectKey
+                && self.keybuilder.segments.len() == 1 {
+            if let Some(StackElement::Key(key)) = stack_element {
+                if key.starts_with("_") {
+                    if key == "_id" {
+                        return Err(Error::Shred(
+                            "Expected string for `_id` field, got another type".to_string()));
+                    } else {
+                        self.ignore_children = 1;
+                    }
+                } else {
+                    // Pop the dummy object that makes ObjectEnd happy
+                    // or the previous object key
+                    self.keybuilder.pop_object_key();
+                    self.keybuilder.push_object_key(key.to_string());
+                }
+            }
+        }
+        Ok(())
+    }
+
+   pub fn shred(&mut self, json: &str, docseq: u64) -> Result<String, Error> {
         let mut parser = Parser::new(json.chars());
         let mut token = parser.next();
 
         loop {
             // Get the next token, so that in case of an `ObjectStart` the key is already
             // on the stack.
-            let nexttoken = parser.next();
-
             match token.take() {
                 Some(JsonEvent::ObjectStart) => {
-                    match parser.stack().top() {
-                        Some(StackElement::Key(key)) => {
-                            self.keybuilder.push_object_key(key.to_string());
-                            self.inc_top_array_offset();
-                        },
-                        // We won't hit this case as we are within an object and not within
-                        // an array
-                        Some(StackElement::Index(_)) => {}
-                        // It's an empty object
-                        None => {
-                            // Just push something to make `ObjectEnd` happy
-                            self.keybuilder.push_object_key("".to_string());
-                        },
+                    if self.ignore_children > 0 {
+                        self.ignore_children += 1;
+                    }
+                    else {
+                        // Just push something to make `ObjectEnd` happy
+                        self.keybuilder.push_object_key("".to_string());
                     }
                 },
                 Some(JsonEvent::ObjectEnd) => {
-                    self.keybuilder.pop_object_key();
+                    if self.ignore_children > 0 {
+                        self.ignore_children -= 1;
+                    } else {//if !self.keybuilder.segments.is_empty() {
+                        self.keybuilder.pop_object_key();
+                    }
                 },
                 Some(JsonEvent::ArrayStart) => {
-                    self.keybuilder.push_array();
-                    self.path_array_offsets.push(0);
+                    if self.ignore_children > 0 {
+                        self.ignore_children += 1;
+                    } else {
+                        self.keybuilder.push_array();
+                        self.path_array_offsets.push(0);
+                    }
                 },
                 Some(JsonEvent::ArrayEnd) => {
-                    self.path_array_offsets.pop();
-                    self.keybuilder.pop_array();
+                    if self.ignore_children > 0 {
+                        self.ignore_children -= 1;
+                    } else {
+                        self.path_array_offsets.pop();
+                        self.keybuilder.pop_array();
+                    }
                 },
                 Some(JsonEvent::StringValue(value)) => {
-                    self.add_entries(value, docseq);
-                    self.inc_top_array_offset();
+                    // No children to ignore
+                    if self.ignore_children == 0 {
+                        println!("stringvalue: {:?}", value);
+                        match self.extract_key(parser.stack().top()) {
+                            ObjectKeyTypes::Id => self.doc_id = value,
+                            ObjectKeyTypes::Key(key) => {
+                                // Pop the dummy object that makes ObjectEnd happy
+                                // or the previous object key
+                                self.keybuilder.pop_object_key();
+                                self.keybuilder.push_object_key(key.to_string());
+
+                                self.add_entries(&value, docseq);
+                                self.inc_top_array_offset();
+                            },
+                            ObjectKeyTypes::NoKey => {
+                                self.add_entries(&value, docseq);
+                                self.inc_top_array_offset();
+                            },
+                            ObjectKeyTypes::Ignore => {
+                                self.ignore_children = 1;
+                            },
+                        }
+                    }
                 },
                 not_implemented => {
                     panic!("Not yet implemented other JSON types! {:?}", not_implemented);
                 }
             };
 
-            token = nexttoken;
+            token = parser.next();
             if token == None {
                 break;
             }
@@ -137,10 +224,10 @@ impl Shredder {
         for key in self.map.keys() {
             println!("  {}", key);
         }
-        Ok(&"thedocid")
+        Ok(self.doc_id.clone())
     }
 
-    pub fn add_to_batch(&self, batch: &rocksdb::WriteBatch) -> Result<(), String> {
+    pub fn add_to_batch(&self, batch: &rocksdb::WriteBatch) -> Result<(), Error> {
         for (key_path, word_path_infos) in &self.map {
             let mut message = ::capnp::message::Builder::new_default();
             {

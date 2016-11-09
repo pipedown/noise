@@ -9,7 +9,7 @@ pub enum SegmentType {
 }
 
 #[derive(Debug, Clone)]
-struct Segment {
+pub struct Segment {
     type_: SegmentType,
     offset: usize,
 }
@@ -17,7 +17,7 @@ struct Segment {
 #[derive(Debug, Clone)]
 pub struct KeyBuilder {
     pub array_depth: usize,
-    segments: Vec<Segment>,
+    pub segments: Vec<Segment>,
     fullkey: String,
 }
 

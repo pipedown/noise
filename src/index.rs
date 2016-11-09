@@ -107,7 +107,7 @@ impl Index {
         Ok(ret)
     }
 
-    pub fn add(&mut self, json: &str) -> Result<(), String> {
+    pub fn add(&mut self, json: &str) -> Result<(), Error> {
         let mut shredder = Shredder::new();
         // NOTE vmx 2016-10-13: Needed for the lifetime-checker, though not sure if it now really
         // does the right thing. Does the `try!()` still return as epected?
