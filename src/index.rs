@@ -179,7 +179,7 @@ mod tests {
     fn test_open() {
         let mut index = Index::new();
         //let db = super::Index::open("firstnoisedb", Option::None).unwrap();
-        index.open("firstnoisedb", Some(OpenOptions::Create)).unwrap();
+        index.open("target/tests/firstnoisedb", Some(OpenOptions::Create)).unwrap();
         index.flush().unwrap();
     }
 }
