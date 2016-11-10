@@ -573,7 +573,7 @@ mod tests {
     #[test]
     fn test_whitespace() {
         let mut index = Index::new();
-        index.open("test_whitespace", Some(OpenOptions::Create)).unwrap();
+        index.open("target/tests/test_whitespace", Some(OpenOptions::Create)).unwrap();
         let rocks = &index.rocks.unwrap();
         let mut snapshot = Snapshot::new(rocks);
 
