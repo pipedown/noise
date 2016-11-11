@@ -5,11 +5,11 @@ use noise::query::Query;
 
 fn main() {
     let dbname = "querytestdb";
-    Index::delete(dbname);
+    let _ = Index::delete(dbname);
 
     let mut index = Index::new();
     index.open(dbname, Some(OpenOptions::Create)).unwrap();
-    index.add(r#"{"_id": "foo", "hello": "world"}"#);
+    let _ = index.add(r#"{"_id": "foo", "hello": "world"}"#);
     index.flush().unwrap();
 
     let mut query_results = Query::get_matches(r#"hello="world""#.to_string(), &index).unwrap();
