@@ -100,8 +100,8 @@ impl<'a> QueryResults<'a> {
             Some(seq) => {
                 let key = format!("S{}", seq);
                 match try!(self.snapshot.get(&key.as_bytes())) {
-                    // If there is an id, it's UTF-8
-                    Some(id) => Ok(Some(id.to_utf8().unwrap().to_string())),
+                    // If there is an id, it's UTF-8. Strip off keyspace leading byte
+                    Some(id) => Ok(Some(id.to_utf8().unwrap()[1..].to_string())),
                     None => Ok(None)
                 }
             },
