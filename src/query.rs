@@ -362,18 +362,40 @@ impl<'a> Parser<'a> {
     }
 
     fn consume_string_literal(&mut self) -> Result<Option<String>, Error> {
-        // Does not unescape yet
         let mut lit = String::new();
-        if self.consume("\"") {
+        let mut next_is_special_char = false;
+        if self.could_consume("\"") {
+            // can't consume("\"") the leading quote because it will also skip leading whitespace
+            // inside the string literal 
+            self.offset += 1;
             for char in self.query[self.offset..].chars() {
-                if char == '"' {
-                    break;
+                if next_is_special_char {
+                    match char {
+                        '\\' | '"' => lit.push(char),
+                        'n' => lit.push('\n'),
+                        'b' => lit.push('\x08'),
+                        'r' => lit.push('\r'),
+                        'f' => lit.push('\x0C'),
+                        't' => lit.push('\t'),
+                        'v' => lit.push('\x0B'),
+                        _ => return Err(Error::Parse(format!("Unknown character escape: {}",
+                                                             char))),
+                    };
+                    self.offset += 1;
+                    next_is_special_char = false;
+                } else {
+                    if char == '"' {
+                        break;
+                    } else if char == '\\' {
+                        next_is_special_char = true;
+                        self.offset += 1;
+                    } else {
+                        lit.push(char);
+                        self.offset += char.len_utf8();
+                    }
                 }
-                lit.push(char);
-                self.offset += char.len_utf8();
             }
             if self.consume("\"") {
-                self.whitespace();
                 Ok(Some(lit))
             } else {
                 Err(Error::Parse("Expected \"".to_string()))
@@ -529,5 +551,17 @@ mod tests {
         parser = Parser::new(query, snapshot);
         parser.whitespace();
         assert_eq!(parser.offset, 0);
+    }
+
+    #[test]
+    fn test_consume_string_literal() {
+        let mut index = Index::new();
+        index.open("target/tests/test_consume_string_literal", Some(OpenOptions::Create)).unwrap();
+        let rocks = &index.rocks.unwrap();
+        let snapshot = Snapshot::new(rocks);
+
+        let query = r#"" \n \t test""#.to_string();
+        let mut parser = Parser::new(query, snapshot);
+        assert_eq!(parser.consume_string_literal().unwrap().unwrap(),  " \n \t test".to_string());
     }
 }
