@@ -321,22 +321,18 @@ impl<'a> Parser<'a> {
     }
 
     fn whitespace(&mut self) {
-        loop {
-            match self.query[self.offset..].chars().next() {
-                Some(char) => {
-                    if !char.is_whitespace() {
-                        break;
-                    }
-                    self.offset += char.len_utf8();
-                },
-                None => break,
+        for char in self.query[self.offset..].chars() {
+            if !char.is_whitespace() {
+                break;
             }
+            self.offset += char.len_utf8();
         }
     }
 
     fn consume(&mut self, token: &str) -> bool {
         if self.could_consume(token) {
             self.offset += token.len();
+            self.whitespace();
             true
         } else {
             false
