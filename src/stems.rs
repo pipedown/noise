@@ -121,52 +121,25 @@ mod tests {
     use super::{StemmedWord, Stems};
 
     #[test]
-    fn test_stems_lowercase() {
-        let input = "These words deeply test smoothly that stemming";
-        let result = Stems::new(input).collect::<Vec<StemmedWord>>();
-        let expected = vec![
-            StemmedWord { stemmed_offset: 0, suffix_offset: 5,
-                          stemmed: String::from("these"), suffix: String::from("") },
-            StemmedWord { stemmed_offset: 6, suffix_offset: 10,
-                          stemmed: String::from("word"), suffix: String::from("s") },
-            // "deeply" stems to "deepli"
-            StemmedWord { stemmed_offset: 12, suffix_offset: 17,
-                          stemmed: String::from("deepli"), suffix: String::from("y") },
-            StemmedWord { stemmed_offset: 19, suffix_offset: 23,
-                          stemmed: String::from("test"), suffix: String::from("") },
-            StemmedWord { stemmed_offset: 24, suffix_offset: 30,
-                          stemmed: String::from("smooth"), suffix: String::from("ly") },
-            StemmedWord { stemmed_offset: 33, suffix_offset: 37,
-                          stemmed: String::from("that"), suffix: String::from("") },
-            StemmedWord { stemmed_offset: 38, suffix_offset: 42,
-                          stemmed: String::from("stem"), suffix: String::from("ming") },
-            ];
-        assert_eq!(result.len(), expected.len());
-        for (stem, expected_stem) in result.iter().zip(expected.iter()) {
-            assert_eq!(stem, expected_stem);
-        }
-    }
-
-    #[test]
     fn test_stems_mixedcase() {
         let input = "THEse Words deeplY test smOOthly that stemmING";
         let result = Stems::new(input).collect::<Vec<StemmedWord>>();
         let expected = vec![
-            StemmedWord { stemmed_offset: 0, suffix_offset: 5,
-                          stemmed: String::from("these"), suffix: String::from("") },
-            StemmedWord { stemmed_offset: 6, suffix_offset: 10,
-                          stemmed: String::from("word"), suffix: String::from("s") },
+            StemmedWord { stemmed_offset: 0, suffix_offset: 0,
+                          stemmed: String::from("these"), suffix: String::from("THEse ") },
+            StemmedWord { stemmed_offset: 6, suffix_offset: 6,
+                          stemmed: String::from("word"), suffix: String::from("Words ") },
             // "deeply" stems to "deepli"
             StemmedWord { stemmed_offset: 12, suffix_offset: 17,
-                          stemmed: String::from("deepli"), suffix: String::from("y") },
+                          stemmed: String::from("deepli"), suffix: String::from("Y ") },
             StemmedWord { stemmed_offset: 19, suffix_offset: 23,
-                          stemmed: String::from("test"), suffix: String::from("") },
-            StemmedWord { stemmed_offset: 24, suffix_offset: 30,
-                          stemmed: String::from("smooth"), suffix: String::from("ly") },
+                          stemmed: String::from("test"), suffix: String::from(" ") },
+            StemmedWord { stemmed_offset: 24, suffix_offset: 26,
+                          stemmed: String::from("smooth"), suffix: String::from("OOthly ") },
             StemmedWord { stemmed_offset: 33, suffix_offset: 37,
-                          stemmed: String::from("that"), suffix: String::from("") },
+                          stemmed: String::from("that"), suffix: String::from(" ") },
             StemmedWord { stemmed_offset: 38, suffix_offset: 42,
-                          stemmed: String::from("stem"), suffix: String::from("ming") },
+                          stemmed: String::from("stem"), suffix: String::from("mING") },
             ];
         assert_eq!(result.len(), expected.len());
         for (stem, expected_stem) in result.iter().zip(expected.iter()) {
@@ -178,7 +151,10 @@ mod tests {
     fn test_stems_nonchars() {
         let input = "  @#$!== \t+-";
         let result = Stems::new(input).collect::<Vec<StemmedWord>>();
-        assert_eq!(result.len(), 0);
+        assert_eq!(result, vec![
+            StemmedWord { stemmed_offset: 0, suffix_offset: 12,
+                          stemmed: String::from("  @#$!== \t+-"), suffix: String::from("") },
+            ]);
     }
 
     #[test]
@@ -186,10 +162,12 @@ mod tests {
         let input = "@!?   Let's seeing...";
         let result = Stems::new(input).collect::<Vec<StemmedWord>>();
         let expected = vec![
-            StemmedWord { stemmed_offset: 6, suffix_offset: 9,
-                          stemmed: String::from("let"), suffix: String::from("'s") },
+            StemmedWord { stemmed_offset: 0, suffix_offset: 6,
+                          stemmed: String::from("@!?   "), suffix: String::from("") },
+            StemmedWord { stemmed_offset: 6, suffix_offset: 6,
+                          stemmed: String::from("let"), suffix: String::from("Let's ") },
             StemmedWord { stemmed_offset: 12, suffix_offset: 15,
-                          stemmed: String::from("see"), suffix: String::from("ing") },
+                          stemmed: String::from("see"), suffix: String::from("ing...") },
             ];
         assert_eq!(result.len(), expected.len());
         for (stem, expected_stem) in result.iter().zip(expected.iter()) {
@@ -202,8 +180,8 @@ mod tests {
         let input = "Ünicöde stemming";
         let result = Stems::new(input).collect::<Vec<StemmedWord>>();
         let expected = vec![
-            StemmedWord { stemmed_offset: 0, suffix_offset: 8,
-                          stemmed: String::from("ünicöd"), suffix: String::from("e") },
+            StemmedWord { stemmed_offset: 0, suffix_offset: 0,
+                          stemmed: String::from("ünicöd"), suffix: String::from("Ünicöde ") },
             StemmedWord { stemmed_offset: 10, suffix_offset: 14,
                           stemmed: String::from("stem"), suffix: String::from("ming") },
             ];
@@ -218,8 +196,8 @@ mod tests {
         let input = "İ";
         let result = Stems::new(input).collect::<Vec<StemmedWord>>();
         let expected = vec![
-            StemmedWord { stemmed_offset: 0, suffix_offset: 3,
-                          stemmed: String::from("i̇"), suffix: String::from("") },
+            StemmedWord { stemmed_offset: 0, suffix_offset: 0,
+                          stemmed: String::from("i̇"), suffix: String::from("İ") },
             ];
         assert_eq!(result.len(), expected.len());
         for (stem, expected_stem) in result.iter().zip(expected.iter()) {
@@ -253,8 +231,9 @@ mod tests {
         let input = "\u{03A1}\u{0313}\u{03C1}\u{0313}\u{1FE4}";
         let result = Stems::new(input).collect::<Vec<StemmedWord>>();
         let expected = vec![
-            StemmedWord { stemmed_offset: 0, suffix_offset: 9,
-                          stemmed: String::from("\u{1FE4}\u{1FE4}\u{1FE4}"), suffix: String::from("") },
+            StemmedWord { stemmed_offset: 0, suffix_offset: 0,
+                          stemmed: String::from("\u{1FE4}\u{1FE4}\u{1FE4}"),
+                          suffix: String::from("\u{03A1}\u{0313}\u{03C1}\u{0313}\u{03C1}") },
            ];
         assert_eq!(result.len(), expected.len());
         for (stem, expected_stem) in result.iter().zip(expected.iter()) {
