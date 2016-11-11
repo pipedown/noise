@@ -431,7 +431,7 @@ impl<'a> Parser<'a> {
         self.kb.push_array();
         let filter = try!(self.bool());
         self.kb.pop_array();
-        if self.consume("]") {
+        if !self.consume("]") {
             return Err(Error::Parse("Expected ']'".to_string()));
         }
         Ok(filter)
