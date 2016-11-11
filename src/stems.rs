@@ -2,6 +2,7 @@ extern crate stemmer;
 extern crate unicode_normalization;
 extern crate unicode_segmentation;
 
+use std::iter::Peekable;
 
 use self::stemmer::Stemmer;
 use self::unicode_normalization::UnicodeNormalization;
@@ -9,7 +10,7 @@ use self::unicode_segmentation::UnicodeSegmentation;
 
 
 pub struct Stems<'a> {
-    words: unicode_segmentation::UnicodeWordIndices<'a>,
+    words: Peekable<unicode_segmentation::UWordBoundIndices<'a>>,
     stemmer: Stemmer,
 }
 
@@ -30,7 +31,7 @@ pub struct StemmedWord {
 impl<'a> Stems<'a> {
     pub fn new(text: &str) -> Stems {
         Stems{
-            words: text.unicode_word_indices(),
+            words: text.split_word_bound_indices().peekable(),
             stemmer: Stemmer::new("english").unwrap(),
         }
     }
@@ -48,24 +49,70 @@ impl<'a> Iterator for Stems<'a> {
     type Item = StemmedWord;
 
     fn next(&mut self) -> Option<StemmedWord> {
-        match self.words.next() {
-            Some((pos, word)) => {
-                let lowercased = word.to_lowercase();
-                let normalized = lowercased.nfkc().collect::<String>();
-                let stemmed = self.stemmer.stem(&normalized);
-                let prefix_len = Stems::common_prefix_len(&stemmed, &normalized);
-                let ret = StemmedWord {
-                    stemmed_offset: pos,
-                    suffix_offset: pos + prefix_len,
-                    stemmed: stemmed,
-                    suffix: (&normalized[prefix_len..normalized.len()]).to_string(),
-                };
-                Some(ret)
-            },
-            None => None
+        let mut word_to_stem = String::new();
+        let mut stemmed_offset = 0;
+        let mut normalized = String::new();
+        loop {
+            match self.words.peek() {
+                Some(&(pos, word)) => {
+                    normalized = word.nfkc().collect::<String>();
+                    if word.chars().next().unwrap().is_alphabetic() {
+                        stemmed_offset = pos;
+                        break;
+                    } else {
+                        word_to_stem.push_str(&normalized);
+                        self.words.next();
+                    }
+                },
+                None => {
+                    if word_to_stem.is_empty() {
+                        return None;
+                    } else {
+                        break;
+                    }
+                },
+            }
         }
-    }
 
+        if !word_to_stem.is_empty() {
+            // we found the begining of the string is not a stemmable word.
+            // Return the accumulated string as the stemmed word
+            return Some(StemmedWord {
+                            stemmed_offset: 0,
+                            suffix_offset: word_to_stem.len(),
+                            stemmed: word_to_stem,
+                            suffix: String::new(),
+                });
+        }
+        // normalized contains our stemmable word. advance the iter since we only peeked.
+        self.words.next();
+        word_to_stem = normalized;
+        let mut suffix = word_to_stem.clone();
+        loop {
+            // loop through all non-alphabetic chars and add to suffix (which means the suffix starts
+            // before the stemmed word)
+            match self.words.peek() {
+                Some(&(_pos, word)) => {
+                    normalized = word.nfkc().collect::<String>();
+                    if normalized.chars().next().unwrap().is_alphabetic() {
+                        break;
+                    } else {
+                        suffix.push_str(&normalized);
+                        self.words.next();
+                    }
+                },
+                None => break,
+            }
+        }
+        let stemmed = self.stemmer.stem(&word_to_stem.to_lowercase());
+        let prefix_len = Stems::common_prefix_len(&stemmed, &suffix);
+        Some(StemmedWord {
+            stemmed_offset: stemmed_offset,
+            suffix_offset: stemmed_offset + prefix_len,
+            stemmed: stemmed,
+            suffix: (&suffix[prefix_len..]).to_string(),
+        })
+    }
 }
 
 
