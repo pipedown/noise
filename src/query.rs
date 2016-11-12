@@ -206,7 +206,6 @@ impl QueryRuntimeFilter for ExactMatchFilter {
                     }
                 }
             }
-            self.iter.next();
 
             if doc_result.seq > 0 {
                 return Ok(Some(doc_result));
@@ -255,7 +254,7 @@ impl<'a> AndFilter<'a> {
             base_result.truncate_array_paths(self.array_depth);
 
             self.current_filter += 1;
-            if self.current_filter > self.filters.len() {
+            if self.current_filter == self.filters.len() {
                 self.current_filter = 0;
             }
 
@@ -271,6 +270,9 @@ impl<'a> AndFilter<'a> {
                     Some(new_result) => {
                         base_result = new_result;
                         matches_count -= 1;
+                        if matches_count == 0 {
+                            return Ok(Some(base_result));
+                        }
                     },
                     None => {
                         let new_result = try!(self.filters[self.current_filter].first_result(base_result.seq));
@@ -528,7 +530,7 @@ impl Query {
 
 #[cfg(test)]
 mod tests {
-    use super::Parser;
+    use super::{Parser, Query};
 
     use index::{Index, OpenOptions};
 
@@ -563,5 +565,79 @@ mod tests {
         let query = r#"" \n \t test""#.to_string();
         let mut parser = Parser::new(query, snapshot);
         assert_eq!(parser.consume_string_literal().unwrap().unwrap(),  " \n \t test".to_string());
+    }
+
+    #[test]
+    fn test_query_hello_world() {
+        let dbname = "target/tests/querytestdbhelloworld";
+        let _ = Index::delete(dbname);
+
+        let mut index = Index::new();
+        index.open(dbname, Some(OpenOptions::Create)).unwrap();
+        let _ = index.add(r#"{"_id": "foo", "hello": "world"}"#);
+        index.flush().unwrap();
+
+        let mut query_results = Query::get_matches(r#"hello="world""#.to_string(), &index).unwrap();
+        //let mut query_results = Query::get_matches(r#"a.b[foo="bar"]"#.to_string(), &index).unwrap();
+        println!("query results: {:?}", query_results.get_next_id());
+    }
+
+    #[test]
+    fn test_query_basic() {
+        let dbname = "target/tests/querytestdbbasic";
+        let _ = Index::delete(dbname);
+
+        let mut index = Index::new();
+        index.open(dbname, Some(OpenOptions::Create)).unwrap();
+        let _ = index.add(r#"{"_id":"1", "A":[{"B":"B2","C":"C2"},{"B": "b1","C":"C2"}]}"#);
+        let _ = index.add(r#"{"_id":"2", "A":[{"B":"B2","C":[{"D":"D"}]},{"B": "b1","C":"C2"}]}"#);
+        let _ = index.add(r#"{"_id":"3", "A":"Multi word sentence"}"#);
+        let _ = index.add(r#"{"_id":"4", "A":"%&%}{}@);€"}"#);
+        let _ = index.add(r#"{"_id":"5", "A":"{}€52 deeply \\n\\v "}"#);
+
+        index.flush().unwrap();
+
+        let mut query_results = Query::get_matches(r#"A[B = "B2" & C[ D = "D" ]]"#.to_string(), &index).unwrap();
+        assert_eq!(query_results.get_next_id().unwrap(), Some("2".to_string()));
+
+        query_results = Query::get_matches(r#"A[B = "B2" & C = "C2"]"#.to_string(), &index).unwrap();
+        assert_eq!(query_results.get_next_id().unwrap(), Some("1".to_string()));
+
+        query_results = Query::get_matches(r#"A[B = "b1" & C = "C2"]"#.to_string(), &index).unwrap();
+        assert_eq!(query_results.get_next_id().unwrap(), Some("1".to_string()));
+        assert_eq!(query_results.get_next_id().unwrap(), Some("2".to_string()));
+
+        query_results = Query::get_matches(r#"A = "Multi word sentence""#.to_string(), &index).unwrap();
+        assert_eq!(query_results.get_next_id().unwrap(), Some("3".to_string()));
+
+        query_results = Query::get_matches(r#"A = "%&%}{}@);€""#.to_string(), &index).unwrap();
+        assert_eq!(query_results.get_next_id().unwrap(), Some("4".to_string()));
+
+        query_results = Query::get_matches(r#"A = "{}€52 deeply \\n\\v ""#.to_string(), &index).unwrap();
+        assert_eq!(query_results.get_next_id().unwrap(), Some("5".to_string()));
+    }
+
+    #[test]
+    fn test_query_more_docs() {
+        let dbname = "target/tests/querytestdbmoredocs";
+        let _ = Index::delete(dbname);
+
+        let mut index = Index::new();
+        index.open(dbname, Some(OpenOptions::Create)).unwrap();
+
+        for ii in 1..100 {
+            let data = ((ii % 25) + 97) as u8 as char;
+            let _ = index.add(&format!(r#"{{"_id":"{}", "data": "{}"}}"#, ii, data));
+        }
+        index.flush().unwrap();
+
+        let mut query_results = Query::get_matches(r#"data = "u""#.to_string(), &index).unwrap();
+        loop {
+            match query_results.get_next_id() {
+                Ok(Some(result)) => println!("result: {}", result),
+                Ok(None) => break,
+                Err(error) => panic!(error),
+            }
+        }
     }
 }

@@ -123,10 +123,9 @@ impl Shredder {
     // If we are inside an object we need to push the key to the key builder
     // Don't push them if they are reserved fields (starting with underscore)
     fn maybe_push_key(&mut self, stack_element: Option<StackElement>) -> Result<(), Error> {
-        if self.keybuilder.last_pushed_segment_type().unwrap() == SegmentType::ObjectKey
-                && self.keybuilder.segments.len() == 1 {
+        if self.keybuilder.last_pushed_segment_type().unwrap() == SegmentType::ObjectKey {
             if let Some(StackElement::Key(key)) = stack_element {
-                if key.starts_with("_") {
+                if self.keybuilder.segments.len() == 1 && key.starts_with("_") {
                     if key == "_id" {
                         return Err(Error::Shred(
                             "Expected string for `_id` field, got another type".to_string()));
