@@ -232,8 +232,8 @@ mod tests {
         let result = Stems::new(input).collect::<Vec<StemmedWord>>();
         let expected = vec![
             StemmedWord { stemmed_offset: 0, suffix_offset: 0,
-                          stemmed: String::from("\u{1FE4}\u{1FE4}\u{1FE4}"),
-                          suffix: String::from("\u{03A1}\u{0313}\u{03C1}\u{0313}\u{03C1}") },
+                          stemmed: String::from("\u{03C1}\u{0313}\u{1FE4}\u{1FE4}"),
+                          suffix: String::from("\u{03A1}\u{0313}\u{1FE4}\u{1FE4}") },
            ];
         assert_eq!(result.len(), expected.len());
         for (stem, expected_stem) in result.iter().zip(expected.iter()) {
