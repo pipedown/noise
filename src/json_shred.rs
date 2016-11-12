@@ -310,19 +310,25 @@ mod tests {
             ("W.A$.B!b2vmx#1234", vec![
                 (vec![0], vec![
                     WordInfo {
-                        stemmed_offset: 0, suffix_text: "".to_string(), suffix_offset: 5 }])]),
+                        stemmed_offset: 0, suffix_text: "B2VMX ".to_string(), suffix_offset: 0 }])]),
             ("W.A$.B!three#1234", vec![
                 (vec![0], vec![WordInfo {
                     stemmed_offset: 10, suffix_text: "".to_string(), suffix_offset: 15 }])]),
             ("W.A$.B!two#1234", vec![
                 (vec![0], vec![WordInfo {
-                    stemmed_offset: 6, suffix_text: "".to_string(), suffix_offset: 9 }])]),
+                    stemmed_offset: 6, suffix_text: " ".to_string(), suffix_offset: 9 }])]),
+            ("W.A$.C!..#1234", vec![
+                (vec![0], vec![
+                    WordInfo {
+                        stemmed_offset: 0, suffix_text: "".to_string(), suffix_offset: 2 },
+                    WordInfo {
+                        stemmed_offset: 0, suffix_text: "".to_string(), suffix_offset: 2 }])]),
             ("W.A$.C!c2#1234", vec![
                 (vec![0], vec![
                     WordInfo {
-                        stemmed_offset: 2, suffix_text: "".to_string(), suffix_offset: 4 },
+                        stemmed_offset: 2, suffix_text: "C2".to_string(), suffix_offset: 2 },
                     WordInfo {
-                        stemmed_offset: 2, suffix_text: "".to_string(), suffix_offset: 4 }])]),
+                        stemmed_offset: 2, suffix_text: "C2".to_string(), suffix_offset: 2 }])]),
             ];
         compare_shredded(&shredder.map, &expected);
     }
