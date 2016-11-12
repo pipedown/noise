@@ -55,9 +55,6 @@ impl DocResult {
     }
 }
 
-//trait QueryRuntimeFilter {
-//struct QueryRuntimeFilter {}
-
 pub trait QueryRuntimeFilter {
     fn first_result(&mut self, start_id: u64) -> Result<Option<DocResult>, Error>;
     fn next_result(&mut self) -> Result<Option<DocResult>, Error>;
@@ -109,24 +106,6 @@ impl<'a> QueryResults<'a> {
         }
     }
 }
-
-//struct SnapshotIteratorCreator {
-//    snapshot: rocksdb::Snapshot,
-//}
-// 
-//impl SnapshotIteratorCreator {
-//    fn new(db: &rocksdb::DB) {
-//        let snapshot = rocksdb::Snapshot::new(db);
-//        SnapshotIteratorCreator{
-//            snapshot: snapshot,
-//        }
-//    }
-// 
-//    fn new_iterator(&self) {
-//        self.snapshot.iter()
-//    }
-//}
-
 
 
 struct ExactMatchFilter {
@@ -368,7 +347,7 @@ impl<'a> Parser<'a> {
         let mut next_is_special_char = false;
         if self.could_consume("\"") {
             // can't consume("\"") the leading quote because it will also skip leading whitespace
-            // inside the string literal 
+            // inside the string literal
             self.offset += 1;
             for char in self.query[self.offset..].chars() {
                 if next_is_special_char {
