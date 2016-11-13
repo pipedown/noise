@@ -42,7 +42,7 @@ pub struct Index {
     high_doc_seq: u64,
     pub rocks: Option<rocksdb::DB>,
     id_str_to_id_seq: HashMap<String, String>,
-    batch: rocksdb::WriteBatch,
+    batch: Option<rocksdb::WriteBatch>,
 }
 
 pub enum OpenOptions {
@@ -56,7 +56,7 @@ impl Index {
             high_doc_seq: 0,
             rocks: None,
             id_str_to_id_seq: HashMap::new(),
-            batch: rocksdb::WriteBatch::default(),
+            batch: Some(rocksdb::WriteBatch::default()),
         }
     }
     // NOTE vmx 2016-10-13: Perhpas the name should be specified on `new()` as it is bound
@@ -131,7 +131,7 @@ impl Index {
             // TODO vmx 2016-10-17: USe multiget once the Rusts wrapper supports it
             match rocks.get(key.as_bytes()) {
                 Ok(Some(seq)) => {
-                    try!(self.batch.delete(&*seq));
+                    try!(self.batch().delete(&*seq));
                 },
                 _ => {}
             }
@@ -139,16 +139,18 @@ impl Index {
 
         // Add the ids_to_seq keyspace entries
         for (id, seq) in &self.id_str_to_id_seq {
-            try!(self.batch.put(id.as_bytes(), seq.as_bytes()));
-            try!(self.batch.put(seq.as_bytes(), id.as_bytes()));
+            try!(self.batch().put(id.as_bytes(), seq.as_bytes()));
+            try!(self.batch().put(seq.as_bytes(), id.as_bytes()));
         }
 
         let mut header = Header::new();
         header.high_seq = self.high_doc_seq;
-        try!(self.batch.put(b"HDB", &*header.serialize()));
+        try!(self.batch().put(b"HDB", &*header.serialize()));
 
-        let status = try!(rocks.write(&self.batch));
-        self.batch.clear();
+        let status = try!(rocks.write(self.batch.take().unwrap()));
+        // Make sure there's a always a valid WriteBarch after writing it into RocksDB,
+        // else calls to `self.batch()` would panic.
+        self.batch = Some(rocksdb::WriteBatch::default());
         self.id_str_to_id_seq.clear();
         Ok(status)
     }
@@ -165,6 +167,15 @@ impl Index {
             Some(id) => Ok(Some(id.to_utf8().unwrap().to_string())),
             None => Ok(None)
         }
+    }
+
+    /// Returns the current write batch as reference
+    ///
+    /// # Panics
+    ///
+    /// Panic if there currently is no `WriteBatch` (`self.batch == None`)
+    fn batch(&self) -> &rocksdb::WriteBatch {
+        self.batch.as_ref().unwrap()
     }
 }
 

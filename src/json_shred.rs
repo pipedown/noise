@@ -227,7 +227,7 @@ impl Shredder {
         Ok(self.doc_id.clone())
     }
 
-    pub fn add_to_batch(&self, batch: &rocksdb::WriteBatch) -> Result<(), Error> {
+    pub fn add_to_batch(&self, batch: &Option<rocksdb::WriteBatch>) -> Result<(), Error> {
         for (key_path, word_path_infos) in &self.map {
             let mut message = ::capnp::message::Builder::new_default();
             {
@@ -257,7 +257,7 @@ impl Shredder {
             }
             let mut bytes = Vec::new();
             ::capnp::serialize_packed::write_message(&mut bytes, &message).unwrap();
-            try!(batch.put(&key_path.clone().into_bytes(), &bytes));
+            try!(batch.as_ref().unwrap().put(&key_path.clone().into_bytes(), &bytes));
         }
         Ok(())
     }
