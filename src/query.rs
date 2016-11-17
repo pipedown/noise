@@ -386,6 +386,26 @@ impl<'a> Parser<'a> {
         }
     }
 
+/*
+This is a peg grammar that documents the calls of the recursive descent parser
+is implemented. Can be checked here: http://pegjs.org/online
+
+bool
+    = ws compare ws ('&' ws compare)*
+compare
+    = field ('.' field)* ws '=' ws string* / factor
+factor
+    = '(' ws bool ws ')' ws / array
+array
+    = '[' ws bool ']' ws
+field
+    = [a-z]i+ ws
+string
+    = '"' ('\\\\' / '\\' [\"tfvrnb] / [^\\\"])* '"' ws
+ws
+    = [ /\t/\r\n]* 
+*/
+
     fn bool<'b>(&'b mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
         let left = try!(self.compare());
         let mut filters = vec![left];
