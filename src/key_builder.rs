@@ -1,3 +1,6 @@
+use query::DocResult;
+use std::str;
+
 //#[derive(PartialEq, Eq)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum SegmentType {
@@ -6,6 +9,7 @@ pub enum SegmentType {
     Array,
     Word,
     DocSeq,
+    ArrayPath,
 }
 
 #[derive(Debug, Clone)]
@@ -75,14 +79,27 @@ impl KeyBuilder {
         self.segments.push(Segment{ type_: SegmentType::Word, offset: self.fullkey.len() });
         self.fullkey.push('!');
         self.fullkey += stemmed_word;
-        self.fullkey.push('#');
     }
 
     pub fn push_doc_seq(&mut self, seq: u64) {
         debug_assert!(self.segments.len() > 0);
         debug_assert!(self.segments.last().unwrap().type_ == SegmentType::Word);
         self.segments.push(Segment{ type_: SegmentType::DocSeq, offset: self.fullkey.len() });
+        self.fullkey.push('#');
         self.fullkey.push_str(seq.to_string().as_str());
+    }
+
+    pub fn push_array_path(&mut self, path: &Vec<u64>) {
+        debug_assert!(self.segments.len() > 0);
+        debug_assert!(self.segments.last().unwrap().type_ == SegmentType::DocSeq);
+        self.segments.push(Segment{ type_: SegmentType::ArrayPath, offset: self.fullkey.len() });
+        if path.is_empty() {
+            self.fullkey.push(',');
+        }
+        for i in path {
+            self.fullkey.push(',');
+            self.fullkey.push_str(i.to_string().as_str());
+        }
     }
 
     pub fn pop_object_key(&mut self) {
@@ -110,15 +127,77 @@ impl KeyBuilder {
         self.segments.pop();
     }
 
+    pub fn pop_array_path(&mut self) {
+        debug_assert!(self.segments.last().unwrap().type_ == SegmentType::ArrayPath);
+        self.fullkey.truncate(self.segments.last().unwrap().offset);
+        self.segments.pop();
+    }
+
     pub fn last_pushed_segment_type(&self) -> Option<SegmentType> {
         self.segments.last().and_then(|segment| Some(segment.type_.clone()))
     }
+
+    /* splits key into key path parts parsed seq strs
+        ex "W.foo$.bar$.baz!word#123,0,0" -> ("W.foo$.bar$.bar!word", 123, "0,0") */
+    fn split_keypath_seq_arraypath_from_key(str: &str) -> (&str, &str, &str) {
+        let n = str.rfind("#").unwrap();
+        assert!(n != 0);
+        assert!(n != str.len() - 1);
+        let seq_array_path_str = &str[(n + 1)..];
+        let m = seq_array_path_str.find(",").unwrap();
+
+        (&str[..n], &seq_array_path_str[..m], &seq_array_path_str[m + 1..])
+    }
+
+    /* parses a seq and array path portion (ex "123,0,0,10) of a key into a doc result */
+    pub fn parse_doc_result_from_key(str: &str) -> DocResult {
+
+        let mut dr = DocResult::new();
+        let (_path_str, seq_str, array_path_str) = KeyBuilder::split_keypath_seq_arraypath_from_key(&str);
+        dr.seq = seq_str.parse().unwrap();
+        if !array_path_str.is_empty() {
+            for numstr in array_path_str.split(",") {
+                dr.array_path.push(numstr.parse().unwrap());
+            }
+        }
+        dr
+    }
+
+    pub fn compare_keys(akey: &str, bkey: &str) -> i32 {
+        use std::cmp::Ordering;
+        assert!(akey.starts_with('W'));
+        assert!(bkey.starts_with('W'));
+        let (apath_str, aseq_str, aarray_path_str) = KeyBuilder::split_keypath_seq_arraypath_from_key(&akey);
+        let (bpath_str, bseq_str, barray_path_str) = KeyBuilder::split_keypath_seq_arraypath_from_key(&bkey);
+
+        match apath_str[1..].cmp(&bpath_str[1..]) {
+            Ordering::Less    =>  -1,
+            Ordering::Greater =>   1,
+            Ordering::Equal   => {
+                let aseq: u64 = aseq_str.parse().unwrap();
+                let bseq: u64 = bseq_str.parse().unwrap();;
+                if aseq < bseq {
+                    -1
+                } else if aseq > bseq {
+                    1
+                } else {
+                    match aarray_path_str.cmp(barray_path_str) {
+                        Ordering::Less    => -1,
+                        Ordering::Greater =>  1,
+                        Ordering::Equal   =>  0,
+                    }
+                }
+            },
+        }
+    }
+    
 }
 
 
 #[cfg(test)]
 mod tests {
     use super::{KeyBuilder, SegmentType};
+    use query::DocResult;
 
     #[test]
     fn test_new_key_builder() {
@@ -146,7 +225,7 @@ mod tests {
 
         kb.push_word("astemmedword");
         assert_eq!(kb.segments.len(), 4, "Four segments");
-        assert_eq!(kb.key(), "W.first.second$!astemmedword#", "Key for four segments is correct");
+        assert_eq!(kb.key(), "W.first.second$!astemmedword", "Key for four segments is correct");
 
         kb.push_doc_seq(123);
         assert_eq!(kb.segments.len(), 5, "Five segments");
@@ -176,13 +255,20 @@ mod tests {
         kb.push_array();
         kb.push_word("astemmedword");
         kb.push_doc_seq(123);
+        kb.push_array_path(&vec![0]);
+
+        assert_eq!(kb.segments.len(), 6, "six segments");
+        assert_eq!(kb.key(), "W.first.second$!astemmedword#123,0",
+                   "Key for six segments is correct");
+        
+        kb.pop_array_path();
         assert_eq!(kb.segments.len(), 5, "Five segments");
         assert_eq!(kb.key(), "W.first.second$!astemmedword#123",
                    "Key for five segments is correct");
 
         kb.pop_doc_seq();
         assert_eq!(kb.segments.len(), 4, "Four segments");
-        assert_eq!(kb.key(), "W.first.second$!astemmedword#", "Key for four segments is correct");
+        assert_eq!(kb.key(), "W.first.second$!astemmedword", "Key for four segments is correct");
 
         kb.pop_word();
         assert_eq!(kb.segments.len(), 3, "Three segments ");
@@ -225,5 +311,27 @@ mod tests {
         kb.push_doc_seq(123);
         assert_eq!(kb.last_pushed_segment_type(), Some(SegmentType::DocSeq),
                    "Last segment is a doc sequence");
+    }
+
+    #[test]
+    fn test_doc_result_parse() {
+        let key = "W.foo$.bar$!word#123,1,0".to_string();
+        let (keypathstr, seqstr, arraypathstr) = KeyBuilder::split_keypath_seq_arraypath_from_key(&key);
+        assert_eq!(keypathstr, "W.foo$.bar$!word");
+        assert_eq!(seqstr, "123");
+        assert_eq!(arraypathstr, "1,0");
+
+        // make sure escaped commas and # in key path don't cause problems
+        let key1 = "W.foo\\#$.bar\\,$!word#123,2,0".to_string();
+        let (keypathstr1, seqstr1, arraypathstr1) = KeyBuilder::split_keypath_seq_arraypath_from_key(&key1);
+        assert_eq!(keypathstr1, "W.foo\\#$.bar\\,$!word");
+        assert_eq!(seqstr1, "123");
+        assert_eq!(arraypathstr1, "2,0");
+
+        let mut dr = DocResult::new();
+        dr.seq = 123;
+        dr.array_path = vec![1,0];
+        
+        assert!(dr == KeyBuilder::parse_doc_result_from_key(&key));
     }
 }

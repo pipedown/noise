@@ -6,16 +6,10 @@ struct Header {
 }
 
 struct Payload {
-  struct ArrayoffsetsToWordinfo {
-    struct Wordinfo {
-        stemmedOffset @0 :UInt64;
-        suffixOffset @1 :UInt64;
-        suffixText @2 :Text;
-    }
-
-    arrayoffsets @0 :List(UInt64);
-    wordinfos @1 :List(Wordinfo);
+  struct Wordinfo {
+    stemmedOffset @0 :UInt64;
+    suffixOffset @1 :UInt64;
+    suffixText @2 :Text;
   }
-
-  arrayoffsetsToWordinfos @0 :List(ArrayoffsetsToWordinfo);
+  wordinfos @0 :List(Wordinfo);
 }

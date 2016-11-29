@@ -1,6 +1,7 @@
 extern crate rocksdb;
 
 use std::collections::HashMap;
+use std::str;
 
 use records_capnp::header;
 // Needed for a trait in order to `dekete/put()` into a `rocksdb::WriteBatch`
@@ -75,6 +76,7 @@ impl Index {
                 }
 
                 rocks_options.create_if_missing(true);
+                rocks_options.set_comparator("noise", Index::compare_keys);
 
                 let rocks = try!(rocksdb::DB::open(&rocks_options, name));
 
@@ -111,11 +113,10 @@ impl Index {
         // NOTE vmx 2016-10-13: Needed for the lifetime-checker, though not sure if it now really
         // does the right thing. Does the `try!()` still return as epected?
         {
-            let docid = try!(shredder.shred(json, self.high_doc_seq + 1));
+            let docid = try!(shredder.shred(json, self.high_doc_seq + 1, &self.batch()));
             self.high_doc_seq += 1;
             self.id_str_to_id_seq.insert(format!("I{}", docid), format!("S{}", self.high_doc_seq));
         }
-        try!(shredder.add_to_batch(&self.batch));
         Ok(())
     }
 
@@ -176,6 +177,22 @@ impl Index {
     /// Panic if there currently is no `WriteBatch` (`self.batch == None`)
     fn batch(&self) -> &rocksdb::WriteBatch {
         self.batch.as_ref().unwrap()
+    }
+    
+    fn compare_keys(a: &[u8], b: &[u8]) -> i32 {
+        use std::cmp::Ordering;
+        use key_builder::KeyBuilder;
+        if a[0] == 'W' as u8 && b[0] == 'W' as u8 {
+            let astr = unsafe {str::from_utf8_unchecked(&a)};
+            let bstr = unsafe {str::from_utf8_unchecked(&b)};
+            KeyBuilder::compare_keys(astr, bstr)
+        } else {
+            match a.cmp(b) {
+                Ordering::Less    => -1,
+                Ordering::Greater =>  1,
+                Ordering::Equal   =>  0,
+            }
+        }
     }
 }
 
