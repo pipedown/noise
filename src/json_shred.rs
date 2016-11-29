@@ -31,9 +31,6 @@ struct WordInfo {
 }
 
 type ArrayOffsets = Vec<u64>;
-type ArrayOffsetsToWordInfo = HashMap<ArrayOffsets, Vec<WordInfo>>;
-type WordPathInfoMap = HashMap<String, ArrayOffsetsToWordInfo>;
-
 
 enum ObjectKeyTypes {
     /// _id field
@@ -49,7 +46,6 @@ enum ObjectKeyTypes {
 #[derive(Debug)]
 pub struct Shredder {
     keybuilder: KeyBuilder,
-    map: WordPathInfoMap,
     path_array_offsets: ArrayOffsets,
     // Top-level fields prefixed with an underscore are ignored
     ignore_children: u64,
@@ -61,31 +57,51 @@ impl Shredder {
     pub fn new() -> Shredder {
         Shredder{
             keybuilder: KeyBuilder::new(),
-            map: WordPathInfoMap::new(),
             path_array_offsets: Vec::new(),
             ignore_children: 0,
             doc_id: String::new(),
         }
     }
-    fn add_entries(&mut self, text: &String, docseq: u64) {
+
+    fn add_entries(&mut self, text: &String, docseq: u64, batch: &rocksdb::WriteBatch) -> Result<(), Error> {
         let stems = Stems::new(text.as_str());
+        let mut word_to_word_infos = HashMap::new();
+
         for stem in stems {
-            self.keybuilder.push_word(&stem.stemmed);
-            self.keybuilder.push_doc_seq(docseq);
-            let map_path_array_offsets = self.map.entry(self.keybuilder.key())
-                                                        .or_insert(ArrayOffsetsToWordInfo::new());
-            let map_word_infos = map_path_array_offsets.entry(self.path_array_offsets.clone())
-                .or_insert(Vec::new());
-            map_word_infos.push(WordInfo{
+            let word_infos = word_to_word_infos.entry(stem.stemmed).or_insert(Vec::new());
+            word_infos.push(WordInfo{
                 stemmed_offset: stem.stemmed_offset as u64,
                 suffix_text: stem.suffix.to_string(),
                 suffix_offset: stem.suffix_offset as u64,
             });
+        }
+        for (stemmed, word_infos) in word_to_word_infos {
+            let mut message = ::capnp::message::Builder::new_default();
+            {
+                let capn_payload = message.init_root::<payload::Builder>();
+                let mut capn_wordinfos = capn_payload.init_wordinfos(word_infos.len() as u32);
+                for (pos, word_info) in word_infos.iter().enumerate() {
+                    let mut capn_wordinfo = capn_wordinfos.borrow().get(pos as u32);
+                    capn_wordinfo.set_stemmed_offset(word_info.stemmed_offset);
+                    capn_wordinfo.set_suffix_text(&word_info.suffix_text);
+                    capn_wordinfo.set_suffix_offset(word_info.suffix_offset);
+                }
+            }
+            self.keybuilder.push_word(&stemmed);
+            self.keybuilder.push_doc_seq(docseq);
+            self.keybuilder.push_array_path(&self.path_array_offsets);
+
+            let mut bytes = Vec::new();
+            ::capnp::serialize_packed::write_message(&mut bytes, &message).unwrap();
+            try!(batch.put(&self.keybuilder.key().into_bytes(), &bytes));
+
+            self.keybuilder.pop_array_path();
             self.keybuilder.pop_doc_seq();
             self.keybuilder.pop_word();
         }
-        println!("add_entries: map: {:?}", self.map);
+        Ok(())
     }
+
 
     fn inc_top_array_offset(&mut self) {
         // we encounter a new element. if we are a child element of an array
@@ -143,7 +159,7 @@ impl Shredder {
         Ok(())
     }
 
-   pub fn shred(&mut self, json: &str, docseq: u64) -> Result<String, Error> {
+   pub fn shred(&mut self, json: &str, docseq: u64, batch: &rocksdb::WriteBatch) -> Result<String, Error> {
         let mut parser = Parser::new(json.chars());
         let mut token = parser.next();
 
@@ -165,6 +181,7 @@ impl Shredder {
                         self.ignore_children -= 1;
                     } else {//if !self.keybuilder.segments.is_empty() {
                         self.keybuilder.pop_object_key();
+                        self.inc_top_array_offset();
                     }
                 },
                 Some(JsonEvent::ArrayStart) => {
@@ -182,6 +199,7 @@ impl Shredder {
                     } else {
                         self.path_array_offsets.pop();
                         self.keybuilder.pop_array();
+                        self.inc_top_array_offset();
                     }
                 },
                 Some(JsonEvent::StringValue(value)) => {
@@ -196,11 +214,11 @@ impl Shredder {
                                 self.keybuilder.pop_object_key();
                                 self.keybuilder.push_object_key(key.to_string());
 
-                                self.add_entries(&value, docseq);
+                                try!(self.add_entries(&value, docseq, &batch));
                                 self.inc_top_array_offset();
                             },
                             ObjectKeyTypes::NoKey => {
-                                self.add_entries(&value, docseq);
+                                try!(self.add_entries(&value, docseq, &batch));
                                 self.inc_top_array_offset();
                             },
                             ObjectKeyTypes::Ignore => {
@@ -219,56 +237,18 @@ impl Shredder {
                 break;
             }
         }
-        println!("keybuilder: {}", self.keybuilder.key());
-        println!("shredder: keys:");
-        for key in self.map.keys() {
-            println!("  {}", key);
-        }
         Ok(self.doc_id.clone())
-    }
-
-    pub fn add_to_batch(&self, batch: &Option<rocksdb::WriteBatch>) -> Result<(), Error> {
-        for (key_path, word_path_infos) in &self.map {
-            let mut message = ::capnp::message::Builder::new_default();
-            {
-                let capn_payload = message.init_root::<payload::Builder>();
-                let mut capn_arrayoffsets_to_wordinfo = capn_payload.init_arrayoffsets_to_wordinfos(
-                    word_path_infos.len() as u32);
-                for (infos_pos, (arrayoffsets, wordinfos)) in word_path_infos.iter().enumerate() {
-
-                    let mut capn_a2w = capn_arrayoffsets_to_wordinfo.borrow().get(infos_pos as u32);
-                    {
-                        let mut capn_arrayoffsets =
-                            capn_a2w.borrow().init_arrayoffsets(arrayoffsets.len() as u32);
-                        for (pos, arrayoffset) in arrayoffsets.iter().enumerate() {
-                            capn_arrayoffsets.set(pos as u32, arrayoffset.clone());
-                        }
-                    }
-                    {
-                        let mut capn_wordinfos = capn_a2w.init_wordinfos(wordinfos.len() as u32);
-                        for (pos, wordinfo) in wordinfos.iter().enumerate() {
-                            let mut capn_wordinfo = capn_wordinfos.borrow().get(pos as u32);
-                            capn_wordinfo.set_stemmed_offset(wordinfo.stemmed_offset);
-                            capn_wordinfo.set_suffix_text(&wordinfo.suffix_text);
-                            capn_wordinfo.set_suffix_offset(wordinfo.suffix_offset);
-                        }
-                    }
-                }
-            }
-            let mut bytes = Vec::new();
-            ::capnp::serialize_packed::write_message(&mut bytes, &message).unwrap();
-            try!(batch.as_ref().unwrap().put(&key_path.clone().into_bytes(), &bytes));
-        }
-        Ok(())
-    }
+   }
 }
 
+/*
 
 #[cfg(test)]
 mod tests {
-    use super::{ArrayOffsetsToWordInfo, WordInfo, WordPathInfoMap};
-
+    
+    use super::{WordInfo};
     #[test]
+    
     fn test_shred_nested() {
         let mut shredder = super::Shredder::new();
         //let json = r#"{"hello": {"my": "world!"}, "anumber": 2}"#;
@@ -280,16 +260,16 @@ mod tests {
         let docseq = 123;
         shredder.shred(json, docseq).unwrap();
         let expected = vec![
-            ("W.some$!array#123", vec![
+            ("W.some$!array#123,0", vec![
                 (vec![0], vec![WordInfo {
                     stemmed_offset: 0, suffix_text: "".to_string(), suffix_offset: 5 }])]),
-            ("W.some$!data#123", vec![
+            ("W.some$!data#123,1", vec![
                 (vec![1], vec![WordInfo {
                     stemmed_offset: 0, suffix_text: "".to_string(), suffix_offset: 4 }])]),
-            ("W.some$$!also#123", vec![
+            ("W.some$$!also#123,2,0", vec![
                 (vec![2, 0], vec![WordInfo {
                     stemmed_offset: 0, suffix_text: "".to_string(), suffix_offset: 4 }])]),
-            ("W.some$$!nest#123", vec![
+            ("W.some$$!nest#1232,1", vec![
                 (vec![2, 1], vec![WordInfo {
                     stemmed_offset: 0, suffix_text: "ed".to_string(), suffix_offset: 4 }])]),
             ];
@@ -356,5 +336,6 @@ mod tests {
         let docseq = 123;
         shredder.shred(json, docseq).unwrap();
         assert!(shredder.map.is_empty());
-    }
+    } 
 }
+*/

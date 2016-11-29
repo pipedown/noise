@@ -15,48 +15,31 @@ use records_capnp::payload;
 
 
 
-
 pub struct DocResult {
-    seq: u64,
-    array_paths: Vec<Vec<u64>>,
+    pub seq: u64,
+    pub array_path: Vec<u64>,
 }
 
 impl DocResult {
-    fn new() -> DocResult {
+    pub fn new() -> DocResult {
         DocResult {
             seq: 0,
-            array_paths: Vec::new(),
-        }
-    }
-
-    fn truncate_array_paths(&mut self, array_depth: usize) {
-        for array_path in self.array_paths.iter_mut() {
-            debug_assert!(array_path.len() >= array_depth);
-            array_path.resize(array_depth, 0);
-        }
-    }
-
-    fn intersect_array_paths(aa: &DocResult, bb: &DocResult) -> Option<DocResult> {
-        let mut doc_result = DocResult::new();
-        debug_assert_eq!(aa.seq, bb.seq);
-        doc_result.seq = aa.seq;
-        for array_path_a in &aa.array_paths {
-            for array_path_b in &bb.array_paths {
-                if array_path_a == array_path_b {
-                    doc_result.array_paths.push(array_path_a.clone());
-                }
-            }
-        }
-        if doc_result.array_paths.is_empty() {
-            None
-        } else {
-            Some(doc_result)
+            array_path: Vec::new(),
         }
     }
 }
 
+
+impl PartialEq for DocResult {
+    fn eq(&self, other: &DocResult) -> bool {
+        self.seq == other.seq && self.array_path == other.array_path
+    }
+}
+
+impl Eq for DocResult {}
+
 pub trait QueryRuntimeFilter {
-    fn first_result(&mut self, start_id: u64) -> Result<Option<DocResult>, Error>;
+    fn first_result(&mut self, start: &DocResult) -> Result<Option<DocResult>, Error>;
     fn next_result(&mut self) -> Result<Option<DocResult>, Error>;
 }
 
@@ -64,7 +47,7 @@ pub struct Query {}
 
 pub struct QueryResults<'a> {
     filter: Box<QueryRuntimeFilter + 'a>,
-    first_has_been_called: bool,
+    doc_result_next: DocResult,
     snapshot: Snapshot<'a>,
 }
 
@@ -72,21 +55,18 @@ impl<'a> QueryResults<'a> {
     fn new(filter: Box<QueryRuntimeFilter + 'a>, snapshot: Snapshot<'a>) -> QueryResults<'a> {
         QueryResults{
             filter: filter,
-            first_has_been_called: false,
+            doc_result_next: DocResult::new(),
             snapshot: snapshot,
         }
     }
 
     fn get_next(&mut self) -> Result<Option<u64>, Error> {
-        let doc_result;
-        if self.first_has_been_called {
-            doc_result = try!(self.filter.next_result());
-        } else {
-            self.first_has_been_called = true;
-            doc_result = try!(self.filter.first_result(0));
-        }
-        match doc_result {
-            Some(doc_result) => Ok(Some(doc_result.seq)),
+        let result = try!(self.filter.first_result(&self.doc_result_next));
+        match result {
+            Some(doc_result) => {
+                self.doc_result_next.seq = doc_result.seq + 1;
+                Ok(Some(doc_result.seq))
+            },
             None => Ok(None),
         }
     }
@@ -130,23 +110,23 @@ impl ExactMatchFilter {
 }
 
 impl QueryRuntimeFilter for ExactMatchFilter {
-    fn first_result(&mut self, start_id: u64) -> Result<Option<DocResult>, Error> {
+    fn first_result(&mut self, start: &DocResult) -> Result<Option<DocResult>, Error> {
         // Build the full key
-        self.kb.push_doc_seq(start_id);
+        self.kb.push_doc_seq(start.seq);
+        self.kb.push_array_path(&start.array_path);
 
         // Seek in index to >= entry
         self.iter.set_mode(IteratorMode::From(self.kb.key().as_bytes(),
                            rocksdb::Direction::Forward));
 
         // Revert
+        self.kb.pop_array_path();
         self.kb.pop_doc_seq();
 
         self.next_result()
     }
 
     fn next_result(&mut self) -> Result<Option<DocResult>, Error> {
-        let mut doc_result = DocResult::new();
-
         loop {
             if !self.iter.valid() {
                 return Ok(None)
@@ -160,9 +140,9 @@ impl QueryRuntimeFilter for ExactMatchFilter {
                     None => return Ok(None),
                 };
                 if !key.starts_with(self.kb.key().as_bytes()) {
+                    // we passed the key paths we are interested in. nothing left to do */
                     return Ok(None)
                 }
-                let seq = &key[self.kb.key().len()..];
 
                 // NOTE vmx 2016-10-13: I'm not really sure why the dereferencing is needed
                 // and why we pass on mutable reference of it to `read_message()`
@@ -171,23 +151,15 @@ impl QueryRuntimeFilter for ExactMatchFilter {
                     &mut ref_value, ::capnp::message::ReaderOptions::new()).unwrap();
                 let payload = message_reader.get_root::<payload::Reader>().unwrap();
 
-                for aos_wis in try!(payload.get_arrayoffsets_to_wordinfos()).iter() {
-                    for wi in try!(aos_wis.get_wordinfos()).iter() {
-                        if self.stemmed_offset == wi.get_stemmed_offset() &&
-                            self.suffix_offset == wi.get_suffix_offset() &&
-                            self.suffix == try!(wi.get_suffix_text()) {
-                                // We have a candidate document to return
-                                let arrayoffsets = try!(aos_wis.get_arrayoffsets());
-                                doc_result.array_paths.push(arrayoffsets.iter().collect::<>());
-                                doc_result.seq = str::from_utf8(&seq).unwrap().parse().unwrap();
-                                break;
-                            }
+                for wi in try!(payload.get_wordinfos()).iter() {
+                    if self.stemmed_offset == wi.get_stemmed_offset() &&
+                        self.suffix_offset == wi.get_suffix_offset() &&
+                        self.suffix == try!(wi.get_suffix_text()) {
+                            // We have a candidate document to return
+                            let key_str = unsafe{str::from_utf8_unchecked(&key)};
+                            return Ok(Some(KeyBuilder::parse_doc_result_from_key(&key_str)));
                     }
                 }
-            }
-
-            if doc_result.seq > 0 {
-                return Ok(Some(doc_result));
             }
         }
     }
@@ -198,7 +170,7 @@ impl QueryRuntimeFilter for ExactMatchFilter {
 struct DummyFilter {}
 
 impl QueryRuntimeFilter for DummyFilter {
-    fn first_result(&mut self, start_id: u64) -> Result<Option<DocResult>, Error> {
+    fn first_result(&mut self, start: &DocResult) -> Result<Option<DocResult>, Error> {
         Ok(None)
     }
     fn next_result(&mut self) -> Result<Option<DocResult>, Error> {
@@ -223,56 +195,43 @@ impl<'a> AndFilter<'a> {
    }
 
     fn result(&mut self, base: Option<DocResult>) -> Result<Option<DocResult>, Error> {
-        let mut matches_count = self.filters.len();
+        let mut matches_count = self.filters.len() - 1;
         // TODO vmx 2016-11-04: Make it nicer
         let mut base_result = match base {
             Some(base_result) => base_result,
             None => return Ok(None),
         };
-        loop {
-            base_result.truncate_array_paths(self.array_depth);
+        base_result.array_path.resize(self.array_depth, 0);
 
+        loop {
             self.current_filter += 1;
             if self.current_filter == self.filters.len() {
                 self.current_filter = 0;
             }
 
-            let next = try!(self.filters[self.current_filter].first_result(base_result.seq));
+            let next = try!(self.filters[self.current_filter].first_result(&base_result));
             let mut next_result = match next {
                 Some(next_result) => next_result,
                 None => return Ok(None),
             };
-            next_result.truncate_array_paths(self.array_depth);
+            next_result.array_path.resize(self.array_depth, 0);
 
-            if base_result.seq == next_result.seq {
-                match DocResult::intersect_array_paths(&base_result, &next_result) {
-                    Some(new_result) => {
-                        base_result = new_result;
-                        matches_count -= 1;
-                        if matches_count == 0 {
-                            return Ok(Some(base_result));
-                        }
-                    },
-                    None => {
-                        let new_result = try!(self.filters[self.current_filter].first_result(base_result.seq));
-                        base_result = match new_result {
-                            Some(base_result) => base_result,
-                            None => return Ok(None),
-                        };
-                        matches_count = self.filters.len()
-                    }
+            if base_result == next_result {
+                matches_count -= 1;
+                if matches_count == 0 {
+                    return Ok(Some(base_result));
                 }
             } else {
                 base_result = next_result;
-                matches_count = self.filters.len();
+                matches_count = self.filters.len() - 1;
             }
         }
     }
 }
 
 impl<'a> QueryRuntimeFilter for AndFilter<'a> {
-    fn first_result(&mut self, start_id: u64) -> Result<Option<DocResult>, Error> {
-        let base_result = try!(self.filters[self.current_filter].first_result(start_id));
+    fn first_result(&mut self, start: &DocResult) -> Result<Option<DocResult>, Error> {
+        let base_result = try!(self.filters[self.current_filter].first_result(start));
         self.result(base_result)
     }
 
@@ -598,22 +557,33 @@ mod tests {
 
         let mut query_results = Query::get_matches(r#"A[B = "B2" & C[ D = "D" ]]"#.to_string(), &index).unwrap();
         assert_eq!(query_results.get_next_id().unwrap(), Some("2".to_string()));
+        assert_eq!(query_results.get_next_id().unwrap(), None);
 
         query_results = Query::get_matches(r#"A[B = "B2" & C = "C2"]"#.to_string(), &index).unwrap();
         assert_eq!(query_results.get_next_id().unwrap(), Some("1".to_string()));
+        assert_eq!(query_results.get_next_id().unwrap(), None);
 
         query_results = Query::get_matches(r#"A[B = "b1" & C = "C2"]"#.to_string(), &index).unwrap();
         assert_eq!(query_results.get_next_id().unwrap(), Some("1".to_string()));
         assert_eq!(query_results.get_next_id().unwrap(), Some("2".to_string()));
+        assert_eq!(query_results.get_next_id().unwrap(), None);
 
         query_results = Query::get_matches(r#"A = "Multi word sentence""#.to_string(), &index).unwrap();
         assert_eq!(query_results.get_next_id().unwrap(), Some("3".to_string()));
+        assert_eq!(query_results.get_next_id().unwrap(), None);
 
         query_results = Query::get_matches(r#"A = "%&%}{}@);€""#.to_string(), &index).unwrap();
         assert_eq!(query_results.get_next_id().unwrap(), Some("4".to_string()));
+        assert_eq!(query_results.get_next_id().unwrap(), None);
 
         query_results = Query::get_matches(r#"A = "{}€52 deeply \\n\\v ""#.to_string(), &index).unwrap();
         assert_eq!(query_results.get_next_id().unwrap(), Some("5".to_string()));
+        assert_eq!(query_results.get_next_id().unwrap(), None);
+
+        query_results = Query::get_matches(r#"A[C = "C2"]"#.to_string(), &index).unwrap();
+        assert_eq!(query_results.get_next_id().unwrap(), Some("1".to_string()));
+        assert_eq!(query_results.get_next_id().unwrap(), Some("2".to_string()));
+        assert_eq!(query_results.get_next_id().unwrap(), None);
     }
 
     #[test]
