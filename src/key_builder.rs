@@ -137,8 +137,8 @@ impl KeyBuilder {
         self.segments.last().and_then(|segment| Some(segment.type_.clone()))
     }
 
-    /* splits key into key path parts parsed seq strs
-        ex "W.foo$.bar$.baz!word#123,0,0" -> ("W.foo$.bar$.bar!word", 123, "0,0") */
+    /* splits key into key path, seq and array path
+        ex "W.foo$.bar$.baz!word#123,0,0" -> ("W.foo$.bar$.bar!word", "123", "0,0") */
     fn split_keypath_seq_arraypath_from_key(str: &str) -> (&str, &str, &str) {
         let n = str.rfind("#").unwrap();
         assert!(n != 0);
