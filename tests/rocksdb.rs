@@ -1,5 +1,5 @@
 extern crate rocksdb;
-use rocksdb::{DB, Writable};
+use rocksdb::{DB};
 
 #[test]
 fn rocksdb_works() {
