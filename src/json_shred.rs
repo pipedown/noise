@@ -241,92 +241,98 @@ impl Shredder {
    }
 }
 
-/*
 
 #[cfg(test)]
 mod tests {
-    
+    extern crate rocksdb;
+    use std::str;
+    use records_capnp;
     use super::{WordInfo};
+
+    fn wordinfos_from_rocks(rocks: rocksdb::DB) -> Vec<(String, Vec<WordInfo>)> {
+        let mut result = Vec::new();
+        for (key, value) in rocks.iterator(rocksdb::IteratorMode::Start) {
+            let mut ref_value = &*value;
+            let message_reader = ::capnp::serialize_packed::read_message(
+                &mut ref_value, ::capnp::message::ReaderOptions::new()).unwrap();
+            let payload = message_reader.get_root::<records_capnp::payload::Reader>().unwrap();
+
+            let mut wordinfos = Vec::new();
+            for wi in payload.get_wordinfos().unwrap().iter() {
+                wordinfos.push(WordInfo{
+                    stemmed_offset: wi.get_stemmed_offset(),
+                    suffix_text: wi.get_suffix_text().unwrap().to_string(),
+                    suffix_offset: wi.get_suffix_offset(),
+                });
+            }
+            let key_string = unsafe { str::from_utf8_unchecked((&key)) }.to_string();
+            result.push((key_string, wordinfos));
+        }
+        result
+    }
+
+
     #[test]
-    
     fn test_shred_nested() {
         let mut shredder = super::Shredder::new();
-        //let json = r#"{"hello": {"my": "world!"}, "anumber": 2}"#;
-        //let json = r#"{"A":[{"B":"B2VMX two three","C":"C2"},{"B": "b1","C":"C2"}]}"#;
-        //let json = r#"{"A":[[[{"B": "string within deeply nested array should be stemmed"}]]]}"#;
-        //let json = r#"[{"A": 1, "B": 2, "C": 3}]"#;
-        //let json = r#"{"foo": {"bar": 1}}"#;
         let json = r#"{"some": ["array", "data", ["also", "nested"]]}"#;
         let docseq = 123;
-        shredder.shred(json, docseq).unwrap();
+        let batch = rocksdb::WriteBatch::default();
+        shredder.shred(json, docseq, &batch).unwrap();
+
+        let rocks = rocksdb::DB::open_default("target/tests/test_shred_netsted").unwrap();
+        rocks.write(batch).unwrap();
+        let result = wordinfos_from_rocks(rocks);
+
         let expected = vec![
-            ("W.some$!array#123,0", vec![
-                (vec![0], vec![WordInfo {
-                    stemmed_offset: 0, suffix_text: "".to_string(), suffix_offset: 5 }])]),
-            ("W.some$!data#123,1", vec![
-                (vec![1], vec![WordInfo {
-                    stemmed_offset: 0, suffix_text: "".to_string(), suffix_offset: 4 }])]),
-            ("W.some$$!also#123,2,0", vec![
-                (vec![2, 0], vec![WordInfo {
-                    stemmed_offset: 0, suffix_text: "".to_string(), suffix_offset: 4 }])]),
-            ("W.some$$!nest#1232,1", vec![
-                (vec![2, 1], vec![WordInfo {
-                    stemmed_offset: 0, suffix_text: "ed".to_string(), suffix_offset: 4 }])]),
+            ("W.some$!array#123,0".to_string(), vec![
+                WordInfo { stemmed_offset: 0, suffix_text: "".to_string(), suffix_offset: 5 }]),
+            ("W.some$!data#123,1".to_string(), vec![
+                WordInfo { stemmed_offset: 0, suffix_text: "".to_string(), suffix_offset: 4 }]),
+            ("W.some$$!also#123,2,0".to_string(), vec![
+                WordInfo { stemmed_offset: 0, suffix_text: "".to_string(), suffix_offset: 4 }]),
+            ("W.some$$!nest#123,2,1".to_string(), vec![
+                WordInfo { stemmed_offset: 0, suffix_text: "ed".to_string(), suffix_offset: 4 }]),
             ];
-        compare_shredded(&shredder.map, &expected);
+        assert_eq!(result, expected);
     }
 
     #[test]
+    // NOTE vmx 2016-12-06: This test is intentionally made to fail (hence ignored) as the current
+    // current tokenizer does the wrong thing when it comes to numbers within words. It's left
+    // here as a reminder to fix that
+    #[ignore]
     fn test_shred_objects() {
         let mut shredder = super::Shredder::new();
         let json = r#"{"A":[{"B":"B2VMX two three","C":"..C2"},{"B": "b1","C":"..C2"}]}"#;
         let docseq = 1234;
-        shredder.shred(json, docseq).unwrap();
-        let expected = vec![
-            ("W.A$.B!b1#1234", vec![
-                (vec![0], vec![
-                    WordInfo {
-                        stemmed_offset: 0, suffix_text: "".to_string(), suffix_offset: 2 }])]),
-            ("W.A$.B!b2vmx#1234", vec![
-                (vec![0], vec![
-                    WordInfo {
-                        stemmed_offset: 0, suffix_text: "B2VMX ".to_string(), suffix_offset: 0 }])]),
-            ("W.A$.B!three#1234", vec![
-                (vec![0], vec![WordInfo {
-                    stemmed_offset: 10, suffix_text: "".to_string(), suffix_offset: 15 }])]),
-            ("W.A$.B!two#1234", vec![
-                (vec![0], vec![WordInfo {
-                    stemmed_offset: 6, suffix_text: " ".to_string(), suffix_offset: 9 }])]),
-            ("W.A$.C!..#1234", vec![
-                (vec![0], vec![
-                    WordInfo {
-                        stemmed_offset: 0, suffix_text: "".to_string(), suffix_offset: 2 },
-                    WordInfo {
-                        stemmed_offset: 0, suffix_text: "".to_string(), suffix_offset: 2 }])]),
-            ("W.A$.C!c2#1234", vec![
-                (vec![0], vec![
-                    WordInfo {
-                        stemmed_offset: 2, suffix_text: "C2".to_string(), suffix_offset: 2 },
-                    WordInfo {
-                        stemmed_offset: 2, suffix_text: "C2".to_string(), suffix_offset: 2 }])]),
-            ];
-        compare_shredded(&shredder.map, &expected);
-    }
+        let batch = rocksdb::WriteBatch::default();
+        shredder.shred(json, docseq, &batch).unwrap();
 
-    fn compare_shredded(result_map: &WordPathInfoMap,
-                        expected: &Vec<(&str, Vec<(Vec<u64>, Vec<WordInfo>)>)>) {
-        // HashMap have an arbitrary order of the elements
-        let mut result: Vec<(&String, &ArrayOffsetsToWordInfo)> = result_map.into_iter().collect();
-        result.sort_by(|a, b| Ord::cmp(&a.0, &b.0));
-        for (ii, &(key, values)) in result.iter().enumerate() {
-            assert_eq!(key, expected[ii].0);
-            let mut wordinfos: Vec<(&Vec<u64>, &Vec<WordInfo>)> = values.iter().collect();
-            wordinfos.sort_by_key(|item| item.0);
-            for (jj, wordinfo) in wordinfos.iter().enumerate() {
-                assert_eq!(wordinfo.0, &expected[ii].1[jj].0);
-                assert_eq!(wordinfo.1, &expected[ii].1[jj].1);
-            }
-        }
+        let rocks = rocksdb::DB::open_default("target/tests/test_shred_objects").unwrap();
+        rocks.write(batch).unwrap();
+        let result = wordinfos_from_rocks(rocks);
+        println!("result: {:?}", result);
+        let expected = vec![
+            ("W.A$.B!b1#1234,1".to_string(), vec![
+                WordInfo { stemmed_offset: 0, suffix_text: "".to_string(), suffix_offset: 2 }]),
+            ("W.A$.B!b2vmx#1234,0".to_string(), vec![
+                WordInfo { stemmed_offset: 0, suffix_text: "B2 VMX ".to_string(),
+                           suffix_offset: 0 }]),
+            ("W.A$.B!three#1234,0".to_string(), vec![
+                WordInfo { stemmed_offset: 10, suffix_text: "".to_string(), suffix_offset: 15 }]),
+            ("W.A$.B!two#1234,0".to_string(), vec![
+                WordInfo { stemmed_offset: 6, suffix_text: " ".to_string(), suffix_offset: 9 }]),
+            ("W.A$.C!..#1234,0".to_string(), vec![
+                WordInfo { stemmed_offset: 0, suffix_text: "".to_string(), suffix_offset: 2 }]),
+            ("W.A$.C!..#1234,1".to_string(), vec![
+                WordInfo { stemmed_offset: 0, suffix_text: "".to_string(), suffix_offset: 2 }]),
+            ("W.A$.C!c2#1234,0".to_string(), vec![
+                WordInfo { stemmed_offset: 2, suffix_text: "C2".to_string(), suffix_offset: 2 }]),
+            ("W.A$.C!c2#1234,1".to_string(), vec![
+                WordInfo { stemmed_offset: 2, suffix_text: "C2".to_string(), suffix_offset: 2 }]),
+            ];
+        assert_eq!(result, expected);
     }
 
     #[test]
@@ -334,8 +340,12 @@ mod tests {
         let mut shredder = super::Shredder::new();
         let json = r#"{}"#;
         let docseq = 123;
-        shredder.shred(json, docseq).unwrap();
-        assert!(shredder.map.is_empty());
-    } 
+        let batch = rocksdb::WriteBatch::default();
+        shredder.shred(json, docseq, &batch).unwrap();
+
+        let rocks = rocksdb::DB::open_default("target/tests/test_shred_empty_object").unwrap();
+        rocks.write(batch).unwrap();
+        let result = wordinfos_from_rocks(rocks);
+        assert!(result.is_empty());
+    }
 }
-*/
