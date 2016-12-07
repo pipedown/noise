@@ -17,14 +17,14 @@ use records_capnp::payload;
 
 pub struct DocResult {
     pub seq: u64,
-    pub array_path: Vec<u64>,
+    pub arraypath: Vec<u64>,
 }
 
 impl DocResult {
     pub fn new() -> DocResult {
         DocResult {
             seq: 0,
-            array_path: Vec::new(),
+            arraypath: Vec::new(),
         }
     }
 }
@@ -32,7 +32,7 @@ impl DocResult {
 
 impl PartialEq for DocResult {
     fn eq(&self, other: &DocResult) -> bool {
-        self.seq == other.seq && self.array_path == other.array_path
+        self.seq == other.seq && self.arraypath == other.arraypath
     }
 }
 
@@ -91,17 +91,21 @@ impl<'a> QueryResults<'a> {
 struct ExactMatchFilter {
     iter: DBIterator,
     kb: KeyBuilder,
+    keypathword: String,
+    stemmed: String,
     stemmed_offset: u64,
     suffix: String,
     suffix_offset: u64,
 }
 
 impl ExactMatchFilter {
-    fn new(iter: DBIterator, stemmed_word: &StemmedWord, mut kb: KeyBuilder) -> ExactMatchFilter {
-        kb.push_word(&stemmed_word.stemmed);
+    fn new(iter: DBIterator, stemmed_word: &StemmedWord, kb: KeyBuilder) -> ExactMatchFilter {
+        let keypathword = kb.get_keypathword_only(&stemmed_word.stemmed);
         ExactMatchFilter{
             iter: iter,
             kb: kb,
+            keypathword: keypathword,
+            stemmed: stemmed_word.stemmed.clone(),
             stemmed_offset: stemmed_word.stemmed_offset as u64,
             suffix: stemmed_word.suffix.clone(),
             suffix_offset: stemmed_word.suffix_offset as u64,
@@ -111,17 +115,11 @@ impl ExactMatchFilter {
 
 impl QueryRuntimeFilter for ExactMatchFilter {
     fn first_result(&mut self, start: &DocResult) -> Result<Option<DocResult>, Error> {
-        // Build the full key
-        self.kb.push_doc_seq(start.seq);
-        self.kb.push_array_path(&start.array_path);
 
+        let key = self.kb.stemmed_word_key_from_doc_result(&self.stemmed, &start);
         // Seek in index to >= entry
-        self.iter.set_mode(IteratorMode::From(self.kb.key().as_bytes(),
+        self.iter.set_mode(IteratorMode::From(key.as_bytes(),
                            rocksdb::Direction::Forward));
-
-        // Revert
-        self.kb.pop_array_path();
-        self.kb.pop_doc_seq();
 
         self.next_result()
     }
@@ -139,8 +137,8 @@ impl QueryRuntimeFilter for ExactMatchFilter {
                     Some((key, value)) => (key, value),
                     None => return Ok(None),
                 };
-                if !key.starts_with(self.kb.key().as_bytes()) {
-                    // we passed the key paths we are interested in. nothing left to do */
+                if !key.starts_with(self.keypathword.as_bytes()) {
+                    // we passed the key path we are interested in. nothing left to do */
                     return Ok(None)
                 }
 
@@ -201,7 +199,7 @@ impl<'a> AndFilter<'a> {
             Some(base_result) => base_result,
             None => return Ok(None),
         };
-        base_result.array_path.resize(self.array_depth, 0);
+        base_result.arraypath.resize(self.array_depth, 0);
 
         loop {
             self.current_filter += 1;
@@ -214,7 +212,7 @@ impl<'a> AndFilter<'a> {
                 Some(next_result) => next_result,
                 None => return Ok(None),
             };
-            next_result.array_path.resize(self.array_depth, 0);
+            next_result.arraypath.resize(self.array_depth, 0);
 
             if base_result == next_result {
                 matches_count -= 1;
@@ -379,7 +377,7 @@ ws
         if filters.len() == 1 {
             Ok(filters.pop().unwrap())
         } else {
-            Ok(Box::new(AndFilter::new(filters, self.kb.array_depth)))
+            Ok(Box::new(AndFilter::new(filters, self.kb.arraypath_len())))
         }
     }
 
@@ -416,14 +414,14 @@ ws
         match self.consume_field() {
             Some(field) => {
                 if self.consume(".") {
-                    self.kb.push_object_key(field);
+                    self.kb.push_object_key(&field);
                     let ret = self.compare();
                     self.kb.pop_object_key();
                     ret
                 } else if self.consume("=") {
                     match self.consume_string_literal() {
                         Ok(Some(literal)) => {
-                            self.kb.push_object_key(field);
+                            self.kb.push_object_key(&field);
 
                             let stems = Stems::new(&literal);
                             let mut filters: Vec<Box<QueryRuntimeFilter + 'a>> = Vec::new();
@@ -440,7 +438,7 @@ ws
                                 0 => panic!("Cannot create a ExactMatchFilter"),
                                 1 => Ok(filters.pop().unwrap()),
                                 _ => Ok(Box::new(AndFilter::new(
-                                    filters, self.kb.array_depth))),
+                                    filters, self.kb.arraypath_len()))),
                             }
                         },
                         // Empty literal
@@ -450,7 +448,7 @@ ws
                         }
                     }
                 } else if self.could_consume("[") {
-                    self.kb.push_object_key(field);
+                    self.kb.push_object_key(&field);
                     let ret = self.array();
                     self.kb.pop_object_key();
                     ret
