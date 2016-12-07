@@ -263,7 +263,7 @@ mod tests {
         let json = r#"{"some": ["array", "data", ["also", "nested"]]}"#;
         let docseq = 123;
         let batch = rocksdb::WriteBatch::default();
-        shredder.shred(json, docseq, &batch).unwrap();
+        shredder.shred(json, docseq, &mut batch).unwrap();
 
         let rocks = rocksdb::DB::open_default("target/tests/test_shred_netsted").unwrap();
         rocks.write(batch).unwrap();
@@ -292,7 +292,7 @@ mod tests {
         let json = r#"{"A":[{"B":"B2VMX two three","C":"..C2"},{"B": "b1","C":"..C2"}]}"#;
         let docseq = 1234;
         let batch = rocksdb::WriteBatch::default();
-        shredder.shred(json, docseq, &batch).unwrap();
+        shredder.shred(json, docseq, &mut batch).unwrap();
 
         let rocks = rocksdb::DB::open_default("target/tests/test_shred_objects").unwrap();
         rocks.write(batch).unwrap();
@@ -326,7 +326,7 @@ mod tests {
         let json = r#"{}"#;
         let docseq = 123;
         let batch = rocksdb::WriteBatch::default();
-        shredder.shred(json, docseq, &batch).unwrap();
+        shredder.shred(json, docseq, &mut batch).unwrap();
 
         let rocks = rocksdb::DB::open_default("target/tests/test_shred_empty_object").unwrap();
         rocks.write(batch).unwrap();
