@@ -8,7 +8,7 @@ use self::rustc_serialize::json::{JsonEvent, Parser, StackElement};
 use self::rocksdb::Writable;
 
 use error::Error;
-use key_builder::{KeyBuilder, SegmentType};
+use key_builder::KeyBuilder;
 use records_capnp::payload;
 use stems::Stems;
 
@@ -43,10 +43,14 @@ enum ObjectKeyTypes {
     NoKey,
 }
 
+pub trait Indexable {
+
+}
+
+
 #[derive(Debug)]
 pub struct Shredder {
-    keybuilder: KeyBuilder,
-    path_array_offsets: ArrayOffsets,
+    kb: KeyBuilder,
     // Top-level fields prefixed with an underscore are ignored
     ignore_children: u64,
     doc_id: String,
@@ -56,8 +60,7 @@ pub struct Shredder {
 impl Shredder {
     pub fn new() -> Shredder {
         Shredder{
-            keybuilder: KeyBuilder::new(),
-            path_array_offsets: Vec::new(),
+            kb: KeyBuilder::new(),
             ignore_children: 0,
             doc_id: String::new(),
         }
@@ -87,39 +90,25 @@ impl Shredder {
                     capn_wordinfo.set_suffix_offset(word_info.suffix_offset);
                 }
             }
-            self.keybuilder.push_word(&stemmed);
-            self.keybuilder.push_doc_seq(docseq);
-            self.keybuilder.push_array_path(&self.path_array_offsets);
 
             let mut bytes = Vec::new();
             ::capnp::serialize_packed::write_message(&mut bytes, &message).unwrap();
-            try!(batch.put(&self.keybuilder.key().into_bytes(), &bytes));
+            let key = self.kb.stemmed_word_key(&stemmed, docseq);
+            try!(batch.put(&key.into_bytes(), &bytes));
 
-            self.keybuilder.pop_array_path();
-            self.keybuilder.pop_doc_seq();
-            self.keybuilder.pop_word();
         }
+        let key = self.kb.value_key(docseq);
+        try!(batch.put(&key.into_bytes(), &text.as_bytes()));
+
         Ok(())
-    }
-
-
-    fn inc_top_array_offset(&mut self) {
-        // we encounter a new element. if we are a child element of an array
-        // increment the offset. If we aren't (we are the root value or a map
-        // value) we don't increment
-        if let Some(SegmentType::Array) = self.keybuilder.last_pushed_segment_type() {
-            if let Some(last) = self.path_array_offsets.last_mut() {
-                *last += 1;
-            }
-        }
     }
 
     // Extract key if it exists and indicates if it's a special type of key
     fn extract_key(&mut self, stack_element: Option<StackElement>) -> ObjectKeyTypes {
-        if self.keybuilder.last_pushed_segment_type().unwrap() == SegmentType::ObjectKey {
+        if self.kb.last_pushed_keypath_is_object_key() {
             match stack_element {
                 Some(StackElement::Key(key)) => {
-                    if self.keybuilder.segments.len() == 1 && key.starts_with("_") {
+                    if self.kb.keypath_segments_len() == 1 && key.starts_with("_") {
                         if key == "_id" {
                             ObjectKeyTypes::Id
                         } else {
@@ -139,9 +128,9 @@ impl Shredder {
     // If we are inside an object we need to push the key to the key builder
     // Don't push them if they are reserved fields (starting with underscore)
     fn maybe_push_key(&mut self, stack_element: Option<StackElement>) -> Result<(), Error> {
-        if self.keybuilder.last_pushed_segment_type().unwrap() == SegmentType::ObjectKey {
+        if self.kb.last_pushed_keypath_is_object_key() {
             if let Some(StackElement::Key(key)) = stack_element {
-                if self.keybuilder.segments.len() == 1 && key.starts_with("_") {
+                if self.kb.keypath_segments_len() == 1 && key.starts_with("_") {
                     if key == "_id" {
                         return Err(Error::Shred(
                             "Expected string for `_id` field, got another type".to_string()));
@@ -151,8 +140,8 @@ impl Shredder {
                 } else {
                     // Pop the dummy object that makes ObjectEnd happy
                     // or the previous object key
-                    self.keybuilder.pop_object_key();
-                    self.keybuilder.push_object_key(key.to_string());
+                    self.kb.pop_object_key();
+                    self.kb.push_object_key(key);
                 }
             }
         }
@@ -162,7 +151,6 @@ impl Shredder {
    pub fn shred(&mut self, json: &str, docseq: u64, batch: &rocksdb::WriteBatch) -> Result<String, Error> {
         let mut parser = Parser::new(json.chars());
         let mut token = parser.next();
-
         loop {
             // Get the next token, so that in case of an `ObjectStart` the key is already
             // on the stack.
@@ -173,15 +161,15 @@ impl Shredder {
                     }
                     else {
                         // Just push something to make `ObjectEnd` happy
-                        self.keybuilder.push_object_key("".to_string());
+                        self.kb.push_object_key("");
                     }
                 },
                 Some(JsonEvent::ObjectEnd) => {
                     if self.ignore_children > 0 {
                         self.ignore_children -= 1;
-                    } else {//if !self.keybuilder.segments.is_empty() {
-                        self.keybuilder.pop_object_key();
-                        self.inc_top_array_offset();
+                    } else {
+                        self.kb.pop_object_key();
+                        self.kb.inc_top_array_offset();
                     }
                 },
                 Some(JsonEvent::ArrayStart) => {
@@ -189,37 +177,33 @@ impl Shredder {
                     if self.ignore_children > 0 {
                         self.ignore_children += 1;
                     } else {
-                        self.keybuilder.push_array();
-                        self.path_array_offsets.push(0);
+                        self.kb.push_array();
                     }
                 },
                 Some(JsonEvent::ArrayEnd) => {
                     if self.ignore_children > 0 {
                         self.ignore_children -= 1;
                     } else {
-                        self.path_array_offsets.pop();
-                        self.keybuilder.pop_array();
-                        self.inc_top_array_offset();
+                        self.kb.pop_array();
+                        self.kb.inc_top_array_offset();
                     }
                 },
                 Some(JsonEvent::StringValue(value)) => {
                     // No children to ignore
                     if self.ignore_children == 0 {
-                        println!("stringvalue: {:?}", value);
                         match self.extract_key(parser.stack().top()) {
                             ObjectKeyTypes::Id => self.doc_id = value,
                             ObjectKeyTypes::Key(key) => {
                                 // Pop the dummy object that makes ObjectEnd happy
                                 // or the previous object key
-                                self.keybuilder.pop_object_key();
-                                self.keybuilder.push_object_key(key.to_string());
+                                self.kb.pop_object_key();
+                                self.kb.push_object_key(&key);;
 
                                 try!(self.add_entries(&value, docseq, &batch));
-                                self.inc_top_array_offset();
                             },
                             ObjectKeyTypes::NoKey => {
                                 try!(self.add_entries(&value, docseq, &batch));
-                                self.inc_top_array_offset();
+                                self.kb.inc_top_array_offset();
                             },
                             ObjectKeyTypes::Ignore => {
                                 self.ignore_children = 1;

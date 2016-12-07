@@ -1,140 +1,122 @@
 use query::DocResult;
 use std::str;
 
-//#[derive(PartialEq, Eq)]
-#[derive(Debug, Clone, PartialEq)]
-pub enum SegmentType {
-    // BuildState is really simple state tracker to prevent misuse of api
-    ObjectKey,
-    Array,
-    Word,
-    DocSeq,
-    ArrayPath,
-}
-
-#[derive(Debug, Clone)]
-pub struct Segment {
-    type_: SegmentType,
-    offset: usize,
-}
 
 #[derive(Debug, Clone)]
 pub struct KeyBuilder {
-    pub array_depth: usize,
-    pub segments: Vec<Segment>,
-    fullkey: String,
+    keypath: Vec<String>,
+    arraypath: Vec<u64>,
 }
-
 
 impl KeyBuilder {
     pub fn new() -> KeyBuilder {
-        let mut kb = KeyBuilder{
-            array_depth: 0,
-             // Magic reserve numbers that are completely arbitrary
-            segments: Vec::with_capacity(10),
-            fullkey: String::with_capacity(100),
-        };
-        // First char is keyspace identifier. W means Word keyspace
-        kb.fullkey.push('W');
-        return kb;
+        KeyBuilder{
+             // Magic reserve number is completely arbitrary
+            keypath: Vec::with_capacity(10),
+            arraypath: Vec::with_capacity(10),
+        }
     }
 
-    // NOTE vmx 2016-10-28: This one is just a port of the C++ prototype, but not yet needed here
-    //fn segments_count(&self) -> usize {
-    //    self.segments.len()
-    //}
-
-    pub fn key(&self) -> String {
-        self.fullkey.clone()
+    /// Builds a stemmed word key for the input word and seq, using the key_path and arraypath
+    /// built up internally.
+    pub fn stemmed_word_key(&self, word: &str, seq: u64) -> String {
+        self.stemmed_word_key_internal(word, seq, &self.arraypath)
     }
 
-    pub fn push_object_key(&mut self, key: String) {
-        debug_assert!(self.segments.len() == 0 ||
-                      self.segments.last().unwrap().type_ == SegmentType::ObjectKey ||
-                      self.segments.last().unwrap().type_ == SegmentType::Array);
-        self.segments.push(Segment{ type_: SegmentType::ObjectKey, offset: self.fullkey.len() });
-        self.fullkey.push('.');
+    /// Builds a stemmed word key for the input word and doc result, using the key_path built up
+    /// internally but ignoring the internal array path. Instead uses the array path from the
+    /// DocResult 
+    pub fn stemmed_word_key_from_doc_result(&self, word: &str, dr: &DocResult) -> String {
+        self.stemmed_word_key_internal(word, dr.seq, &dr.arraypath)
+    }
+
+    fn stemmed_word_key_internal(&self, word: &str, seq: u64, arraypath: &Vec<u64>) -> String {
+        let mut string = String::with_capacity(100);
+        string.push('W');
+        for segment in &self.keypath {
+            string.push_str(&segment);
+        }
+        string.push('!');
+        string.push_str(word);
+        string.push('#');
+        string.push_str(seq.to_string().as_str());
+
+        self.add_arraypath(&mut string, &arraypath);
+        string
+    }
+
+    /// Builds a value key for seq (value keys are the original json terminal value with
+    /// keyed on keypath and arraypath built up internally).
+    pub fn value_key(&self, seq: u64) -> String {
+        let mut string = String::with_capacity(100);
+        string.push('V');
+        for segment in &self.keypath {
+            string.push_str(&segment);
+        }
+        string.push('#');
+        string.push_str(&seq.to_string());
+
+        self.add_arraypath(&mut string, &self.arraypath);
+        string
+    }
+
+    fn add_arraypath(&self, string: &mut String, arraypath: &Vec<u64>) {
+        if arraypath.is_empty() {
+            string.push(',');
+        } else {
+            for i in arraypath {
+                string.push(',');
+                string.push_str(i.to_string().as_str());
+            }
+        }
+
+    }
+
+    pub fn push_object_key(&mut self, key: &str) {
+        let mut escaped_key = String::with_capacity((key.len() * 2) + 1); // max expansion
+        escaped_key.push('.');
         for cc in key.chars() {
             // Escape chars that conflict with delimiters
-            if "\\$.!#".contains(cc) {
-                self.fullkey.push('\\');
+            if "\\$.!#,".contains(cc) {
+                escaped_key.push('\\');
             }
-            self.fullkey.push(cc);
+            escaped_key.push(cc);
         }
+        self.keypath.push(escaped_key);
     }
 
     pub fn push_array(&mut self) {
-        debug_assert!(self.segments.len() == 0 ||
-                      self.segments.last().unwrap().type_ == SegmentType::ObjectKey ||
-                      self.segments.last().unwrap().type_ == SegmentType::Array);
-        self.segments.push(Segment{ type_: SegmentType::Array, offset: self.fullkey.len() });
-        self.fullkey.push('$');
-        self.array_depth += 1;
-    }
-
-    pub fn push_word(&mut self, stemmed_word: &str) {
-        debug_assert!(self.segments.len() > 0);
-        debug_assert!(self.segments.last().unwrap().type_ == SegmentType::ObjectKey ||
-                      self.segments.last().unwrap().type_ == SegmentType::Array);
-        self.segments.push(Segment{ type_: SegmentType::Word, offset: self.fullkey.len() });
-        self.fullkey.push('!');
-        self.fullkey += stemmed_word;
-    }
-
-    pub fn push_doc_seq(&mut self, seq: u64) {
-        debug_assert!(self.segments.len() > 0);
-        debug_assert!(self.segments.last().unwrap().type_ == SegmentType::Word);
-        self.segments.push(Segment{ type_: SegmentType::DocSeq, offset: self.fullkey.len() });
-        self.fullkey.push('#');
-        self.fullkey.push_str(seq.to_string().as_str());
-    }
-
-    pub fn push_array_path(&mut self, path: &Vec<u64>) {
-        debug_assert!(self.segments.len() > 0);
-        debug_assert!(self.segments.last().unwrap().type_ == SegmentType::DocSeq);
-        self.segments.push(Segment{ type_: SegmentType::ArrayPath, offset: self.fullkey.len() });
-        if path.is_empty() {
-            self.fullkey.push(',');
-        }
-        for i in path {
-            self.fullkey.push(',');
-            self.fullkey.push_str(i.to_string().as_str());
-        }
+        self.keypath.push("$".to_string());
+        self.arraypath.push(0);
     }
 
     pub fn pop_object_key(&mut self) {
-        debug_assert!(self.segments.last().unwrap().type_ == SegmentType::ObjectKey);
-        self.fullkey.truncate(self.segments.last().unwrap().offset);
-        self.segments.pop();
+        debug_assert!(self.keypath.last().unwrap().starts_with("."));
+        self.keypath.pop();
     }
 
     pub fn pop_array(&mut self) {
-        debug_assert!(self.segments.last().unwrap().type_ == SegmentType::Array);
-        self.fullkey.truncate(self.segments.last().unwrap().offset);
-        self.array_depth -= 1;
-        self.segments.pop();
+        debug_assert!(self.keypath.last().unwrap() == "$");
+        self.arraypath.pop();
+        self.keypath.pop();
     }
 
-    pub fn pop_word(&mut self) {
-        debug_assert!(self.segments.last().unwrap().type_ == SegmentType::Word);
-        self.fullkey.truncate(self.segments.last().unwrap().offset);
-        self.segments.pop();
+    pub fn inc_top_array_offset(&mut self) {
+        if self.keypath.len() > 0 && self.keypath.last().unwrap() == "$" {
+            *self.arraypath.last_mut().unwrap() += 1;
+        }
     }
 
-    pub fn pop_doc_seq(&mut self) {
-        debug_assert!(self.segments.last().unwrap().type_ == SegmentType::DocSeq);
-        self.fullkey.truncate(self.segments.last().unwrap().offset);
-        self.segments.pop();
+    pub fn arraypath_len(&self) -> usize {
+        self.arraypath.len()
     }
 
-    pub fn pop_array_path(&mut self) {
-        debug_assert!(self.segments.last().unwrap().type_ == SegmentType::ArrayPath);
-        self.fullkey.truncate(self.segments.last().unwrap().offset);
-        self.segments.pop();
+    pub fn last_pushed_keypath_is_object_key(&self) -> bool {
+        self.keypath.last().unwrap().starts_with(".")
     }
 
-    pub fn last_pushed_segment_type(&self) -> Option<SegmentType> {
-        self.segments.last().and_then(|segment| Some(segment.type_.clone()))
+    pub fn keypath_segments_len(&self) -> usize {
+        self.keypath.len()
     }
 
     /* splits key into key path, seq and array path
@@ -143,21 +125,27 @@ impl KeyBuilder {
         let n = str.rfind("#").unwrap();
         assert!(n != 0);
         assert!(n != str.len() - 1);
-        let seq_array_path_str = &str[(n + 1)..];
-        let m = seq_array_path_str.find(",").unwrap();
+        let seq_arraypath_str = &str[(n + 1)..];
+        let m = seq_arraypath_str.find(",").unwrap();
 
-        (&str[..n], &seq_array_path_str[..m], &seq_array_path_str[m + 1..])
+        (&str[..n], &seq_arraypath_str[..m], &seq_arraypath_str[m + 1..])
+    }
+
+    pub fn get_keypathword_only(&self, stemmed: &str) -> String {
+        let mut key = self.stemmed_word_key(stemmed, 0);
+        let n = key.rfind("#").unwrap();
+        key.truncate(n + 1);
+        key
     }
 
     /* parses a seq and array path portion (ex "123,0,0,10) of a key into a doc result */
     pub fn parse_doc_result_from_key(str: &str) -> DocResult {
-
         let mut dr = DocResult::new();
-        let (_path_str, seq_str, array_path_str) = KeyBuilder::split_keypath_seq_arraypath_from_key(&str);
+        let (_path_str, seq_str, arraypath_str) = KeyBuilder::split_keypath_seq_arraypath_from_key(&str);
         dr.seq = seq_str.parse().unwrap();
-        if !array_path_str.is_empty() {
-            for numstr in array_path_str.split(",") {
-                dr.array_path.push(numstr.parse().unwrap());
+        if !arraypath_str.is_empty() {
+            for numstr in arraypath_str.split(",") {
+                dr.arraypath.push(numstr.parse().unwrap());
             }
         }
         dr
@@ -167,8 +155,8 @@ impl KeyBuilder {
         use std::cmp::Ordering;
         assert!(akey.starts_with('W'));
         assert!(bkey.starts_with('W'));
-        let (apath_str, aseq_str, aarray_path_str) = KeyBuilder::split_keypath_seq_arraypath_from_key(&akey);
-        let (bpath_str, bseq_str, barray_path_str) = KeyBuilder::split_keypath_seq_arraypath_from_key(&bkey);
+        let (apath_str, aseq_str, aarraypath_str) = KeyBuilder::split_keypath_seq_arraypath_from_key(&akey);
+        let (bpath_str, bseq_str, barraypath_str) = KeyBuilder::split_keypath_seq_arraypath_from_key(&bkey);
 
         match apath_str[1..].cmp(&bpath_str[1..]) {
             Ordering::Less    =>  -1,
@@ -181,7 +169,7 @@ impl KeyBuilder {
                 } else if aseq > bseq {
                     1
                 } else {
-                    match aarray_path_str.cmp(barray_path_str) {
+                    match aarraypath_str.cmp(barraypath_str) {
                         Ordering::Less    => -1,
                         Ordering::Greater =>  1,
                         Ordering::Equal   =>  0,
@@ -196,121 +184,61 @@ impl KeyBuilder {
 
 #[cfg(test)]
 mod tests {
-    use super::{KeyBuilder, SegmentType};
+    use super::{KeyBuilder};
     use query::DocResult;
 
-    #[test]
-    fn test_new_key_builder() {
-        let kb = KeyBuilder::new();
-        assert_eq!(kb.key(), "W", "Initial value is set");
-    }
 
     #[test]
     fn test_segments_push() {
         let mut kb = KeyBuilder::new();
-        assert_eq!(kb.segments.len(), 0, "No segments so far");
-        assert_eq!(kb.key(), "W", "Key for segments is correct");
+        assert_eq!(kb.keypath_segments_len(), 0, "No segments so far");
 
-        kb.push_object_key("first".to_string());
-        assert_eq!(kb.segments.len(), 1, "One segment");
-        assert_eq!(kb.key(), "W.first", "Key for one segments is correct");
+        kb.push_object_key("first");
+        assert_eq!(kb.keypath_segments_len(), 1, "One segment");
 
-        kb.push_object_key("second".to_string());
-        assert_eq!(kb.segments.len(), 2, "Two segments");
-        assert_eq!(kb.key(), "W.first.second", "Key for two segments is correct");
+        kb.push_object_key("second");
+        assert_eq!(kb.keypath_segments_len(), 2, "Two segments");
 
         kb.push_array();
-        assert_eq!(kb.segments.len(), 3, "Three segments ");
-        assert_eq!(kb.key(), "W.first.second$", "Key for three segments is correct");
-
-        kb.push_word("astemmedword");
-        assert_eq!(kb.segments.len(), 4, "Four segments");
-        assert_eq!(kb.key(), "W.first.second$!astemmedword", "Key for four segments is correct");
-
-        kb.push_doc_seq(123);
-        assert_eq!(kb.segments.len(), 5, "Five segments");
-        assert_eq!(kb.key(), "W.first.second$!astemmedword#123",
-                   "Key for five segments is correct");
-    }
-
-    #[test]
-    #[should_panic(expected = "assertion failed: self.segments.len() > 0")]
-    fn test_segments_push_doc_seq_panic() {
-        let mut kb = KeyBuilder::new();
-        kb.push_doc_seq(456);
-    }
-
-        #[test]
-    #[should_panic(expected = "assertion failed: self.segments.len() > 0")]
-    fn test_segments_push_word_panic() {
-        let mut kb = KeyBuilder::new();
-        kb.push_word("astemmedword");
+        assert_eq!(kb.keypath_segments_len(), 3, "Three segments ");
     }
 
     #[test]
     fn test_segments_pop() {
         let mut kb = KeyBuilder::new();
-        kb.push_object_key("first".to_string());
-        kb.push_object_key("second".to_string());
+        kb.push_object_key("first");
+        kb.push_object_key("second");
         kb.push_array();
-        kb.push_word("astemmedword");
-        kb.push_doc_seq(123);
-        kb.push_array_path(&vec![0]);
 
-        assert_eq!(kb.segments.len(), 6, "six segments");
-        assert_eq!(kb.key(), "W.first.second$!astemmedword#123,0",
+        assert_eq!(kb.keypath_segments_len(), 3, "three segments");
+        assert_eq!(kb.stemmed_word_key("astemmedword", 123), "W.first.second$!astemmedword#123,0",
                    "Key for six segments is correct");
         
-        kb.pop_array_path();
-        assert_eq!(kb.segments.len(), 5, "Five segments");
-        assert_eq!(kb.key(), "W.first.second$!astemmedword#123",
-                   "Key for five segments is correct");
-
-        kb.pop_doc_seq();
-        assert_eq!(kb.segments.len(), 4, "Four segments");
-        assert_eq!(kb.key(), "W.first.second$!astemmedword", "Key for four segments is correct");
-
-        kb.pop_word();
-        assert_eq!(kb.segments.len(), 3, "Three segments ");
-        assert_eq!(kb.key(), "W.first.second$", "Key for three segments is correct");
 
         kb.pop_array();
-        assert_eq!(kb.segments.len(), 2, "Two segments");
-        assert_eq!(kb.key(), "W.first.second", "Key for two segments is correct");
+        assert_eq!(kb.keypath_segments_len(), 2, "Two segments");
 
         kb.pop_object_key();
-        assert_eq!(kb.segments.len(), 1, "One segment");
-        assert_eq!(kb.key(), "W.first", "Key for one segments is correct");
+        assert_eq!(kb.keypath_segments_len(), 1, "One segment");
 
         kb.pop_object_key();
-        assert_eq!(kb.segments.len(), 0, "No segments so far");
-        assert_eq!(kb.key(), "W", "Key for segments is correct");
+        assert_eq!(kb.keypath_segments_len(), 0, "No segments so far");
     }
 
     #[test]
     fn test_last_pushed_segment_type() {
         let mut kb = KeyBuilder::new();
-        assert_eq!(kb.last_pushed_segment_type(), None, "No segments");
+        assert_eq!(kb.keypath_segments_len(), 0, "No segments");
 
-        kb.push_object_key("first".to_string());
-        assert_eq!(kb.last_pushed_segment_type(), Some(SegmentType::ObjectKey),
-                   "Last segment is an object key");
+        kb.push_object_key("first");
+        assert!(kb.last_pushed_keypath_is_object_key(), "Last segment is an object key");
 
-        kb.push_object_key("second".to_string());
-        assert_eq!(kb.last_pushed_segment_type(), Some(SegmentType::ObjectKey),
-                   "Last segment is an object key");
+        kb.push_object_key("second");
+        assert!(kb.last_pushed_keypath_is_object_key(), "Last segment is an object key");
 
         kb.push_array();
-        assert_eq!(kb.last_pushed_segment_type(), Some(SegmentType::Array),
-                   "Last segment is an array");
-
-        kb.push_word("astemmedword");
-        assert_eq!(kb.last_pushed_segment_type(), Some(SegmentType::Word),
-                   "Last segment is a word");
-
-        kb.push_doc_seq(123);
-        assert_eq!(kb.last_pushed_segment_type(), Some(SegmentType::DocSeq),
-                   "Last segment is a doc sequence");
+        assert!(!kb.last_pushed_keypath_is_object_key(), "Last segment is an array");
+;
     }
 
     #[test]
@@ -330,7 +258,7 @@ mod tests {
 
         let mut dr = DocResult::new();
         dr.seq = 123;
-        dr.array_path = vec![1,0];
+        dr.arraypath = vec![1,0];
         
         assert!(dr == KeyBuilder::parse_doc_result_from_key(&key));
     }
