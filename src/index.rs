@@ -4,8 +4,6 @@ use std::collections::HashMap;
 use std::str;
 
 use records_capnp::header;
-// Needed for a trait in order to `dekete/put()` into a `rocksdb::WriteBatch`
-use self::rocksdb::Writable;
 
 use error::Error;
 use json_shred::{Shredder};
@@ -113,7 +111,8 @@ impl Index {
         // NOTE vmx 2016-10-13: Needed for the lifetime-checker, though not sure if it now really
         // does the right thing. Does the `try!()` still return as epected?
         {
-            let docid = try!(shredder.shred(json, self.high_doc_seq + 1, &self.batch()));
+            let docid = try!(shredder.shred(json, self.high_doc_seq + 1,
+                                            self.batch.as_mut().unwrap()));
             self.high_doc_seq += 1;
             self.id_str_to_id_seq.insert(format!("I{}", docid), format!("S{}", self.high_doc_seq));
         }
@@ -132,7 +131,7 @@ impl Index {
             // TODO vmx 2016-10-17: USe multiget once the Rusts wrapper supports it
             match rocks.get(key.as_bytes()) {
                 Ok(Some(seq)) => {
-                    try!(self.batch().delete(&*seq));
+                    try!(self.batch.as_mut().unwrap().delete(&*seq));
                 },
                 _ => {}
             }
@@ -140,17 +139,17 @@ impl Index {
 
         // Add the ids_to_seq keyspace entries
         for (id, seq) in &self.id_str_to_id_seq {
-            try!(self.batch().put(id.as_bytes(), seq.as_bytes()));
-            try!(self.batch().put(seq.as_bytes(), id.as_bytes()));
+            try!(self.batch.as_mut().unwrap().put(id.as_bytes(), seq.as_bytes()));
+            try!(self.batch.as_mut().unwrap().put(seq.as_bytes(), id.as_bytes()));
         }
 
         let mut header = Header::new();
         header.high_seq = self.high_doc_seq;
-        try!(self.batch().put(b"HDB", &*header.serialize()));
+        try!(self.batch.as_mut().unwrap().put(b"HDB", &*header.serialize()));
 
         let status = try!(rocks.write(self.batch.take().unwrap()));
         // Make sure there's a always a valid WriteBarch after writing it into RocksDB,
-        // else calls to `self.batch()` would panic.
+        // else calls to `self.batch.as_mut().unwrap()` would panic.
         self.batch = Some(rocksdb::WriteBatch::default());
         self.id_str_to_id_seq.clear();
         Ok(status)
@@ -170,15 +169,6 @@ impl Index {
         }
     }
 
-    /// Returns the current write batch as reference
-    ///
-    /// # Panics
-    ///
-    /// Panic if there currently is no `WriteBatch` (`self.batch == None`)
-    fn batch(&self) -> &rocksdb::WriteBatch {
-        self.batch.as_ref().unwrap()
-    }
-    
     fn compare_keys(a: &[u8], b: &[u8]) -> i32 {
         use std::cmp::Ordering;
         use key_builder::KeyBuilder;
