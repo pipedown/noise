@@ -16,9 +16,7 @@ rustc-serialize= "0.3.19"
 stemmer = "0.3.2"
 unicode-normalization = "0.1.2"
 unicode-segmentation = "0.1.2"
-
-[dependencies.rocksdb]
-git = "https://github.com/spacejam/rust-rocksdb.git"
+rocksdb = "0.5.0"
 
 
 [build-dependencies]

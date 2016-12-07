@@ -4,8 +4,6 @@ extern crate rustc_serialize;
 use std::collections::HashMap;
 
 use self::rustc_serialize::json::{JsonEvent, Parser, StackElement};
-// Needed for a trait in order to `put()` into a `rocksdb::WriteBatch`
-use self::rocksdb::Writable;
 
 use error::Error;
 use key_builder::KeyBuilder;
@@ -66,7 +64,8 @@ impl Shredder {
         }
     }
 
-    fn add_entries(&mut self, text: &String, docseq: u64, batch: &rocksdb::WriteBatch) -> Result<(), Error> {
+    fn add_entries(&mut self, text: &String, docseq: u64, batch: &mut rocksdb::WriteBatch) ->
+            Result<(), Error> {
         let stems = Stems::new(text.as_str());
         let mut word_to_word_infos = HashMap::new();
 
@@ -148,7 +147,8 @@ impl Shredder {
         Ok(())
     }
 
-   pub fn shred(&mut self, json: &str, docseq: u64, batch: &rocksdb::WriteBatch) -> Result<String, Error> {
+    pub fn shred(&mut self, json: &str, docseq: u64, batch: &mut rocksdb::WriteBatch) ->
+            Result<String, Error> {
         let mut parser = Parser::new(json.chars());
         let mut token = parser.next();
         loop {
@@ -197,12 +197,13 @@ impl Shredder {
                                 // Pop the dummy object that makes ObjectEnd happy
                                 // or the previous object key
                                 self.kb.pop_object_key();
-                                self.kb.push_object_key(&key);;
+                                self.kb.push_object_key(&key);
 
-                                try!(self.add_entries(&value, docseq, &batch));
+                                try!(self.add_entries(&value, docseq, batch));
+                                self.kb.inc_top_array_offset();
                             },
                             ObjectKeyTypes::NoKey => {
-                                try!(self.add_entries(&value, docseq, &batch));
+                                try!(self.add_entries(&value, docseq, batch));
                                 self.kb.inc_top_array_offset();
                             },
                             ObjectKeyTypes::Ignore => {
