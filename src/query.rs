@@ -3,18 +3,20 @@
 extern crate capnp;
 
 use std::str;
+use std::cmp::Ordering;
 
 use error::Error;
 use index::Index;
 use key_builder::KeyBuilder;
 use stems::{StemmedWord, Stems};
 
+
 // TODO vmx 2016-11-02: Make it import "rocksdb" properly instead of needing to import the individual tihngs
 use rocksdb::{self, DBIterator, IteratorMode, Snapshot};
 use records_capnp::payload;
 
 
-
+#[derive(PartialEq, Eq, PartialOrd, Clone)]
 pub struct DocResult {
     pub seq: u64,
     pub arraypath: Vec<u64>,
@@ -29,14 +31,19 @@ impl DocResult {
     }
 }
 
-
-impl PartialEq for DocResult {
-    fn eq(&self, other: &DocResult) -> bool {
-        self.seq == other.seq && self.arraypath == other.arraypath
+impl Ord for DocResult {
+    fn cmp(&self, other: &DocResult) -> Ordering {
+        match self.seq.cmp(&other.seq) {
+            Ordering::Less    =>  Ordering::Less,
+            Ordering::Greater =>   Ordering::Greater,
+            Ordering::Equal =>  self.arraypath.cmp(&other.arraypath),
+        }
     }
 }
-
-impl Eq for DocResult {}
+/*
+impl Clone for DocResult {
+    fn clone(&self) -> DocResult { *self }
+}*/
 
 pub trait QueryRuntimeFilter {
     fn first_result(&mut self, start: &DocResult) -> Result<Option<DocResult>, Error>;
@@ -144,9 +151,9 @@ impl QueryRuntimeFilter for ExactMatchFilter {
 
                 // NOTE vmx 2016-10-13: I'm not really sure why the dereferencing is needed
                 // and why we pass on mutable reference of it to `read_message()`
-                let mut ref_value = &*value;
+                //let mut ref_value = &*value;
                 let message_reader = ::capnp::serialize_packed::read_message(
-                    &mut ref_value, ::capnp::message::ReaderOptions::new()).unwrap();
+                    &mut &*value, ::capnp::message::ReaderOptions::new()).unwrap();
                 let payload = message_reader.get_root::<payload::Reader>().unwrap();
 
                 for wi in try!(payload.get_wordinfos()).iter() {
@@ -240,6 +247,125 @@ impl<'a> QueryRuntimeFilter for AndFilter<'a> {
 }
 
 
+struct FilterAndResult<'a> {
+    filter: Box<QueryRuntimeFilter + 'a>,
+    result: Option<DocResult>,
+    is_done: bool,
+    array_depth: usize,
+}
+
+impl<'a> FilterAndResult<'a> {
+    fn prime_first_result(&mut self, start: &DocResult) -> Result<(), Error> {
+        if self.is_done {
+            return Ok(())
+        }
+        if self.result.is_none() {
+            self.result = try!(self.filter.first_result(start));
+        } else if self.result.as_ref().unwrap() < start {
+            self.result = try!(self.filter.first_result(start));
+        }
+        if self.result.is_none() {
+            self.is_done = true;
+        } else {
+            self.result.as_mut().unwrap().arraypath.resize(self.array_depth, 0);
+        }
+        Ok(())
+    }
+
+    fn prime_next_result(&mut self) -> Result<(), Error> {
+        if self.is_done {
+            return Ok(())
+        }
+        if self.result.is_none() {
+            self.result = try!(self.filter.next_result());
+        }
+        if self.result.is_none() {
+            self.is_done = true;
+        } else {
+            self.result.as_mut().unwrap().arraypath.resize(self.array_depth, 0);
+        }
+        Ok(())
+    }
+}
+
+struct OrFilter<'a> {
+    left: FilterAndResult<'a>,
+    right: FilterAndResult<'a>,
+}
+
+impl<'a> OrFilter<'a> {
+    fn new(left: Box<QueryRuntimeFilter + 'a>,
+           right: Box<QueryRuntimeFilter + 'a>,
+           array_depth: usize) -> OrFilter<'a> {
+        OrFilter {
+            left: FilterAndResult{filter: left,
+                                 result: None,
+                                 array_depth: array_depth,
+                                 is_done: false,
+                                 },
+            
+            right: FilterAndResult{filter: right,
+                                 result: None,
+                                 array_depth: array_depth,
+                                 is_done: false,
+                                 }
+        }
+    }
+    fn take_smallest(&mut self) -> Option<DocResult> {
+        if let Some(left) = self.left.result.take() {
+            // left exists
+            if let Some(right) = self.right.result.take() {
+                // both exist, return smallest
+                match left.cmp(&right) {
+                    Ordering::Less    => {
+                        // left is smallest, return and put back right
+                        self.right.result = Some(right);
+                        Some(left)
+                    },
+                    Ordering::Greater => {
+                        // right is smallest, return and put back left
+                        self.left.result = Some(left);
+                        Some(right)
+                    },
+                    Ordering::Equal   => {
+                        // return one and discard the other so we don't return
+                        // identical result in a subsequent call
+                        Some(left)
+                    },
+                }
+            } else {
+                // right doesn't exist. return left
+                Some(left)
+            }
+        } else {
+            // left doesn't exist
+            if self.right.result.is_some() {
+                // right exists. return it
+                self.right.result.take()
+            } else {
+                // neither exists. return none
+                None
+            }
+        }
+    }
+}
+
+impl<'a> QueryRuntimeFilter for OrFilter<'a> {
+    fn first_result(&mut self, start: &DocResult) -> Result<Option<DocResult>, Error> {
+        try!(self.left.prime_first_result(start));
+        try!(self.right.prime_first_result(start));
+        Ok(self.take_smallest())
+    }
+
+    fn next_result(&mut self) -> Result<Option<DocResult>, Error> {
+        try!(self.left.prime_next_result());
+        try!(self.right.prime_next_result());
+        Ok(self.take_smallest())
+    }
+}
+
+
+
 
 struct Parser<'a> {
     query: String,
@@ -250,7 +376,7 @@ struct Parser<'a> {
 
 impl<'a> Parser<'a> {
     fn new(query: String, snapshot: Snapshot<'a>) -> Parser<'a> {
-        Parser{
+        Parser {
             query: query,
             offset: 0,
             kb: KeyBuilder::new(),
@@ -258,7 +384,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn whitespace(&mut self) {
+    fn ws(&mut self) {
         for char in self.query[self.offset..].chars() {
             if !char.is_whitespace() {
                 break;
@@ -270,10 +396,22 @@ impl<'a> Parser<'a> {
     fn consume(&mut self, token: &str) -> bool {
         if self.could_consume(token) {
             self.offset += token.len();
-            self.whitespace();
+            self.ws();
             true
         } else {
             false
+        }
+    }
+
+
+    fn must_consume(&mut self, token: &str) -> Result<(), Error>  {
+        if self.could_consume(token) {
+            self.offset += token.len();
+            self.ws();
+            Ok(())
+        } else {
+            Err(Error::Parse(format!("Expected '{}' at character {}.",
+                                                             token, self.offset)))
         }
     }
 
@@ -292,14 +430,14 @@ impl<'a> Parser<'a> {
         }
         if result.len() > 0 {
             self.offset += result.len();
-            self.whitespace();
+            self.ws();
             Some(result)
         } else {
             None
         }
     }
 
-    fn consume_string_literal(&mut self) -> Result<Option<String>, Error> {
+    fn consume_string_literal(&mut self) -> Result<String, Error> {
         let mut lit = String::new();
         let mut next_is_special_char = false;
         if self.could_consume("\"") {
@@ -333,138 +471,230 @@ impl<'a> Parser<'a> {
                     }
                 }
             }
-            if self.consume("\"") {
-                Ok(Some(lit))
+            try!(self.must_consume("\""));
+            Ok(lit)
+        } else {
+            Err(Error::Parse("Expected \"".to_string()))
+        }
+    }
+/*
+
+find
+	= "find" ws object ws
+
+object
+	= "{" ws obool ws "}" ws (("&&" / "||")  ws object)?
+   / parens
+
+parens
+	= "(" ws object ws ")"
+
+obool
+   = ws ocompare ws (('&&' / ',' / '||') ws obool)?
+   
+ocompare
+   = oparens
+   / key ws ":" ws (oparens / compare)
+   
+oparens
+   = '(' ws obool ws ')' ws
+   / array
+   / object
+
+compare
+   = ("==" / "~=" / "^=" ) ws string ws
+
+
+abool
+	= ws acompare ws (('&&'/ ',' / '||') ws abool)?
+    
+acompare
+   = aparens
+   / compare
+
+aparens
+   = '(' ws abool ')' ws
+   / array
+   / object
+
+array
+   = '[' ws abool ']' ws
+
+key
+   = field / string
+
+field
+	= [a-z_$]i [a-z_$0-9]i*
+
+string
+   = '"' ('\\\\' / '\\' [\"tfvrnb] / [^\\\"])* '"' ws
+
+ws
+ = [ \t\n\r]*
+
+ws1
+ = [ \t\n\r]+
+*/
+
+
+    fn find<'b>(&'b mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
+        if !self.consume("find") {
+            return Err(Error::Parse("Missing 'find' keyword".to_string()));
+        }
+        self.object()
+    }
+
+    fn object<'b>(&'b mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
+        if self.consume("{") {
+            let left = try!(self.obool());
+            try!(self.must_consume("}"));
+            
+            if self.consume("&&") {
+                let right = try!(self.object());
+                Ok(Box::new(AndFilter::new(vec![left, right], self.kb.arraypath_len())))
+
+            } else if self.consume("||") {
+                let right = try!(self.object());
+                Ok(Box::new(OrFilter::new(left, right, self.kb.arraypath_len())))
             } else {
-                Err(Error::Parse("Expected \"".to_string()))
+                Ok(left)
             }
+        } else {
+             self.parens()
+        }
+    }
+
+    fn parens<'b>(&'b mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
+        try!(self.must_consume("("));
+        let filter = try!(self.object());
+        try!(self.must_consume(")"));
+        Ok(filter)
+    }
+
+    fn obool<'b>(&'b mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
+        let mut filter = try!(self.ocompare());
+        loop {
+            filter = if self.consume("&&") || self.consume(",") {
+                let right = try!(self.obool());
+                Box::new(AndFilter::new(vec![filter, right], self.kb.arraypath_len()))
+            } else if self.consume("||") {
+                let right = try!(self.obool());
+                Box::new(OrFilter::new(filter, right, self.kb.arraypath_len()))
+            } else {
+                break;
+            }
+        }
+        Ok(filter)
+    }
+
+    fn ocompare<'b>(&'b mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
+        if let Some(filter) = try!(self.oparens()) {
+            Ok(filter)
+        } else if let Some(field) = self.consume_field() {
+            self.kb.push_object_key(&field);
+            try!(self.must_consume(":"));
+            if let Some(filter) = try!(self.oparens()) {
+                self.kb.pop_object_key();
+                Ok(filter)
+            } else {
+                let filter = try!(self.compare());
+                self.kb.pop_object_key();
+                Ok(filter)
+            }
+        } else {
+            Err(Error::Parse("Expected object key or '('".to_string()))
+        }
+    }
+
+    fn oparens<'b>(&'b mut self) -> Result<Option<Box<QueryRuntimeFilter + 'a>>, Error> {
+        if self.consume("(") {
+            let f = try!(self.obool());
+            try!(self.must_consume(")"));
+            Ok(Some(f))
+        } else if self.could_consume("[") {
+            Ok(Some(try!(self.array())))
+        } else if self.could_consume("{") {
+            Ok(Some(try!(self.object())))
         } else {
             Ok(None)
         }
     }
 
-/*
-This is a peg grammar that documents the calls of the recursive descent parser
-is implemented. Can be checked here: http://pegjs.org/online
-
-bool
-    = ws compare ws ('&' ws compare)*
-compare
-    = field ('.' field)* ws '=' ws string* / factor
-factor
-    = '(' ws bool ws ')' ws / array
-array
-    = '[' ws bool ']' ws
-field
-    = [a-z]i+ ws
-string
-    = '"' ('\\\\' / '\\' [\"tfvrnb] / [^\\\"])* '"' ws
-ws
-    = [ /\t/\r\n]* 
-*/
-
-    fn bool<'b>(&'b mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
-        let left = try!(self.compare());
-        let mut filters = vec![left];
-        loop {
-            if !self.consume("&") {
-                break;
+    fn compare<'b>(&'b mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
+        if self.consume("==") {
+            let literal = try!(self.consume_string_literal());
+            let stems = Stems::new(&literal);
+            let mut filters: Vec<Box<QueryRuntimeFilter + 'a>> = Vec::new();
+            for stem in stems {
+                let iter = self.snapshot.iterator(IteratorMode::Start);
+                let filter = Box::new(ExactMatchFilter::new(
+                    iter, &stem, self.kb.clone()));
+                filters.push(filter);
             }
-
-            let right = try!(self.compare());
-            filters.push(right);
-        }
-        if filters.len() == 1 {
-            Ok(filters.pop().unwrap())
+            match filters.len() {
+                0 => panic!("Cannot create a ExactMatchFilter"),
+                1 => Ok(filters.pop().unwrap()),
+                _ => Ok(Box::new(AndFilter::new(
+                                filters, self.kb.arraypath_len()))),
+            }
         } else {
-            Ok(Box::new(AndFilter::new(filters, self.kb.arraypath_len())))
+            Err(Error::Parse("Expected comparison operator".to_string()))
         }
     }
 
+    fn abool<'b>(&'b mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
+        let mut filter = try!(self.acompare());
+        loop {
+            filter = if self.consume("&&") || self.consume(",") {
+                let right = try!(self.abool());
+                Box::new(AndFilter::new(vec![filter, right], self.kb.arraypath_len()))
+            } else if self.consume("||") {
+                let right = try!(self.abool());
+                Box::new(OrFilter::new(filter, right, self.kb.arraypath_len()))
+            } else {
+                break;
+            }
+        }
+        Ok(filter)
+    }
+
+    fn acompare<'b>(&'b mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
+        if let Some(filter) = try!(self.aparens()) {
+            Ok(filter)
+        } else {
+            self.compare()
+        }
+    }
+
+    fn aparens<'b>(&'b mut self) -> Result<Option<Box<QueryRuntimeFilter + 'a>>, Error> {
+        if self.consume("(") {
+            let f = try!(self.abool());
+            try!(self.must_consume(")"));
+            Ok(Some(f))
+        } else if self.could_consume("[") {
+            Ok(Some(try!(self.array())))
+        } else if self.could_consume("{") {
+            Ok(Some(try!(self.object())))
+        } else {
+            Ok(None)
+        }
+    }
 
     fn array<'b>(&'b mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
         if !self.consume("[") {
             return Err(Error::Parse("Expected '['".to_string()));
         }
         self.kb.push_array();
-        let filter = try!(self.bool());
+        let filter = try!(self.abool());
         self.kb.pop_array();
-        if !self.consume("]") {
-            return Err(Error::Parse("Expected ']'".to_string()));
-        }
+        try!(self.must_consume("]"));
         Ok(filter)
     }
 
-    fn factor<'b>(&'b mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
-        if self.consume("(") {
-            let filter = try!(self.bool());
-            if !self.consume(")") {
-                Err(Error::Parse("Expected ')'".to_string()))
-            } else {
-                Ok(filter)
-            }
-        } else if self.could_consume("[") {
-            self.array()
-        } else {
-            Err(Error::Parse("Missing Expression".to_string()))
-        }
-    }
-
-    fn compare<'b>(&'b mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
-        match self.consume_field() {
-            Some(field) => {
-                if self.consume(".") {
-                    self.kb.push_object_key(&field);
-                    let ret = self.compare();
-                    self.kb.pop_object_key();
-                    ret
-                } else if self.consume("=") {
-                    match self.consume_string_literal() {
-                        Ok(Some(literal)) => {
-                            self.kb.push_object_key(&field);
-
-                            let stems = Stems::new(&literal);
-                            let mut filters: Vec<Box<QueryRuntimeFilter + 'a>> = Vec::new();
-                            for stem in stems {
-                                let iter = self.snapshot.iterator(IteratorMode::Start);
-                                let filter = Box::new(ExactMatchFilter::new(
-                                   iter, &stem, self.kb.clone()));
-                                filters.push(filter);
-                            }
-
-                            self.kb.pop_object_key();
-
-                            match filters.len() {
-                                0 => panic!("Cannot create a ExactMatchFilter"),
-                                1 => Ok(filters.pop().unwrap()),
-                                _ => Ok(Box::new(AndFilter::new(
-                                    filters, self.kb.arraypath_len()))),
-                            }
-                        },
-                        // Empty literal
-                        Ok(None) => {Err(Error::Parse("Expected string".to_string()))},
-                        Err(error) => {
-                            Err(error)
-                        }
-                    }
-                } else if self.could_consume("[") {
-                    self.kb.push_object_key(&field);
-                    let ret = self.array();
-                    self.kb.pop_object_key();
-                    ret
-                } else {
-                    Err(Error::Parse("Expected comparison or array operator".to_string()))
-                }
-            },
-            None => {
-                self.factor()
-            }
-        }
-    }
 
     fn build_filter(mut self) -> Result<(Box<QueryRuntimeFilter + 'a>, Snapshot<'a>), Error> {
-        self.whitespace();
-        Ok((self.bool().unwrap(), self.snapshot))
+        self.ws();
+        Ok((try!(self.find()), self.snapshot))
     }
 }
 
@@ -501,13 +731,13 @@ mod tests {
 
         let mut query = " \n \t test".to_string();
         let mut parser = Parser::new(query, snapshot);
-        parser.whitespace();
+        parser.ws();
         assert_eq!(parser.offset, 5);
 
         snapshot = Snapshot::new(rocks);
         query = "test".to_string();
         parser = Parser::new(query, snapshot);
-        parser.whitespace();
+        parser.ws();
         assert_eq!(parser.offset, 0);
     }
 
@@ -520,7 +750,7 @@ mod tests {
 
         let query = r#"" \n \t test""#.to_string();
         let mut parser = Parser::new(query, snapshot);
-        assert_eq!(parser.consume_string_literal().unwrap().unwrap(),  " \n \t test".to_string());
+        assert_eq!(parser.consume_string_literal().unwrap(),  " \n \t test".to_string());
     }
 
     #[test]
@@ -533,7 +763,7 @@ mod tests {
         let _ = index.add(r#"{"_id": "foo", "hello": "world"}"#);
         index.flush().unwrap();
 
-        let mut query_results = Query::get_matches(r#"hello="world""#.to_string(), &index).unwrap();
+        let mut query_results = Query::get_matches(r#"find {hello:=="world"}"#.to_string(), &index).unwrap();
         //let mut query_results = Query::get_matches(r#"a.b[foo="bar"]"#.to_string(), &index).unwrap();
         println!("query results: {:?}", query_results.get_next_id());
     }
@@ -553,32 +783,32 @@ mod tests {
 
         index.flush().unwrap();
 
-        let mut query_results = Query::get_matches(r#"A[B = "B2" & C[ D = "D" ]]"#.to_string(), &index).unwrap();
+        let mut query_results = Query::get_matches(r#"find {A:[{B: =="B2", C: [{D: =="D"} ]}]}"#.to_string(), &index).unwrap();
         assert_eq!(query_results.get_next_id().unwrap(), Some("2".to_string()));
         assert_eq!(query_results.get_next_id().unwrap(), None);
 
-        query_results = Query::get_matches(r#"A[B = "B2" & C = "C2"]"#.to_string(), &index).unwrap();
+        query_results = Query::get_matches(r#"find {A:[{B: == "B2", C: == "C2"}]}"#.to_string(), &index).unwrap();
         assert_eq!(query_results.get_next_id().unwrap(), Some("1".to_string()));
         assert_eq!(query_results.get_next_id().unwrap(), None);
 
-        query_results = Query::get_matches(r#"A[B = "b1" & C = "C2"]"#.to_string(), &index).unwrap();
+        query_results = Query::get_matches(r#"find {A:[{B: == "b1", C: == "C2"}]}"#.to_string(), &index).unwrap();
         assert_eq!(query_results.get_next_id().unwrap(), Some("1".to_string()));
         assert_eq!(query_results.get_next_id().unwrap(), Some("2".to_string()));
         assert_eq!(query_results.get_next_id().unwrap(), None);
 
-        query_results = Query::get_matches(r#"A = "Multi word sentence""#.to_string(), &index).unwrap();
+        query_results = Query::get_matches(r#"find {A: == "Multi word sentence"}"#.to_string(), &index).unwrap();
         assert_eq!(query_results.get_next_id().unwrap(), Some("3".to_string()));
         assert_eq!(query_results.get_next_id().unwrap(), None);
 
-        query_results = Query::get_matches(r#"A = "%&%}{}@);€""#.to_string(), &index).unwrap();
+        query_results = Query::get_matches(r#"find {A: == "%&%}{}@);€"}"#.to_string(), &index).unwrap();
         assert_eq!(query_results.get_next_id().unwrap(), Some("4".to_string()));
         assert_eq!(query_results.get_next_id().unwrap(), None);
 
-        query_results = Query::get_matches(r#"A = "{}€52 deeply \\n\\v ""#.to_string(), &index).unwrap();
+        query_results = Query::get_matches(r#"find {A: == "{}€52 deeply \\n\\v "}"#.to_string(), &index).unwrap();
         assert_eq!(query_results.get_next_id().unwrap(), Some("5".to_string()));
         assert_eq!(query_results.get_next_id().unwrap(), None);
 
-        query_results = Query::get_matches(r#"A[C = "C2"]"#.to_string(), &index).unwrap();
+        query_results = Query::get_matches(r#"find {A:[{C: == "C2"}]}"#.to_string(), &index).unwrap();
         assert_eq!(query_results.get_next_id().unwrap(), Some("1".to_string()));
         assert_eq!(query_results.get_next_id().unwrap(), Some("2".to_string()));
         assert_eq!(query_results.get_next_id().unwrap(), None);
@@ -598,7 +828,7 @@ mod tests {
         }
         index.flush().unwrap();
 
-        let mut query_results = Query::get_matches(r#"data = "u""#.to_string(), &index).unwrap();
+        let mut query_results = Query::get_matches(r#"find {data: == "u"}"#.to_string(), &index).unwrap();
         loop {
             match query_results.get_next_id() {
                 Ok(Some(result)) => println!("result: {}", result),
