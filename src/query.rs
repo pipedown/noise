@@ -780,6 +780,10 @@ mod tests {
         let _ = index.add(r#"{"_id":"3", "A":"Multi word sentence"}"#);
         let _ = index.add(r#"{"_id":"4", "A":"%&%}{}@);€"}"#);
         let _ = index.add(r#"{"_id":"5", "A":"{}€52 deeply \\n\\v "}"#);
+        let _ = index.add(r#"{"_id":"6", "A":[{"B":"B3"},{"B": "B3"}]}"#);
+        let _ = index.add(r#"{"_id":"7", "A":[{"B":"B3"},{"B": "B4"}]}"#);
+        let _ = index.add(r#"{"_id":"8", "A":["A1", "A1"]}"#);
+        let _ = index.add(r#"{"_id":"9", "A":["A1", "A2"]}"#);
 
         index.flush().unwrap();
 
@@ -812,6 +816,17 @@ mod tests {
         assert_eq!(query_results.get_next_id().unwrap(), Some("1".to_string()));
         assert_eq!(query_results.get_next_id().unwrap(), Some("2".to_string()));
         assert_eq!(query_results.get_next_id().unwrap(), None);
+
+        query_results = Query::get_matches(r#"find {A:[{B: == "B3" || B: == "B4"}]}"#.to_string(), &index).unwrap();
+        assert_eq!(query_results.get_next_id().unwrap(), Some("6".to_string()));
+        assert_eq!(query_results.get_next_id().unwrap(), Some("7".to_string()));
+        assert_eq!(query_results.get_next_id().unwrap(), None);
+
+        query_results = Query::get_matches(r#"find {A:[ == "A1" || == "A2"]}"#.to_string(), &index).unwrap();
+        assert_eq!(query_results.get_next_id().unwrap(), Some("8".to_string()));
+        assert_eq!(query_results.get_next_id().unwrap(), Some("9".to_string()));
+        assert_eq!(query_results.get_next_id().unwrap(), None);
+        
     }
 
     #[test]
