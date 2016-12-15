@@ -246,15 +246,17 @@ impl<'a> QueryRuntimeFilter for AndFilter<'a> {
     }
 }
 
-
-struct FilterAndResult<'a> {
+/// Used by OrFilter to maintain a already fetched result so we don't refetch when one side isn't
+/// returned to caller. Because we won't know which side gets returned until both sides are
+/// fetched.
+struct FilterWithResult<'a> {
     filter: Box<QueryRuntimeFilter + 'a>,
     result: Option<DocResult>,
     is_done: bool,
     array_depth: usize,
 }
 
-impl<'a> FilterAndResult<'a> {
+impl<'a> FilterWithResult<'a> {
     fn prime_first_result(&mut self, start: &DocResult) -> Result<(), Error> {
         if self.is_done {
             return Ok(())
@@ -289,8 +291,8 @@ impl<'a> FilterAndResult<'a> {
 }
 
 struct OrFilter<'a> {
-    left: FilterAndResult<'a>,
-    right: FilterAndResult<'a>,
+    left: FilterWithResult<'a>,
+    right: FilterWithResult<'a>,
 }
 
 impl<'a> OrFilter<'a> {
@@ -298,13 +300,13 @@ impl<'a> OrFilter<'a> {
            right: Box<QueryRuntimeFilter + 'a>,
            array_depth: usize) -> OrFilter<'a> {
         OrFilter {
-            left: FilterAndResult{filter: left,
+            left: FilterWithResult{filter: left,
                                  result: None,
                                  array_depth: array_depth,
                                  is_done: false,
                                  },
             
-            right: FilterAndResult{filter: right,
+            right: FilterWithResult{filter: right,
                                  result: None,
                                  array_depth: array_depth,
                                  is_done: false,
