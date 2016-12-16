@@ -97,7 +97,6 @@ impl<'a> QueryResults<'a> {
 
 struct ExactMatchFilter {
     iter: DBIterator,
-    kb: KeyBuilder,
     keypathword: String,
     stemmed: String,
     stemmed_offset: u64,
@@ -110,7 +109,6 @@ impl ExactMatchFilter {
         let keypathword = kb.get_keypathword_only(&stemmed_word.stemmed);
         ExactMatchFilter{
             iter: iter,
-            kb: kb,
             keypathword: keypathword,
             stemmed: stemmed_word.stemmed.clone(),
             stemmed_offset: stemmed_word.stemmed_offset as u64,
@@ -123,10 +121,12 @@ impl ExactMatchFilter {
 impl QueryRuntimeFilter for ExactMatchFilter {
     fn first_result(&mut self, start: &DocResult) -> Result<Option<DocResult>, Error> {
 
-        let key = self.kb.stemmed_word_key_from_doc_result(&self.stemmed, &start);
+        KeyBuilder::add_doc_result_to_keypathword(&mut self.keypathword, &start);
         // Seek in index to >= entry
-        self.iter.set_mode(IteratorMode::From(key.as_bytes(),
+        self.iter.set_mode(IteratorMode::From(self.keypathword.as_bytes(),
                            rocksdb::Direction::Forward));
+        
+        KeyBuilder::truncate_to_keypathword(&mut self.keypathword);
 
         self.next_result()
     }
