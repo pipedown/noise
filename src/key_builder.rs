@@ -17,20 +17,7 @@ impl KeyBuilder {
         }
     }
 
-    /// Builds a stemmed word key for the input word and seq, using the key_path and arraypath
-    /// built up internally.
-    pub fn stemmed_word_key(&self, word: &str, seq: u64) -> String {
-        self.stemmed_word_key_internal(word, seq, &self.arraypath)
-    }
-
-    /// Builds a stemmed word key for the input word and doc result, using the key_path built up
-    /// internally but ignoring the internal array path. Instead uses the array path from the
-    /// DocResult 
-    pub fn stemmed_word_key_from_doc_result(&self, word: &str, dr: &DocResult) -> String {
-        self.stemmed_word_key_internal(word, dr.seq, &dr.arraypath)
-    }
-
-    fn stemmed_word_key_internal(&self, word: &str, seq: u64, arraypath: &Vec<u64>) -> String {
+    pub fn get_keypathword_only(&self, word: &str) -> String {
         let mut string = String::with_capacity(100);
         string.push('W');
         for segment in &self.keypath {
@@ -39,11 +26,30 @@ impl KeyBuilder {
         string.push('!');
         string.push_str(word);
         string.push('#');
-        string.push_str(seq.to_string().as_str());
-
-        self.add_arraypath(&mut string, &arraypath);
         string
     }
+
+    /// Builds a stemmed word key for the input word and seq, using the key_path and arraypath
+    /// built up internally.
+    pub fn stemmed_word_key(&self, word: &str, seq: u64) -> String {
+        let mut string = self.get_keypathword_only(&word);
+        string.push_str(seq.to_string().as_str());
+
+        KeyBuilder::add_arraypath(&mut string, &self.arraypath);
+        string
+    }
+
+    /// Adds DocResult seq and array path an already created keypathword.
+    pub fn add_doc_result_to_keypathword(keypathword: &mut String, dr: &DocResult) {
+        keypathword.push_str(dr.seq.to_string().as_str());
+        KeyBuilder::add_arraypath(keypathword, &dr.arraypath);
+    }
+
+    pub fn truncate_to_keypathword(stemmed_word_key: &mut String) {
+        let n = stemmed_word_key.rfind("#").unwrap();
+        stemmed_word_key.truncate(n + 1);
+    }
+
 
     /// Builds a value key for seq (value keys are the original json terminal value with
     /// keyed on keypath and arraypath built up internally).
@@ -56,11 +62,11 @@ impl KeyBuilder {
         string.push('#');
         string.push_str(&seq.to_string());
 
-        self.add_arraypath(&mut string, &self.arraypath);
+        KeyBuilder::add_arraypath(&mut string, &self.arraypath);
         string
     }
 
-    fn add_arraypath(&self, string: &mut String, arraypath: &Vec<u64>) {
+    fn add_arraypath(string: &mut String, arraypath: &Vec<u64>) {
         if arraypath.is_empty() {
             string.push(',');
         } else {
@@ -129,13 +135,6 @@ impl KeyBuilder {
         let m = seq_arraypath_str.find(",").unwrap();
 
         (&str[..n], &seq_arraypath_str[..m], &seq_arraypath_str[m + 1..])
-    }
-
-    pub fn get_keypathword_only(&self, stemmed: &str) -> String {
-        let mut key = self.stemmed_word_key(stemmed, 0);
-        let n = key.rfind("#").unwrap();
-        key.truncate(n + 1);
-        key
     }
 
     /* parses a seq and array path portion (ex "123,0,0,10) of a key into a doc result */
