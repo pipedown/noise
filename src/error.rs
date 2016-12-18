@@ -2,6 +2,7 @@ extern crate capnp;
 extern crate rocksdb;
 
 use std::{error, fmt};
+use std::num::ParseIntError;
 
 #[derive(Debug)]
 pub enum Error {
@@ -45,6 +46,12 @@ impl From<capnp::Error> for Error {
 impl From<rocksdb::Error> for Error {
     fn from(err: rocksdb::Error) -> Error {
         Error::Rocks(err)
+    }
+}
+
+impl From<ParseIntError> for Error {
+    fn from(err: ParseIntError) -> Error {
+        Error::Parse(err.to_string())
     }
 }
 

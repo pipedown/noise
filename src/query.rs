@@ -1,9 +1,12 @@
 #![allow(dead_code)]
 #![allow(unused_variables)]
+
 extern crate capnp;
 
 use std::str;
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
+use std::collections::HashSet;
 
 use error::Error;
 use index::Index;
@@ -98,20 +101,17 @@ impl<'a> QueryResults<'a> {
 struct ExactMatchFilter {
     iter: DBIterator,
     keypathword: String,
-    stemmed: String,
-    stemmed_offset: u64,
+    word_pos: u64,
     suffix: String,
     suffix_offset: u64,
 }
 
 impl ExactMatchFilter {
-    fn new(iter: DBIterator, stemmed_word: &StemmedWord, kb: KeyBuilder) -> ExactMatchFilter {
-        let keypathword = kb.get_keypathword_only(&stemmed_word.stemmed);
+    fn new(iter: DBIterator, stemmed_word: &StemmedWord, kb: &KeyBuilder) -> ExactMatchFilter {
         ExactMatchFilter{
             iter: iter,
-            keypathword: keypathword,
-            stemmed: stemmed_word.stemmed.clone(),
-            stemmed_offset: stemmed_word.stemmed_offset as u64,
+            keypathword: kb.get_keypathword_only(&stemmed_word.stemmed),
+            word_pos: stemmed_word.word_pos as u64,
             suffix: stemmed_word.suffix.clone(),
             suffix_offset: stemmed_word.suffix_offset as u64,
         }
@@ -137,49 +137,345 @@ impl QueryRuntimeFilter for ExactMatchFilter {
                 return Ok(None)
             }
 
-            // New scope needed as the iter.next() below invalidates the
-            // current key and value
-            {
-                let (key, value) = match self.iter.next() {
-                    Some((key, value)) => (key, value),
-                    None => return Ok(None),
-                };
-                if !key.starts_with(self.keypathword.as_bytes()) {
-                    // we passed the key path we are interested in. nothing left to do */
-                    return Ok(None)
-                }
+            let (key, value) = match self.iter.next() {
+                Some((key, value)) => (key, value),
+                None => return Ok(None),
+            };
+            if !key.starts_with(self.keypathword.as_bytes()) {
+                // we passed the key path we are interested in. nothing left to do */
+                return Ok(None)
+            }
 
-                // NOTE vmx 2016-10-13: I'm not really sure why the dereferencing is needed
-                // and why we pass on mutable reference of it to `read_message()`
-                //let mut ref_value = &*value;
-                let message_reader = ::capnp::serialize_packed::read_message(
-                    &mut &*value, ::capnp::message::ReaderOptions::new()).unwrap();
-                let payload = message_reader.get_root::<payload::Reader>().unwrap();
+            // NOTE vmx 2016-10-13: I'm not really sure why the dereferencing is needed
+            // and why we pass on mutable reference of it to `read_message()`
+            let mut ref_value = &*value;
+            let message_reader = ::capnp::serialize_packed::read_message(
+                &mut ref_value, ::capnp::message::ReaderOptions::new()).unwrap();
+            let payload = message_reader.get_root::<payload::Reader>().unwrap();
 
-                for wi in try!(payload.get_wordinfos()).iter() {
-                    if self.stemmed_offset == wi.get_stemmed_offset() &&
-                        self.suffix_offset == wi.get_suffix_offset() &&
-                        self.suffix == try!(wi.get_suffix_text()) {
-                            // We have a candidate document to return
-                            let key_str = unsafe{str::from_utf8_unchecked(&key)};
-                            return Ok(Some(KeyBuilder::parse_doc_result_from_key(&key_str)));
-                    }
+            for wi in try!(payload.get_wordinfos()).iter() {
+                if self.word_pos == wi.get_word_pos() &&
+                    self.suffix_offset == wi.get_suffix_offset() &&
+                    self.suffix == try!(wi.get_suffix_text()) {
+                        // We have a candidate document to return
+                        let key_str = unsafe{str::from_utf8_unchecked(&key)};
+                        return Ok(Some(KeyBuilder::parse_doc_result_from_key(&key_str)));
                 }
             }
         }
     }
 }
 
+struct StemmedWordFilter {
+    iter: DBIterator,
+    keypathword: String,
+}
 
-
-struct DummyFilter {}
-
-impl QueryRuntimeFilter for DummyFilter {
-    fn first_result(&mut self, start: &DocResult) -> Result<Option<DocResult>, Error> {
-        Ok(None)
+impl StemmedWordFilter {
+    fn new(iter: DBIterator, stemmed_word: &str, kb: &KeyBuilder) -> StemmedWordFilter {
+        StemmedWordFilter {
+            iter: iter,
+            keypathword: kb.get_keypathword_only(&stemmed_word),
+        }
     }
+}
+
+impl QueryRuntimeFilter for StemmedWordFilter {
+    fn first_result(&mut self, start: &DocResult) -> Result<Option<DocResult>, Error> {
+
+        KeyBuilder::add_doc_result_to_keypathword(&mut self.keypathword, &start);
+        // Seek in index to >= entry
+        self.iter.set_mode(IteratorMode::From(self.keypathword.as_bytes(),
+                           rocksdb::Direction::Forward));
+        
+        KeyBuilder::truncate_to_keypathword(&mut self.keypathword);
+
+        self.next_result()
+    }
+
     fn next_result(&mut self) -> Result<Option<DocResult>, Error> {
-        Ok(None)
+        if !self.iter.valid() {
+            return Ok(None)
+        }
+
+        let (key, value) = match self.iter.next() {
+            Some((key, value)) => (key, value),
+            None => return Ok(None),
+        };
+        if !key.starts_with(self.keypathword.as_bytes()) {
+            // we passed the key path we are interested in. nothing left to do */
+            return Ok(None)
+        }
+
+        // We have a candidate document to return
+        let key_str = unsafe{str::from_utf8_unchecked(&key)};
+        Ok(Some(KeyBuilder::parse_doc_result_from_key(&key_str)))
+    }
+}
+
+/// This is not a QueryRuntimeFilter but it imitates one. Instead of returning just a DocResult
+/// it also return a vector of word positions, each being a instance of the word occurance
+struct StemmedWordPosFilter {
+    iter: DBIterator,
+    keypathword: String,
+}
+
+impl StemmedWordPosFilter {
+    fn new(iter: DBIterator, stemmed_word: &str, kb: &KeyBuilder) -> StemmedWordPosFilter {
+        StemmedWordPosFilter{
+            iter: iter,
+            keypathword: kb.get_keypathword_only(&stemmed_word),
+        }
+    }
+
+    fn first_result(&mut self,
+                    start: &DocResult) -> Result<Option<(DocResult, Vec<i64>)>, Error> {
+
+        KeyBuilder::add_doc_result_to_keypathword(&mut self.keypathword, &start);
+        // Seek in index to >= entry
+        self.iter.set_mode(IteratorMode::From(self.keypathword.as_bytes(),
+                           rocksdb::Direction::Forward));
+        
+        KeyBuilder::truncate_to_keypathword(&mut self.keypathword);
+
+        self.next_result()
+    }
+
+    fn next_result(&mut self) -> Result<Option<(DocResult, Vec<i64>)>, Error> {
+        if !self.iter.valid() {
+            return Ok(None)
+        }
+
+        let (key, value) = match self.iter.next() {
+            Some((key, value)) => (key, value),
+            None => return Ok(None),
+        };
+        if !key.starts_with(self.keypathword.as_bytes()) {
+            // we passed the key path we are interested in. nothing left to do */
+            return Ok(None)
+        }
+        let mut ref_value = &*value;
+        let message_reader = ::capnp::serialize_packed::read_message(
+                &mut ref_value, ::capnp::message::ReaderOptions::new()).unwrap();
+        let payload = message_reader.get_root::<payload::Reader>().unwrap();
+
+        let positions = try!(payload.get_wordinfos())
+                                    .iter()
+                                    .map(|wi| wi.get_word_pos()as i64)
+                                    .collect();
+
+        let key_str = unsafe{str::from_utf8_unchecked(&key)};
+        let docresult = KeyBuilder::parse_doc_result_from_key(&key_str);
+
+        Ok(Some((docresult, positions)))
+    }
+}
+
+struct StemmedPhraseFilter {
+    filters: Vec<StemmedWordPosFilter>,
+}
+
+impl StemmedPhraseFilter {
+    fn new(filters: Vec<StemmedWordPosFilter>) -> StemmedPhraseFilter {
+        StemmedPhraseFilter {
+            filters: filters,
+        }
+    }
+
+    fn result(&mut self,
+              base: Option<(DocResult, Vec<i64>)>) -> Result<Option<DocResult>, Error> {
+        // this is the number of matches left before all terms match and we can return a result 
+        let mut matches_left = self.filters.len() - 1;
+
+        if base.is_none() { return Ok(None); }
+        let (mut base_result, mut base_positions) = base.unwrap();
+
+        let mut current_filter = 0;
+        loop {
+            current_filter += 1;
+            if current_filter == self.filters.len() {
+                current_filter = 0;
+            }
+
+            let next = try!(self.filters[current_filter].first_result(&base_result));
+            
+            if next.is_none() { return Ok(None); }
+            let (next_result, next_positions) = next.unwrap();
+
+            if base_result == next_result {
+                let mut new_positions = Vec::new();
+                for &pos in next_positions.iter() {
+                    if let Ok(_) = base_positions.binary_search(&(pos-1)) {
+                        new_positions.push(pos);
+                    }
+                }
+                if new_positions.len() > 0 {
+                    // we have valus that survive! reassign back to base_positions
+                    base_positions = new_positions;
+                    matches_left -= 1;
+
+                    if matches_left == 0 {
+                        return Ok(Some(base_result));
+                    }
+                } else {
+                    // we didn't match on phrase, so get next_result from first filter
+                    current_filter = 0;
+                    let next = try!(self.filters[current_filter].next_result());
+                    if next.is_none() { return Ok(None); }
+                    let (next_result, next_positions) = next.unwrap();
+                    base_result = next_result;
+                    base_positions = next_positions;
+
+                    matches_left = self.filters.len() - 1;
+                }
+            } else {
+                // we didn't match on next_result, so get first_result at next_result on
+                // 1st filter.
+                current_filter = 0;
+                let next = try!(self.filters[current_filter].first_result(&next_result));
+                if next.is_none() { return Ok(None); }
+                let (next_result, next_positions) = next.unwrap();
+                base_result = next_result;
+                base_positions = next_positions;
+
+                matches_left = self.filters.len() - 1;
+            }
+        }
+    }
+}
+
+
+impl QueryRuntimeFilter for StemmedPhraseFilter {
+    fn first_result(&mut self, start: &DocResult) -> Result<Option<DocResult>, Error> {
+        let base_result = try!(self.filters[0].first_result(start));
+        self.result(base_result)
+    }
+
+    fn next_result(&mut self) -> Result<Option<DocResult>, Error> {
+        let base_result = try!(self.filters[0].next_result());
+        self.result(base_result)
+    }
+}
+
+struct DistanceFilter {
+    filters: Vec<StemmedWordPosFilter>,
+    current_filter: usize,
+    distance: i64,
+}
+
+impl DistanceFilter {
+    fn new(filters: Vec<StemmedWordPosFilter>, distance: i64) -> DistanceFilter {
+        DistanceFilter {
+            filters: filters,
+            current_filter: 0,
+            distance: distance,
+        }
+    }
+
+    fn result(&mut self,
+              base: Option<(DocResult, Vec<i64>)>) -> Result<Option<DocResult>, Error> {
+        // yes this code complex. I tried to break it up, but it wants to be like this.
+
+        // this is the number of matches left before all terms match and we can return a result 
+        let mut matches_left = self.filters.len() - 1;
+
+        if base.is_none() { return Ok(None); }
+        let (mut base_result, positions) = base.unwrap();
+
+        // This contains tuples of word postions and the filter they came from,
+        // sorted by word position.
+        let mut base_positions: Vec<(i64, usize)> = positions.iter()
+                                                            .map(|pos|(*pos, self.current_filter))
+                                                            .collect();
+        
+        // distance is number of words between searched words.
+        // add one to make calculating difference easier since abs(posa - posb) == distance + 1
+        let dis = self.distance + 1;
+        loop {
+            self.current_filter += 1;
+            if self.current_filter == self.filters.len() {
+                self.current_filter = 0;
+            }
+
+            let next = try!(self.filters[self.current_filter].first_result(&base_result));
+            
+            if next.is_none() { return Ok(None); }
+            let (next_result, next_positions) = next.unwrap();
+
+            if base_result == next_result {
+                // so we are in the same field. Now to check the proximity of the values from the
+                // next result to previous results.
+
+                // new_positions_map will accept positions within range of pos. But only if all
+                // positions that can be are within range. We use the sorted map so we can add
+                // the same positions multiple times and it's a noop.
+                let mut new_positions_map = BTreeMap::new();
+                for &pos in next_positions.iter() {
+                    // coud these lines be any longer? No they could not.
+                    let start = match base_positions.binary_search_by_key(&(pos-dis),
+                                                                          |&(pos2,_)| pos2) {
+                        Ok(start) => start,
+                        Err(start) => start,
+                    };
+
+                    let end = match base_positions.binary_search_by_key(&(pos+dis),
+                                                                        |&(pos2,_)| pos2) {
+                        Ok(end) => end,
+                        Err(end) => end,
+                    };
+
+                    // we now collect all the filters within the range
+                    let mut filters_encountered = HashSet::new();
+                    for &(_, filter_n) in base_positions[start..end].iter() {
+                        filters_encountered.insert(filter_n);
+                    }
+                    
+                    if filters_encountered.len() == self.filters.len() - matches_left {
+                        // we encountered all the filters we can at this stage, 
+                        // so we should add them all to the new_positions_map
+                        for &(prev_pos, filter_n) in base_positions[start..end].iter() {
+                            new_positions_map.insert(prev_pos, filter_n);
+                        }
+                        // and add the current pos
+                        new_positions_map.insert(pos, self.current_filter);
+                    }
+                }
+                if new_positions_map.len() > 0 {
+                    // we have valus that survive! reassign back to positions
+                    base_positions = new_positions_map.into_iter().collect();
+                    matches_left -= 1;
+
+                    if matches_left == 0 {
+                        return Ok(Some(base_result));
+                    } else {
+                        continue;
+                    }
+                }
+            }
+            // we didn't match on next_result, so get next_result on current filter
+            let next = try!(self.filters[self.current_filter].next_result());
+            
+            if next.is_none() { return Ok(None); }
+            let (next_result, next_positions) = next.unwrap();
+            base_result = next_result;
+            base_positions = next_positions.iter()
+                                            .map(|pos| (*pos, self.current_filter))
+                                            .collect();
+
+            matches_left = self.filters.len() - 1;
+        }
+    }
+}
+
+impl QueryRuntimeFilter for DistanceFilter {
+    fn first_result(&mut self, start: &DocResult) -> Result<Option<DocResult>, Error> {
+        let base_result = try!(self.filters[self.current_filter].first_result(start));
+        self.result(base_result)
+    }
+
+    fn next_result(&mut self) -> Result<Option<DocResult>, Error> {
+        let base_result = try!(self.filters[self.current_filter].next_result());
+        self.result(base_result)
     }
 }
 
@@ -197,15 +493,14 @@ impl<'a> AndFilter<'a> {
             current_filter: 0,
             array_depth: array_depth,
         }
-   }
+    }
 
     fn result(&mut self, base: Option<DocResult>) -> Result<Option<DocResult>, Error> {
         let mut matches_count = self.filters.len() - 1;
-        // TODO vmx 2016-11-04: Make it nicer
-        let mut base_result = match base {
-            Some(base_result) => base_result,
-            None => return Ok(None),
-        };
+
+        if base.is_none() { return Ok(None); }
+        let mut base_result = base.unwrap();
+        
         base_result.arraypath.resize(self.array_depth, 0);
 
         loop {
@@ -215,10 +510,10 @@ impl<'a> AndFilter<'a> {
             }
 
             let next = try!(self.filters[self.current_filter].first_result(&base_result));
-            let mut next_result = match next {
-                Some(next_result) => next_result,
-                None => return Ok(None),
-            };
+            
+            if next.is_none() { return Ok(None); }
+            let mut next_result = next.unwrap();
+
             next_result.arraypath.resize(self.array_depth, 0);
 
             if base_result == next_result {
@@ -439,6 +734,24 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn consume_integer(&mut self) -> Result<Option<i64>, Error> {
+        let mut result = String::new();
+        for char in self.query[self.offset..].chars() {
+            if char >= '0' && char <= '9' {
+                result.push(char);
+            } else {
+                break;
+            }
+        }
+        if !result.is_empty() {
+            self.offset += result.len();
+            self.ws();
+            Ok(Some(try!(result.parse())))
+        } else {
+            Ok(None)
+        }
+    }
+
     fn consume_string_literal(&mut self) -> Result<String, Error> {
         let mut lit = String::new();
         let mut next_is_special_char = false;
@@ -504,8 +817,7 @@ oparens
    / object
 
 compare
-   = ("==" / "~=" / "^=" ) ws string ws
-
+   = ("==" / "~=" / "~" digits "=" ) ws string ws
 
 abool
 	= ws acompare ws (('&&'/ ',' / '||') ws abool)?
@@ -530,6 +842,9 @@ field
 
 string
    = '"' ('\\\\' / '\\' [\"tfvrnb] / [^\\\"])* '"' ws
+
+digits
+    = [0-9]+
 
 ws
  = [ \t\n\r]*
@@ -630,14 +945,57 @@ ws1
             for stem in stems {
                 let iter = self.snapshot.iterator(IteratorMode::Start);
                 let filter = Box::new(ExactMatchFilter::new(
-                    iter, &stem, self.kb.clone()));
+                    iter, &stem, &self.kb));
                 filters.push(filter);
             }
             match filters.len() {
                 0 => panic!("Cannot create a ExactMatchFilter"),
                 1 => Ok(filters.pop().unwrap()),
-                _ => Ok(Box::new(AndFilter::new(
-                                filters, self.kb.arraypath_len()))),
+                _ => Ok(Box::new(AndFilter::new(filters, self.kb.arraypath_len()))),
+            }
+        } else if self.consume("~=") {
+            // regular search
+            let literal = try!(self.consume_string_literal());
+            let stems = Stems::new(&literal);
+            let stemmed_words: Vec<String> = stems.map(|stem| stem.stemmed).collect();
+
+            match stemmed_words.len() {
+                0 => panic!("Cannot create a StemmedWordFilter"),
+                1 => {
+                    let iter = self.snapshot.iterator(IteratorMode::Start);
+                    Ok(Box::new(StemmedWordFilter::new(iter, &stemmed_words[0], &self.kb)))
+                },
+                _ => {
+                    let mut filters: Vec<StemmedWordPosFilter> = Vec::new();
+                    for stemmed_word in stemmed_words {
+                        let iter = self.snapshot.iterator(IteratorMode::Start);
+                        let filter = StemmedWordPosFilter::new(iter, &stemmed_word, &self.kb);
+                        filters.push(filter);
+                    }
+                    Ok(Box::new(StemmedPhraseFilter::new(filters)))
+                },
+            }
+        } else if self.consume("~") {
+            let word_distance = match try!(self.consume_integer()) {
+                Some(int) => int,
+                None => {
+                    return Err(Error::Parse("Expected integer for proximity search".to_string()));
+                },
+            };
+            try!(self.must_consume("="));
+
+            let literal = try!(self.consume_string_literal());
+            let stems = Stems::new(&literal);
+            let mut filters: Vec<StemmedWordPosFilter> = Vec::new();
+            for stem in stems {
+                let iter = self.snapshot.iterator(IteratorMode::Start);
+                let filter = StemmedWordPosFilter::new(
+                    iter, &stem.stemmed, &self.kb);
+                filters.push(filter);
+            }
+            match filters.len() {
+                0 => panic!("Cannot create a DistanceFilter"),
+                _ => Ok(Box::new(DistanceFilter::new(filters, word_distance))),
             }
         } else {
             Err(Error::Parse("Expected comparison operator".to_string()))
@@ -786,6 +1144,8 @@ mod tests {
         let _ = index.add(r#"{"_id":"7", "A":[{"B":"B3"},{"B": "B4"}]}"#);
         let _ = index.add(r#"{"_id":"8", "A":["A1", "A1"]}"#);
         let _ = index.add(r#"{"_id":"9", "A":["A1", "A2"]}"#);
+        let _ = index.add(r#"{"_id":"10", "A":"a bunch of words in this sentence"}"#);
+        let _ = index.add(r#"{"_id":"11", "A":""}"#);
 
         index.flush().unwrap();
 
@@ -796,6 +1156,16 @@ mod tests {
         query_results = Query::get_matches(r#"find {A:[{B: == "B2", C: == "C2"}]}"#.to_string(), &index).unwrap();
         assert_eq!(query_results.get_next_id().unwrap(), Some("1".to_string()));
         assert_eq!(query_results.get_next_id().unwrap(), None);
+
+        query_results = Query::get_matches(r#"find {A:[{B: == "B2", C: == "C8"}]}"#.to_string(), &index).unwrap();
+        assert_eq!(query_results.get_next_id().unwrap(), None);
+
+        let (mut x, mut y) = (1, 2);
+        x = x + 1;
+        y = y + 1;
+        let (x, v) = (x+1, y+1);
+
+        assert_eq!(x, 3);
 
         query_results = Query::get_matches(r#"find {A:[{B: == "b1", C: == "C2"}]}"#.to_string(), &index).unwrap();
         assert_eq!(query_results.get_next_id().unwrap(), Some("1".to_string()));
@@ -827,6 +1197,44 @@ mod tests {
         query_results = Query::get_matches(r#"find {A:[ == "A1" || == "A2"]}"#.to_string(), &index).unwrap();
         assert_eq!(query_results.get_next_id().unwrap(), Some("8".to_string()));
         assert_eq!(query_results.get_next_id().unwrap(), Some("9".to_string()));
+        assert_eq!(query_results.get_next_id().unwrap(), None);
+
+        query_results = Query::get_matches(r#"find {A: ~= "Multi"}"#.to_string(), &index).unwrap();
+        assert_eq!(query_results.get_next_id().unwrap(), Some("3".to_string()));
+        assert_eq!(query_results.get_next_id().unwrap(), None);
+
+        query_results = Query::get_matches(r#"find {A: ~= "multi word"}"#.to_string(), &index).unwrap();
+        assert_eq!(query_results.get_next_id().unwrap(), Some("3".to_string()));
+        assert_eq!(query_results.get_next_id().unwrap(), None);
+
+        query_results = Query::get_matches(r#"find {A: ~= "word sentence"}"#.to_string(), &index).unwrap();
+        assert_eq!(query_results.get_next_id().unwrap(), Some("3".to_string()));
+        assert_eq!(query_results.get_next_id().unwrap(), None);
+
+        query_results = Query::get_matches(r#"find {A: ~= "sentence word"}"#.to_string(), &index).unwrap();
+        assert_eq!(query_results.get_next_id().unwrap(), None);
+
+        query_results = Query::get_matches(r#"find {A: ~1= "multi sentence"}"#.to_string(), &index).unwrap();
+        assert_eq!(query_results.get_next_id().unwrap(), Some("3".to_string()));
+        assert_eq!(query_results.get_next_id().unwrap(), None);
+
+        query_results = Query::get_matches(r#"find {A: ~4= "a sentence"}"#.to_string(), &index).unwrap();
+        assert_eq!(query_results.get_next_id().unwrap(), None);
+
+        query_results = Query::get_matches(r#"find {A: ~5= "a sentence"}"#.to_string(), &index).unwrap();
+        assert_eq!(query_results.get_next_id().unwrap(), Some("10".to_string()));
+        assert_eq!(query_results.get_next_id().unwrap(), None);
+
+        query_results = Query::get_matches(r#"find {A: ~4= "a bunch of words sentence"}"#.to_string(), &index).unwrap();
+        assert_eq!(query_results.get_next_id().unwrap(), None);
+
+        query_results = Query::get_matches(r#"find {A: ~5= "a bunch of words sentence"}"#.to_string(), &index).unwrap();
+        assert_eq!(query_results.get_next_id().unwrap(), Some("10".to_string()));
+        assert_eq!(query_results.get_next_id().unwrap(), None);
+
+
+        query_results = Query::get_matches(r#"find {A: == ""}"#.to_string(), &index).unwrap();
+        assert_eq!(query_results.get_next_id().unwrap(), Some("11".to_string()));
         assert_eq!(query_results.get_next_id().unwrap(), None);
         
     }

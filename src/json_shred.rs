@@ -18,7 +18,7 @@ use stems::Stems;
 #[derive(Debug, PartialEq)]
 struct WordInfo {
     //offset in the text field where the stemmed text starts
-    stemmed_offset: u64,
+    word_pos: u64,
 
     // the suffix of the stemmed text. When applied over stemmed, the original
     // text is returned.
@@ -72,7 +72,7 @@ impl Shredder {
         for stem in stems {
             let word_infos = word_to_word_infos.entry(stem.stemmed).or_insert(Vec::new());
             word_infos.push(WordInfo{
-                stemmed_offset: stem.stemmed_offset as u64,
+                word_pos: stem.word_pos as u64,
                 suffix_text: stem.suffix.to_string(),
                 suffix_offset: stem.suffix_offset as u64,
             });
@@ -84,7 +84,7 @@ impl Shredder {
                 let mut capn_wordinfos = capn_payload.init_wordinfos(word_infos.len() as u32);
                 for (pos, word_info) in word_infos.iter().enumerate() {
                     let mut capn_wordinfo = capn_wordinfos.borrow().get(pos as u32);
-                    capn_wordinfo.set_stemmed_offset(word_info.stemmed_offset);
+                    capn_wordinfo.set_word_pos(word_info.word_pos);
                     capn_wordinfo.set_suffix_text(&word_info.suffix_text);
                     capn_wordinfo.set_suffix_offset(word_info.suffix_offset);
                 }
@@ -245,7 +245,7 @@ mod tests {
             let mut wordinfos = Vec::new();
             for wi in payload.get_wordinfos().unwrap().iter() {
                 wordinfos.push(WordInfo{
-                    stemmed_offset: wi.get_stemmed_offset(),
+                    word_pos: wi.get_word_pos(),
                     suffix_text: wi.get_suffix_text().unwrap().to_string(),
                     suffix_offset: wi.get_suffix_offset(),
                 });
@@ -271,13 +271,13 @@ mod tests {
 
         let expected = vec![
             ("W.some$!array#123,0".to_string(), vec![
-                WordInfo { stemmed_offset: 0, suffix_text: "".to_string(), suffix_offset: 5 }]),
+                WordInfo { word_pos: 0, suffix_text: "".to_string(), suffix_offset: 5 }]),
             ("W.some$!data#123,1".to_string(), vec![
-                WordInfo { stemmed_offset: 0, suffix_text: "".to_string(), suffix_offset: 4 }]),
+                WordInfo { word_pos: 0, suffix_text: "".to_string(), suffix_offset: 4 }]),
             ("W.some$$!also#123,2,0".to_string(), vec![
-                WordInfo { stemmed_offset: 0, suffix_text: "".to_string(), suffix_offset: 4 }]),
+                WordInfo { word_pos: 0, suffix_text: "".to_string(), suffix_offset: 4 }]),
             ("W.some$$!nest#123,2,1".to_string(), vec![
-                WordInfo { stemmed_offset: 0, suffix_text: "ed".to_string(), suffix_offset: 4 }]),
+                WordInfo { word_pos: 0, suffix_text: "ed".to_string(), suffix_offset: 4 }]),
             ];
         assert_eq!(result, expected);
     }
@@ -300,22 +300,22 @@ mod tests {
         println!("result: {:?}", result);
         let expected = vec![
             ("W.A$.B!b1#1234,1".to_string(), vec![
-                WordInfo { stemmed_offset: 0, suffix_text: "".to_string(), suffix_offset: 2 }]),
+                WordInfo { word_pos: 0, suffix_text: "".to_string(), suffix_offset: 2 }]),
             ("W.A$.B!b2vmx#1234,0".to_string(), vec![
-                WordInfo { stemmed_offset: 0, suffix_text: "B2 VMX ".to_string(),
+                WordInfo { word_pos: 0, suffix_text: "B2 VMX ".to_string(),
                            suffix_offset: 0 }]),
             ("W.A$.B!three#1234,0".to_string(), vec![
-                WordInfo { stemmed_offset: 10, suffix_text: "".to_string(), suffix_offset: 15 }]),
+                WordInfo { word_pos: 10, suffix_text: "".to_string(), suffix_offset: 15 }]),
             ("W.A$.B!two#1234,0".to_string(), vec![
-                WordInfo { stemmed_offset: 6, suffix_text: " ".to_string(), suffix_offset: 9 }]),
+                WordInfo { word_pos: 6, suffix_text: " ".to_string(), suffix_offset: 9 }]),
             ("W.A$.C!..#1234,0".to_string(), vec![
-                WordInfo { stemmed_offset: 0, suffix_text: "".to_string(), suffix_offset: 2 }]),
+                WordInfo { word_pos: 0, suffix_text: "".to_string(), suffix_offset: 2 }]),
             ("W.A$.C!..#1234,1".to_string(), vec![
-                WordInfo { stemmed_offset: 0, suffix_text: "".to_string(), suffix_offset: 2 }]),
+                WordInfo { word_pos: 0, suffix_text: "".to_string(), suffix_offset: 2 }]),
             ("W.A$.C!c2#1234,0".to_string(), vec![
-                WordInfo { stemmed_offset: 2, suffix_text: "C2".to_string(), suffix_offset: 2 }]),
+                WordInfo { word_pos: 2, suffix_text: "C2".to_string(), suffix_offset: 2 }]),
             ("W.A$.C!c2#1234,1".to_string(), vec![
-                WordInfo { stemmed_offset: 2, suffix_text: "C2".to_string(), suffix_offset: 2 }]),
+                WordInfo { word_pos: 2, suffix_text: "C2".to_string(), suffix_offset: 2 }]),
             ];
         assert_eq!(result, expected);
     }
