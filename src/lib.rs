@@ -2,6 +2,7 @@ extern crate capnp;
 extern crate rocksdb;
 
 mod error;
+mod filters;
 mod json_shred;
 mod key_builder;
 mod stems;
