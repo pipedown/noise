@@ -166,7 +166,17 @@ impl<'a> Parser<'a> {
         self.query[self.offset..].starts_with(token)
     }
 
-    fn consume_field(&mut self) -> Result<Option<String>, Error> {
+    fn consume_key(&mut self) -> Result<Option<String>, Error> {
+        if let Some(key) = self.consume_field() {
+            Ok(Some(key))
+        } else if let Some(key) = try!(self.consume_string_literal()) {
+            Ok(Some(key))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn consume_field(&mut self) -> Option<String> {
         let mut result = String::new();
         {
             let mut chars = self.query[self.offset..].chars();
@@ -187,9 +197,9 @@ impl<'a> Parser<'a> {
         if result.len() > 0 {
             self.offset += result.len();
             self.ws();
-            Ok(Some(result))
+            Some(result)
         } else {
-            self.consume_string_literal()
+            None
         }
     }
 
@@ -218,7 +228,7 @@ impl<'a> Parser<'a> {
                 try!(self.must_consume("]"));
                 key
             } else {
-                 if let Some(key) = try!(self.consume_field()) {
+                 if let Some(key) = self.consume_field() {
                     key
                 } else {
                     self.ws();
@@ -241,7 +251,7 @@ impl<'a> Parser<'a> {
                 }
                 try!(self.must_consume("]"));
             } else if self.consume(".") {
-                if let Some(key) = try!(self.consume_field()) {
+                if let Some(key) = self.consume_field() {
                     kb.push_object_key(&key);
                 } else {
                     return Err(Error::Parse("Expected object key.".to_string()));
@@ -420,7 +430,7 @@ ws1
     fn ocompare<'b>(&'b mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
         if let Some(filter) = try!(self.oparens()) {
             Ok(filter)
-        } else if let Some(field) = try!(self.consume_field()) {
+        } else if let Some(field) = try!(self.consume_key()) {
             self.kb.push_object_key(&field);
             try!(self.must_consume(":"));
             if let Some(filter) = try!(self.oparens()) {
@@ -582,7 +592,7 @@ ws1
         try!(self.must_consume("{"));
         let mut fields: Vec<(String, Box<Returnable>)> = Vec::new();
         loop {
-            if let Some(field) = try!(self.consume_field()) {
+            if let Some(field) = try!(self.consume_key()) {
                 try!(self.must_consume(":"));
                 if let Some(ret_value) = try!(self.ret_value()) {
                     fields.push((field, ret_value));
