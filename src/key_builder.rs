@@ -161,6 +161,7 @@ impl KeyBuilder {
         debug_assert!(self.keypath.last().unwrap().starts_with("."));
         self.keypath.pop();
     }
+
     pub fn peek_object_key(&self) -> String {
         debug_assert!(self.keypath.last().unwrap().starts_with("."));
         let x = KeyBuilder::parse_first_key_value_segment(&self.keypath.last().unwrap());
@@ -169,6 +170,11 @@ impl KeyBuilder {
         } else {
             panic!("peek_object_key is messed up yo!");
         }
+    }
+
+    pub fn peek_array_offset(&self) -> u64 {
+        debug_assert!(self.keypath.last().unwrap().starts_with("$"));
+        self.arraypath.last().unwrap().clone()
     }
 
     pub fn pop_array(&mut self) {
