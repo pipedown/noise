@@ -113,8 +113,12 @@ impl Index {
         {
             let docid = try!(shredder.shred(json, self.high_doc_seq + 1,
                                             self.batch.as_mut().unwrap()));
+            if self.id_str_to_id_seq.contains_key(&docid) {
+                return Err(Error::Write("Attempt to insert multiple docs with same _id"
+                                        .to_string()));
+            }
             self.high_doc_seq += 1;
-            self.id_str_to_id_seq.insert(format!("I{}", docid), format!("S{}", self.high_doc_seq));
+            self.id_str_to_id_seq.insert(format!("I{}", docid), format!("{}", self.high_doc_seq));
         }
         Ok(())
     }
@@ -137,10 +141,9 @@ impl Index {
             }
         }
 
-        // Add the ids_to_seq keyspace entries
+        // Add the ids_to_seq keyspace entry
         for (id, seq) in &self.id_str_to_id_seq {
             try!(self.batch.as_mut().unwrap().put(id.as_bytes(), seq.as_bytes()));
-            try!(self.batch.as_mut().unwrap().put(seq.as_bytes(), id.as_bytes()));
         }
 
         let mut header = Header::new();
