@@ -2,6 +2,9 @@ extern crate rocksdb;
 extern crate rustc_serialize;
 
 use std::collections::HashMap;
+use std::mem::transmute;
+use std::io::Write;
+use std::str::Chars;
 
 use self::rustc_serialize::json::{JsonEvent, Parser, StackElement};
 
@@ -106,7 +109,47 @@ impl Shredder {
 
         Ok(())
     }
+    
+    fn add_value(&mut self, code: char, value: &[u8],
+                 docseq: u64, batch: &mut rocksdb::WriteBatch) -> Result<(), Error> {
+        let key = self.kb.value_key(docseq);
 
+        let mut buffer = Vec::with_capacity(value.len() + 1);
+        buffer.push(code as u8);
+        try!((&mut buffer as &mut Write).write_all(&value));
+
+        try!(batch.put(&key.into_bytes(), &buffer.as_ref()));
+
+        Ok(())
+    }
+    fn maybe_add_value(&mut self, parser: &Parser<Chars>, code: char, value: &[u8],
+                       docseq: u64, batch: &mut rocksdb::WriteBatch) -> Result<(), Error> {
+        if self.ignore_children == 0 {
+            match self.extract_key(parser.stack().top()) {
+                ObjectKeyTypes::Id => {
+                    return Err(Error::Shred(
+                            "Expected string for `_id` field, got another type".to_string()));
+                },
+                ObjectKeyTypes::Key(key) => {
+                    // Pop the dummy object that makes ObjectEnd happy
+                    // or the previous object key
+                    self.kb.pop_object_key();
+                    self.kb.push_object_key(&key);
+
+                    try!(self.add_value(code, &value, docseq, batch));
+                    self.kb.inc_top_array_offset();
+                },
+                ObjectKeyTypes::NoKey => {
+                    try!(self.add_value(code, &value, docseq, batch));
+                    self.kb.inc_top_array_offset();
+                },
+                ObjectKeyTypes::Ignore => {
+                    self.ignore_children = 1;
+                },
+            }
+        }
+        Ok(())
+    }
     // Extract key if it exists and indicates if it's a special type of key
     fn extract_key(&mut self, stack_element: Option<StackElement>) -> ObjectKeyTypes {
         if self.kb.last_pushed_keypath_is_object_key() {
@@ -156,6 +199,10 @@ impl Shredder {
             Result<String, Error> {
         let mut parser = Parser::new(json.chars());
         let mut token = parser.next();
+
+        // this will keep track of objects where encountered keys.
+        // if we didn't encounter keys then the top most element will be false.
+        let mut object_keys_indexed = Vec::new();
         loop {
             // Get the next token, so that in case of an `ObjectStart` the key is already
             // on the stack.
@@ -167,6 +214,7 @@ impl Shredder {
                     else {
                         // Just push something to make `ObjectEnd` happy
                         self.kb.push_object_key("");
+                        object_keys_indexed.push(false);
                     }
                 },
                 Some(JsonEvent::ObjectEnd) => {
@@ -174,6 +222,11 @@ impl Shredder {
                         self.ignore_children -= 1;
                     } else {
                         self.kb.pop_object_key();
+                        if !object_keys_indexed.pop().unwrap() {
+                            // this means we never wrote a key because the object was empty.
+                            // So preserve the empty object by writing a special value.
+                            try!(self.maybe_add_value(&parser, 'o', &[], docseq, batch));
+                        }
                         self.kb.inc_top_array_offset();
                     }
                 },
@@ -189,7 +242,14 @@ impl Shredder {
                     if self.ignore_children > 0 {
                         self.ignore_children -= 1;
                     } else {
-                        self.kb.pop_array();
+                        if self.kb.peek_array_offset() == 0 {
+                            // this means we never wrote a value because the object was empty.
+                            // So preserve the empty array by writing a special value.
+                            self.kb.pop_array();
+                            try!(self.maybe_add_value(&parser, 'a', &[], docseq, batch));
+                        } else {
+                            self.kb.pop_array();
+                        }
                         self.kb.inc_top_array_offset();
                     }
                 },
@@ -201,6 +261,7 @@ impl Shredder {
                                 self.doc_id = value.clone();
                                 self.kb.pop_object_key();
                                 self.kb.push_object_key("_id");
+                                *object_keys_indexed.last_mut().unwrap() = true;
 
                                 try!(self.add_entries(&value, docseq, batch));
                             },
@@ -209,6 +270,7 @@ impl Shredder {
                                 // or the previous object key
                                 self.kb.pop_object_key();
                                 self.kb.push_object_key(&key);
+                                *object_keys_indexed.last_mut().unwrap() = true;
 
                                 try!(self.add_entries(&value, docseq, batch));
                                 self.kb.inc_top_array_offset();
@@ -223,8 +285,32 @@ impl Shredder {
                         }
                     }
                 },
-                not_implemented => {
-                    panic!("Not yet implemented other JSON types! {:?}", not_implemented);
+                Some(JsonEvent::BooleanValue(tf)) => {
+                    let code = if tf {'T'} else {'F'};
+                    try!(self.maybe_add_value(&parser, code, &[], docseq, batch));
+                },
+                Some(JsonEvent::I64Value(i)) => {
+                    let f = i as f64;
+                    let bytes = unsafe{ transmute::<f64, [u8; 8]>(f) };
+                    try!(self.maybe_add_value(&parser, 'f', &bytes[..], docseq, batch));
+                },
+                Some(JsonEvent::U64Value(u)) => {
+                    let f = u as f64;
+                    let bytes = unsafe{ transmute::<f64, [u8; 8]>(f) };
+                    try!(self.maybe_add_value(&parser, 'f', &bytes[..], docseq, batch));
+                },
+                Some(JsonEvent::F64Value(f)) => {
+                    let bytes = unsafe{ transmute::<f64, [u8; 8]>(f) };
+                    try!(self.maybe_add_value(&parser, 'f', &bytes[..], docseq, batch));
+                },
+                Some(JsonEvent::NullValue) => {
+                    try!(self.maybe_add_value(&parser, 'N', &[], docseq, batch));
+                },
+                Some(JsonEvent::Error(error)) => {
+                    return Err(Error::Shred(error.to_string()));
+                },
+                None => {
+                    break;
                 }
             };
 

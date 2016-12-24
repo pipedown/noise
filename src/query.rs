@@ -806,7 +806,7 @@ impl RetValue {
                 let string = unsafe{str::from_utf8_unchecked(&bytes[1..])}.to_string();
                 JsonValue::String(string)
             },
-            'n' => {
+            'f' => {
                 assert!(bytes.len() == 9);
                 let mut bytes2: [u8; 8] = [0; 8];
                 for (n, b) in bytes[1..9].iter().enumerate() {
@@ -1080,6 +1080,7 @@ mod tests {
         let _ = index.add(r#"{"_id":"10", "A":"a bunch of words in this sentence"}"#);
         let _ = index.add(r#"{"_id":"11", "A":""}"#);
         let _ = index.add(r#"{"_id":"12", "A":["1","2","3","4","5","6","7","8","9","10","11","12"]}"#);
+        let _ = index.add(r#"{"_id":"13", "A":["foo",1,true,false,null,{},[]]}"#);
 
         index.flush().unwrap();
 
@@ -1182,6 +1183,10 @@ mod tests {
         query_results = Query::get_matches(r#"find {A:[ == "2"]}
                                               return {foo:.A[0], bar: ._id} "#.to_string(), &index).unwrap();
         assert_eq!(query_results.next_result().unwrap(),Some(r#"{"foo":"1","bar":"12"}"#.to_string()));
+        assert_eq!(query_results.next_result().unwrap(), None);
+        query_results = Query::get_matches(r#"find {A:[ == "foo"]}
+                                              return .A "#.to_string(), &index).unwrap();
+        assert_eq!(query_results.next_result().unwrap(),Some(r#"["foo",1,true,false,null,{},[]]"#.to_string()));
         assert_eq!(query_results.next_result().unwrap(), None);
         
     }
