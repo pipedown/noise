@@ -97,7 +97,12 @@ impl Shredder {
 
         }
         let key = self.kb.value_key(docseq);
-        try!(batch.put(&key.into_bytes(), &text.as_bytes()));
+
+        let mut buffer = String::with_capacity(text.len() + 1);
+        buffer.push('s');
+        buffer.push_str(&text);
+
+        try!(batch.put(&key.into_bytes(), &buffer.as_bytes()));
 
         Ok(())
     }
@@ -192,7 +197,13 @@ impl Shredder {
                     // No children to ignore
                     if self.ignore_children == 0 {
                         match self.extract_key(parser.stack().top()) {
-                            ObjectKeyTypes::Id => self.doc_id = value,
+                            ObjectKeyTypes::Id => {
+                                self.doc_id = value.clone();
+                                self.kb.pop_object_key();
+                                self.kb.push_object_key("_id");
+
+                                try!(self.add_entries(&value, docseq, batch));
+                            },
                             ObjectKeyTypes::Key(key) => {
                                 // Pop the dummy object that makes ObjectEnd happy
                                 // or the previous object key

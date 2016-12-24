@@ -1,6 +1,10 @@
 use query::DocResult;
 use std::str;
 
+pub enum Segment {
+    ObjectKey(String),
+    Array(u64),
+} 
 
 #[derive(Debug, Clone)]
 pub struct KeyBuilder {
@@ -56,13 +60,16 @@ impl KeyBuilder {
     pub fn value_key(&self, seq: u64) -> String {
         let mut string = String::with_capacity(100);
         string.push('V');
+        string.push_str(&seq.to_string());
+        string.push('#');
+        let mut i = 0;
         for segment in &self.keypath {
             string.push_str(&segment);
+            if segment == "$" {
+                string.push_str(&self.arraypath[i].to_string());
+                i += 1;
+            }
         }
-        string.push('#');
-        string.push_str(&seq.to_string());
-
-        KeyBuilder::add_arraypath(&mut string, &self.arraypath);
         string
     }
 
@@ -75,15 +82,64 @@ impl KeyBuilder {
                 string.push_str(i.to_string().as_str());
             }
         }
-
     }
+
+    // returns the unescaped segment as Segment and the escaped segment as a slice 
+    pub fn parse_first_key_value_segment(keypath: &str) -> Option<(Segment, String)> {
+
+        let mut unescaped = String::with_capacity(50);
+        let mut len_bytes = 1;
+        let mut chars = keypath.chars();
+
+        // first char must be a . or a $ or we've exceeded the keypath
+        match chars.next() {
+            Some('.') => {
+                loop {
+                    match chars.next() {
+                        Some('\\') => {
+                            if let Some(c) = chars.next() {
+                                len_bytes += c.len_utf8();
+                                unescaped.push(c);
+                            } else {
+                                panic!("Escape char found as last char in keypath");
+                            }
+                        },
+                        Some('.') | Some('$') => {
+                            break;
+                        },
+                        Some(c) => {
+                            len_bytes += c.len_utf8();
+                            unescaped.push(c);
+                        }
+                        None => {
+                            break;
+                        }
+                    }
+                }
+                Some((Segment::ObjectKey(unescaped), keypath[..len_bytes].to_string()))
+            },
+            Some('$') => {
+                let mut i = String::new();
+                for c in chars {
+                    if c >= '0' && c <= '9' {
+                        i.push(c);
+                    } else {
+                        break;
+                    }
+                }
+                Some((Segment::Array(i.parse().unwrap()), keypath[..1+i.len()].to_string()))
+            },
+            Some(_) => None, // we must be past the keypath portion of string. done. 
+            None => None,
+        }
+    }  
 
     pub fn push_object_key(&mut self, key: &str) {
         let mut escaped_key = String::with_capacity((key.len() * 2) + 1); // max expansion
         escaped_key.push('.');
         for cc in key.chars() {
             // Escape chars that conflict with delimiters
-            if "\\$.!#,".contains(cc) {
+            if "\\$.!#".contains(cc) {
                 escaped_key.push('\\');
             }
             escaped_key.push(cc);
@@ -96,9 +152,23 @@ impl KeyBuilder {
         self.arraypath.push(0);
     }
 
+    pub fn push_array_index(&mut self, index: u64) {
+        self.keypath.push("$".to_string());
+        self.arraypath.push(index);
+    }
+
     pub fn pop_object_key(&mut self) {
         debug_assert!(self.keypath.last().unwrap().starts_with("."));
         self.keypath.pop();
+    }
+    pub fn peek_object_key(&self) -> String {
+        debug_assert!(self.keypath.last().unwrap().starts_with("."));
+        let x = KeyBuilder::parse_first_key_value_segment(&self.keypath.last().unwrap());
+        if let Some((Segment::ObjectKey(key), _unescaped)) = x {
+            key
+        } else {
+            panic!("peek_object_key is messed up yo!");
+        }
     }
 
     pub fn pop_array(&mut self) {
@@ -141,7 +211,7 @@ impl KeyBuilder {
     pub fn parse_doc_result_from_key(str: &str) -> DocResult {
         let mut dr = DocResult::new();
         let (_path_str, seq_str, arraypath_str) = KeyBuilder::split_keypath_seq_arraypath_from_key(&str);
-        dr.seq = seq_str.parse().unwrap();
+        dr.seq = seq_str.parse().unwrap(); 
         if !arraypath_str.is_empty() {
             for numstr in arraypath_str.split(",") {
                 dr.arraypath.push(numstr.parse().unwrap());
