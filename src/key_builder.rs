@@ -194,7 +194,11 @@ impl KeyBuilder {
     }
 
     pub fn last_pushed_keypath_is_object_key(&self) -> bool {
-        self.keypath.last().unwrap().starts_with(".")
+        if self.keypath.is_empty() {
+            false
+        } else {
+            self.keypath.last().unwrap().starts_with(".")
+        }
     }
 
     pub fn keypath_segments_len(&self) -> usize {
