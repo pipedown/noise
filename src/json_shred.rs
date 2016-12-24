@@ -334,21 +334,23 @@ mod tests {
     fn wordinfos_from_rocks(rocks: rocksdb::DB) -> Vec<(String, Vec<WordInfo>)> {
         let mut result = Vec::new();
         for (key, value) in rocks.iterator(rocksdb::IteratorMode::Start) {
-            let mut ref_value = &*value;
-            let message_reader = ::capnp::serialize_packed::read_message(
-                &mut ref_value, ::capnp::message::ReaderOptions::new()).unwrap();
-            let payload = message_reader.get_root::<records_capnp::payload::Reader>().unwrap();
+            if key[0] as char == 'W' {
+                let mut ref_value = &*value;
+                let message_reader = ::capnp::serialize_packed::read_message(
+                    &mut ref_value, ::capnp::message::ReaderOptions::new()).unwrap();
+                let payload = message_reader.get_root::<records_capnp::payload::Reader>().unwrap();
 
-            let mut wordinfos = Vec::new();
-            for wi in payload.get_wordinfos().unwrap().iter() {
-                wordinfos.push(WordInfo{
-                    word_pos: wi.get_word_pos(),
-                    suffix_text: wi.get_suffix_text().unwrap().to_string(),
-                    suffix_offset: wi.get_suffix_offset(),
-                });
+                let mut wordinfos = Vec::new();
+                for wi in payload.get_wordinfos().unwrap().iter() {
+                    wordinfos.push(WordInfo{
+                        word_pos: wi.get_word_pos(),
+                        suffix_text: wi.get_suffix_text().unwrap().to_string(),
+                        suffix_offset: wi.get_suffix_offset(),
+                    });
+                }
+                let key_string = unsafe { str::from_utf8_unchecked((&key)) }.to_string();
+                result.push((key_string, wordinfos));
             }
-            let key_string = unsafe { str::from_utf8_unchecked((&key)) }.to_string();
-            result.push((key_string, wordinfos));
         }
         result
     }

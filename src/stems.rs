@@ -145,18 +145,18 @@ mod tests {
         let expected = vec![
             StemmedWord { word_pos: 0, suffix_offset: 0,
                           stemmed: String::from("these"), suffix: String::from("THEse ") },
-            StemmedWord { word_pos: 6, suffix_offset: 6,
+            StemmedWord { word_pos: 1, suffix_offset: 0,
                           stemmed: String::from("word"), suffix: String::from("Words ") },
             // "deeply" stems to "deepli"
-            StemmedWord { word_pos: 12, suffix_offset: 17,
+            StemmedWord { word_pos: 2, suffix_offset: 5,
                           stemmed: String::from("deepli"), suffix: String::from("Y ") },
-            StemmedWord { word_pos: 19, suffix_offset: 23,
+            StemmedWord { word_pos: 3, suffix_offset: 4,
                           stemmed: String::from("test"), suffix: String::from(" ") },
-            StemmedWord { word_pos: 24, suffix_offset: 26,
+            StemmedWord { word_pos: 4, suffix_offset: 2,
                           stemmed: String::from("smooth"), suffix: String::from("OOthly ") },
-            StemmedWord { word_pos: 33, suffix_offset: 37,
+            StemmedWord { word_pos: 5, suffix_offset: 4,
                           stemmed: String::from("that"), suffix: String::from(" ") },
-            StemmedWord { word_pos: 38, suffix_offset: 42,
+            StemmedWord { word_pos: 6, suffix_offset: 4,
                           stemmed: String::from("stem"), suffix: String::from("mING") },
             ];
         assert_eq!(result.len(), expected.len());
@@ -182,9 +182,9 @@ mod tests {
         let expected = vec![
             StemmedWord { word_pos: 0, suffix_offset: 6,
                           stemmed: String::from("@!?   "), suffix: String::from("") },
-            StemmedWord { word_pos: 6, suffix_offset: 6,
+            StemmedWord { word_pos: 1, suffix_offset: 0,
                           stemmed: String::from("let"), suffix: String::from("Let's ") },
-            StemmedWord { word_pos: 12, suffix_offset: 15,
+            StemmedWord { word_pos: 2, suffix_offset: 3,
                           stemmed: String::from("see"), suffix: String::from("ing...") },
             ];
         assert_eq!(result.len(), expected.len());
@@ -200,7 +200,7 @@ mod tests {
         let expected = vec![
             StemmedWord { word_pos: 0, suffix_offset: 0,
                           stemmed: String::from("ünicöd"), suffix: String::from("Ünicöde ") },
-            StemmedWord { word_pos: 10, suffix_offset: 14,
+            StemmedWord { word_pos: 1, suffix_offset: 4,
                           stemmed: String::from("stem"), suffix: String::from("ming") },
             ];
         assert_eq!(result.len(), expected.len());
