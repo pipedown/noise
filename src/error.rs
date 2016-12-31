@@ -3,6 +3,7 @@ extern crate rocksdb;
 
 use std::{error, fmt};
 use std::num::ParseIntError;
+use std::num::ParseFloatError;
 use std::io;
 
 
@@ -14,6 +15,12 @@ pub enum Error {
     Rocks(rocksdb::Error),
     Write(String),
     Io(io::Error),
+}
+
+impl PartialEq for Error {
+    fn eq(&self, other: &Error) -> bool {
+        self == other
+    }
 }
 
 impl error::Error for Error {
@@ -59,6 +66,12 @@ impl From<rocksdb::Error> for Error {
 
 impl From<ParseIntError> for Error {
     fn from(err: ParseIntError) -> Error {
+        Error::Parse(err.to_string())
+    }
+}
+
+impl From<ParseFloatError> for Error {
+    fn from(err: ParseFloatError) -> Error {
         Error::Parse(err.to_string())
     }
 }

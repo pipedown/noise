@@ -100,7 +100,6 @@ impl Shredder {
 
         }
         let key = self.kb.value_key(docseq);
-
         let mut buffer = String::with_capacity(text.len() + 1);
         buffer.push('s');
         buffer.push_str(&text);
@@ -113,7 +112,6 @@ impl Shredder {
     fn add_value(&mut self, code: char, value: &[u8],
                  docseq: u64, batch: &mut rocksdb::WriteBatch) -> Result<(), Error> {
         let key = self.kb.value_key(docseq);
-
         let mut buffer = Vec::with_capacity(value.len() + 1);
         buffer.push(code as u8);
         try!((&mut buffer as &mut Write).write_all(&value));
@@ -122,6 +120,7 @@ impl Shredder {
 
         Ok(())
     }
+
     fn maybe_add_value(&mut self, parser: &Parser<Chars>, code: char, value: &[u8],
                        docseq: u64, batch: &mut rocksdb::WriteBatch) -> Result<(), Error> {
         if self.ignore_children == 0 {
@@ -137,7 +136,6 @@ impl Shredder {
                     self.kb.push_object_key(&key);
 
                     try!(self.add_value(code, &value, docseq, batch));
-                    self.kb.inc_top_array_offset();
                 },
                 ObjectKeyTypes::NoKey => {
                     try!(self.add_value(code, &value, docseq, batch));
@@ -152,44 +150,38 @@ impl Shredder {
     }
     // Extract key if it exists and indicates if it's a special type of key
     fn extract_key(&mut self, stack_element: Option<StackElement>) -> ObjectKeyTypes {
-        if self.kb.last_pushed_keypath_is_object_key() {
-            match stack_element {
-                Some(StackElement::Key(key)) => {
-                    if self.kb.keypath_segments_len() == 1 && key.starts_with("_") {
-                        if key == "_id" {
-                            ObjectKeyTypes::Id
-                        } else {
-                            ObjectKeyTypes::Ignore
-                        }
+        match stack_element {
+            Some(StackElement::Key(key)) => {
+                if self.kb.keypath_segments_len() == 1 && key.starts_with("_") {
+                    if key == "_id" {
+                        ObjectKeyTypes::Id
                     } else {
-                        ObjectKeyTypes::Key(key.to_string())
+                        ObjectKeyTypes::Ignore
                     }
-                },
-                _ => ObjectKeyTypes::NoKey,
-            }
-        } else {
-            ObjectKeyTypes::NoKey
+                } else {
+                    ObjectKeyTypes::Key(key.to_string())
+                }
+            },
+            _ => ObjectKeyTypes::NoKey,
         }
     }
 
     // If we are inside an object we need to push the key to the key builder
     // Don't push them if they are reserved fields (starting with underscore)
     fn maybe_push_key(&mut self, stack_element: Option<StackElement>) -> Result<(), Error> {
-        if self.kb.last_pushed_keypath_is_object_key() {
-            if let Some(StackElement::Key(key)) = stack_element {
-                if self.kb.keypath_segments_len() == 1 && key.starts_with("_") {
-                    if key == "_id" {
-                        return Err(Error::Shred(
-                            "Expected string for `_id` field, got another type".to_string()));
-                    } else {
-                        self.ignore_children = 1;
-                    }
+        if let Some(StackElement::Key(key)) = stack_element {
+            if self.kb.keypath_segments_len() == 1 && key.starts_with("_") {
+                if key == "_id" {
+                    return Err(Error::Shred(
+                        "Expected string for `_id` field, got another type".to_string()));
                 } else {
-                    // Pop the dummy object that makes ObjectEnd happy
-                    // or the previous object key
-                    self.kb.pop_object_key();
-                    self.kb.push_object_key(key);
+                    self.ignore_children = 1;
                 }
+            } else {
+                // Pop the dummy object that makes ObjectEnd happy
+                // or the previous object key
+                self.kb.pop_object_key();
+                self.kb.push_object_key(key);
             }
         }
         Ok(())
@@ -212,6 +204,7 @@ impl Shredder {
                         self.ignore_children += 1;
                     }
                     else {
+                        try!(self.maybe_push_key(parser.stack().top()));
                         // Just push something to make `ObjectEnd` happy
                         self.kb.push_object_key("");
                         object_keys_indexed.push(false);
@@ -231,10 +224,10 @@ impl Shredder {
                     }
                 },
                 Some(JsonEvent::ArrayStart) => {
-                    try!(self.maybe_push_key(parser.stack().top()));
                     if self.ignore_children > 0 {
                         self.ignore_children += 1;
                     } else {
+                        try!(self.maybe_push_key(parser.stack().top()));
                         self.kb.push_array();
                     }
                 },
@@ -273,7 +266,6 @@ impl Shredder {
                                 *object_keys_indexed.last_mut().unwrap() = true;
 
                                 try!(self.add_entries(&value, docseq, batch));
-                                self.kb.inc_top_array_offset();
                             },
                             ObjectKeyTypes::NoKey => {
                                 try!(self.add_entries(&value, docseq, batch));
@@ -315,9 +307,6 @@ impl Shredder {
             };
 
             token = parser.next();
-            if token == None {
-                break;
-            }
         }
         Ok(self.doc_id.clone())
    }
