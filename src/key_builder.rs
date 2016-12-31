@@ -193,14 +193,6 @@ impl KeyBuilder {
         self.arraypath.len()
     }
 
-    pub fn last_pushed_keypath_is_object_key(&self) -> bool {
-        if self.keypath.is_empty() {
-            false
-        } else {
-            self.keypath.last().unwrap().starts_with(".")
-        }
-    }
-
     pub fn keypath_segments_len(&self) -> usize {
         self.keypath.len()
     }
@@ -302,22 +294,6 @@ mod tests {
 
         kb.pop_object_key();
         assert_eq!(kb.keypath_segments_len(), 0, "No segments so far");
-    }
-
-    #[test]
-    fn test_last_pushed_segment_type() {
-        let mut kb = KeyBuilder::new();
-        assert_eq!(kb.keypath_segments_len(), 0, "No segments");
-
-        kb.push_object_key("first");
-        assert!(kb.last_pushed_keypath_is_object_key(), "Last segment is an object key");
-
-        kb.push_object_key("second");
-        assert!(kb.last_pushed_keypath_is_object_key(), "Last segment is an object key");
-
-        kb.push_array();
-        assert!(!kb.last_pushed_keypath_is_object_key(), "Last segment is an array");
-;
     }
 
     #[test]
