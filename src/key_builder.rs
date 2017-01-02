@@ -73,6 +73,36 @@ impl KeyBuilder {
         string
     }
 
+    /// Returns a value key without the doc seq prepended.
+    pub fn value_key_path_only(&self) -> String {
+        let mut string = String::with_capacity(100);
+        let mut i = 0;
+        for segment in &self.keypath {
+            string.push_str(&segment);
+            if segment == "$" {
+                string.push_str(&self.arraypath[i].to_string());
+                i += 1;
+            }
+        }
+        string
+    }
+
+    pub fn value_key_from_doc_result(&self, dr: &DocResult) -> String {
+        let mut string = String::with_capacity(100);
+        string.push('V');
+        string.push_str(&dr.seq.to_string());
+        string.push('#');
+        let mut i = 0;
+        for segment in &self.keypath {
+            string.push_str(&segment);
+            if segment == "$" {
+                string.push_str(&dr.arraypath[i].to_string());
+                i += 1;
+            }
+        }
+        string
+    }
+
     fn add_arraypath(string: &mut String, arraypath: &Vec<u64>) {
         if arraypath.is_empty() {
             string.push(',');

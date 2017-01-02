@@ -16,15 +16,15 @@ use parser::Parser;
 use json_value::JsonValue;
 use filters::QueryRuntimeFilter;
 
-
 // TODO vmx 2016-11-02: Make it import "rocksdb" properly instead of needing to import the individual tihngs
 use rocksdb::{self, DBIterator, IteratorMode, Snapshot};
 
 
-#[derive(PartialEq, Eq, PartialOrd, Clone)]
+#[derive(Clone)]
 pub struct DocResult {
     pub seq: u64,
     pub arraypath: Vec<u64>,
+    pub bind_name_result: HashMap<String, Vec<String>>,
 }
 
 impl DocResult {
@@ -32,7 +32,46 @@ impl DocResult {
         DocResult {
             seq: 0,
             arraypath: Vec::new(),
+            bind_name_result: HashMap::new(),
         }
+    }
+
+    pub fn add_bind_name_result(&mut self, bind_name: &str, result_key: String) {
+        if let Some(ref mut result_keys) = self.bind_name_result.get_mut(bind_name) {
+            result_keys.push(result_key);
+            return;
+        }
+        self.bind_name_result.insert(bind_name.to_string(), vec![result_key]);
+    }
+
+    pub fn combine_bind_name_results(&mut self, other: &mut DocResult) {
+        let mut replace = HashMap::new();
+        swap(&mut replace, &mut other.bind_name_result);
+        for (bind_name, mut result_keys_other) in replace.into_iter() {
+            if let Some(ref mut result_keys) = self.bind_name_result.get_mut(&bind_name) {
+                result_keys.append(&mut result_keys_other);
+                continue;
+            }
+            self.bind_name_result.insert(bind_name, result_keys_other);
+        }
+    }
+}
+
+impl PartialEq for DocResult {
+    fn eq(&self, other: &DocResult) -> bool {
+        if self.seq != other.seq {
+            false
+        } else {
+            self.arraypath == other.arraypath
+        }
+    }
+}
+
+impl Eq for DocResult {}
+
+impl PartialOrd for DocResult {
+    fn partial_cmp(&self, other: &DocResult) -> Option<Ordering> {
+        Some(self.cmp(other))
     }
 }
 
@@ -221,7 +260,7 @@ impl<'a> QueryResults<'a> {
         }
     }
 
-    fn get_next(&mut self) -> Result<Option<u64>, Error> {
+    fn get_next_result(&mut self) -> Result<Option<DocResult>, Error> {
         if self.done_with_sorting_and_ags {
             return Ok(None);
         }
@@ -229,9 +268,17 @@ impl<'a> QueryResults<'a> {
         match result {
             Some(doc_result) => {
                 self.doc_result_next.seq = doc_result.seq + 1;
-                Ok(Some(doc_result.seq))
+                Ok(Some(doc_result))
             },
             None => Ok(None),
+        }
+    }
+
+    fn get_next(&mut self) -> Result<Option<u64>, Error> {
+        if let Some(doc_result) = try!(self.get_next_result()) {
+            Ok(Some(doc_result.seq))
+        } else {
+            Ok(None)
         }
     }
 
@@ -253,12 +300,16 @@ impl<'a> QueryResults<'a> {
     pub fn next_result(&mut self) -> Result<Option<String>, Error> {
         if self.needs_sorting_and_ags {
             loop {
-                match if self.done_with_sorting_and_ags { None } else { try!(self.get_next()) } {
-                    Some(seq) => {
-                        let bind = HashMap::new();
+                let next = if self.done_with_sorting_and_ags {
+                    None
+                } else {
+                    try!(self.get_next_result())
+                };
+                match next {
+                    Some(dr) => {
                         let mut results = VecDeque::new();
-                        try!(self.returnable.fetch_result(&mut self.iter, seq,
-                                                          &bind, &mut results));
+                        try!(self.returnable.fetch_result(&mut self.iter, dr.seq,
+                                                          &dr.bind_name_result, &mut results));
                         self.in_buffer.push(results);
                         if self.in_buffer.len() == self.limit {
                             self.do_sorting_and_ags();
@@ -289,13 +340,13 @@ impl<'a> QueryResults<'a> {
                 }
             }
         } else {
-            let seq = match try!(self.get_next()) {
-                Some(seq) => seq,
+            let dr = match try!(self.get_next_result()) {
+                Some(dr) => dr,
                 None => return Ok(None),
             };
-            let bind = HashMap::new();
             let mut results = VecDeque::new();
-            try!(self.returnable.fetch_result(&mut self.iter, seq, &bind, &mut results));
+            try!(self.returnable.fetch_result(&mut self.iter, dr.seq,
+                                              &dr.bind_name_result, &mut results));
             self.buffer.clear();
             try!(self.returnable.write_result(&mut results, &mut self.buffer));
             Ok(Some(unsafe{str::from_utf8_unchecked(&self.buffer[..])}.to_string()))
@@ -690,7 +741,7 @@ pub struct SortInfo {
 
 pub trait Returnable {
     fn fetch_result(&self, iter: &mut DBIterator, seq: u64,
-                    bind_var_keys: &HashMap<String, String>,
+                    bind_var_keys: &HashMap<String, Vec<String>>,
                     result: &mut VecDeque<JsonValue>) -> Result<(), Error>;
 
     fn get_aggregate_funs(&self, funs: &mut Vec<Option<(AggregateFun, JsonValue)>>);
@@ -709,7 +760,7 @@ pub struct RetObject {
 
 impl Returnable for RetObject {
     fn fetch_result(&self, iter: &mut DBIterator, seq: u64,
-                    bind_var_keys: &HashMap<String, String>,
+                    bind_var_keys: &HashMap<String, Vec<String>>,
                     result: &mut VecDeque<JsonValue>) -> Result<(), Error> {
         for &(ref _key, ref field) in self.fields.iter() {
             try!(field.fetch_result(iter, seq, bind_var_keys, result));
@@ -764,7 +815,7 @@ pub struct RetArray {
 
 impl Returnable for RetArray {
     fn fetch_result(&self, iter: &mut DBIterator, seq: u64,
-                    bind_var_keys: &HashMap<String, String>,
+                    bind_var_keys: &HashMap<String, Vec<String>>,
                     result: &mut VecDeque<JsonValue>) -> Result<(), Error> {
         for ref slot in self.slots.iter() {
             try!(slot.fetch_result(iter, seq, bind_var_keys, result));
@@ -818,7 +869,7 @@ pub struct RetHidden {
 
 impl Returnable for RetHidden {
     fn fetch_result(&self, iter: &mut DBIterator, seq: u64,
-                    bind_var_keys: &HashMap<String, String>,
+                    bind_var_keys: &HashMap<String, Vec<String>>,
                     result: &mut VecDeque<JsonValue>) -> Result<(), Error> {
         for ref mut unrendered in self.unrendered.iter() {
             try!(unrendered.fetch_result(iter, seq, bind_var_keys, result));
@@ -859,7 +910,7 @@ pub struct RetLiteral {
 
 impl Returnable for RetLiteral {
     fn fetch_result(&self, _iter: &mut DBIterator, _seq: u64,
-                    _bind_var_keys: &HashMap<String, String>,
+                    _bind_var_keys: &HashMap<String, Vec<String>>,
                     _result: &mut VecDeque<JsonValue>) -> Result<(), Error> {
         Ok(())
     }
@@ -1027,23 +1078,15 @@ impl RetValue {
 
 impl Returnable for RetValue {
     fn fetch_result(&self, iter: &mut DBIterator, seq: u64,
-                    bind_var_keys: &HashMap<String, String>,
+                    _bind_var_keys: &HashMap<String, Vec<String>>,
                     result: &mut VecDeque<JsonValue>) -> Result<(), Error> {
         if Some((AggregateFun::Count, JsonValue::Null)) == self.ag {
             //don't fetch anything for count(). just stick in a null
             result.push_back(JsonValue::Null);
             return Ok(());
         }
-        let value_key = if self.kb.keypath_segments_len() == 1 {
-            let key = self.kb.peek_object_key();
-            if let Some(value_key) = bind_var_keys.get(&key) {
-                value_key.to_string()
-            } else {
-                self.kb.value_key(seq)
-            }
-        } else {
-            self.kb.value_key(seq)
-        };
+
+        let value_key = self.kb.value_key(seq);
 
         // Seek in index to >= entry
         iter.set_mode(IteratorMode::From(value_key.as_bytes(),
@@ -1093,6 +1136,75 @@ impl Returnable for RetValue {
     }
 }
 
+pub struct RetBind {
+    pub bind_name: String,
+    pub extra_key: String,
+    pub ag: Option<(AggregateFun, JsonValue)>,
+    pub default: JsonValue,
+    pub sort: Option<Sort>,
+}
+
+
+impl Returnable for RetBind {
+    fn fetch_result(&self, iter: &mut DBIterator, _seq: u64,
+                    bind_var_keys: &HashMap<String, Vec<String>>,
+                    result: &mut VecDeque<JsonValue>) -> Result<(), Error> {
+
+        if let Some(value_keys) = bind_var_keys.get(&self.bind_name) {
+            let mut array = Vec::with_capacity(value_keys.len());
+            for base_key in value_keys {
+                // Seek in index to >= entry
+                let value_key = base_key.to_string() + &self.extra_key;
+                iter.set_mode(IteratorMode::From(value_key.as_bytes(),
+                                                rocksdb::Direction::Forward));
+                
+                let (key, value) = match iter.next() {
+                    Some((key, value)) => (key, value),
+                    None => {
+                        result.push_back(self.default.clone());
+                        return Ok(())
+                    },
+                };
+
+                if !key.starts_with(value_key.as_bytes()) {
+                    array.push(self.default.clone());
+                } else {
+                    array.push(try!(RetValue::fetch(&mut iter.peekable(), &value_key,
+                                                    key, value)));
+                }
+            }
+            result.push_back(JsonValue::Array(array));
+        } else {
+            result.push_back(JsonValue::Array(vec![self.default.clone()]))
+        }
+
+        Ok(())
+    }
+
+    fn get_aggregate_funs(&self, funs: &mut Vec<Option<(AggregateFun, JsonValue)>>) {
+        funs.push(self.ag.clone());
+    }
+
+    fn get_sorting(&self, sorts: &mut Vec<Option<Sort>>) {
+        sorts.push(self.sort.clone());
+    }
+    
+    fn take_sort_for_matching_fields(&mut self, map: &mut HashMap<String,SortInfo>) {
+        if let Some(sort_info) = map.remove(&(self.bind_name.to_string() + &self.extra_key)) {
+            self.sort = Some(sort_info.sort);
+        }
+    }
+
+    fn write_result(&self, results: &mut VecDeque<JsonValue>,
+                    write: &mut Write) -> Result<(), Error> {
+        if let Some(json) = results.pop_front() {
+            try!(json.render(write));
+        } else {
+            panic!("missing result!");
+        }
+        Ok(())
+    }
+}
 
 
 #[cfg(test)]
@@ -1564,6 +1676,99 @@ mod tests {
                             limit 2"#.to_string(), &index).unwrap();
         assert_eq!(query_results.next_result().unwrap(),Some(r#"["a","f"]"#.to_string()));
         assert_eq!(query_results.next_result().unwrap(),Some(r#"["a","c"]"#.to_string()));
+        assert_eq!(query_results.next_result().unwrap(), None);
+        }
+    }
+
+
+    #[test]
+    fn test_query_bind_var() {
+        let dbname = "target/tests/querytestbindvar";
+
+        let _ = Index::delete(dbname);
+
+        let mut index = Index::new();
+        index.open(dbname, Some(OpenOptions::Create)).unwrap();
+
+
+        assert_eq!(Ok(()), index.add(r#"{"_id":"1", "bar": [{"a":"foo","v":1},{"a":"bar","v":2}]}"#));
+        
+        index.flush().unwrap();
+
+        {
+        let mut query_results = Query::get_matches(r#"find {bar: x::[{a: =="foo"}]}
+                                                      return x "#.to_string(), &index).unwrap();
+
+        assert_eq!(query_results.next_result().unwrap(),Some(r#"[{"a":"foo","v":1}]"#.to_string()));
+        assert_eq!(query_results.next_result().unwrap(), None);
+        }
+        
+        {
+        let mut query_results = Query::get_matches(r#"find {bar: x::[{a: =="foo"}]}
+                                                      return x.v "#.to_string(), &index).unwrap();
+
+        assert_eq!(query_results.next_result().unwrap(),Some(r#"[1]"#.to_string()));
+        assert_eq!(query_results.next_result().unwrap(), None);
+        }
+
+
+        {
+        let mut query_results = Query::get_matches(r#"find {bar: x::[{a: =="foo" || a: =="bar"}]}
+                                                      return x.v "#.to_string(), &index).unwrap();
+
+        assert_eq!(query_results.next_result().unwrap(),Some(r#"[1,2]"#.to_string()));
+        assert_eq!(query_results.next_result().unwrap(), None);
+        }
+
+
+        {
+        let mut query_results = Query::get_matches(r#"find {bar: x::[{a: =="foo" || a: =="baz"}]}
+                                                      return x.v "#.to_string(), &index).unwrap();
+
+        assert_eq!(query_results.next_result().unwrap(),Some(r#"[1]"#.to_string()));
+        assert_eq!(query_results.next_result().unwrap(), None);
+        }
+
+
+        {
+        let mut query_results = Query::get_matches(r#"find {bar: x::[{a: =="foof" || a: =="bar"}]}
+                                                      return x.v "#.to_string(), &index).unwrap();
+
+        assert_eq!(query_results.next_result().unwrap(),Some(r#"[2]"#.to_string()));
+        assert_eq!(query_results.next_result().unwrap(), None);
+        }
+
+
+        {
+        let mut query_results = Query::get_matches(r#"find {bar: x::[{a: =="foo"}] || bar: x::[{a: =="bar"}]}
+                                                      return x.v "#.to_string(), &index).unwrap();
+
+        assert_eq!(query_results.next_result().unwrap(),Some(r#"[1,2]"#.to_string()));
+        assert_eq!(query_results.next_result().unwrap(), None);
+        }
+
+        {
+        let mut query_results = Query::get_matches(r#"find {bar: x::[{a: =="foo"}] || bar: y::[{a: =="bar"}]}
+                                                      return [x.v, y.v] "#.to_string(), &index).unwrap();
+
+        assert_eq!(query_results.next_result().unwrap(),Some(r#"[[1],[2]]"#.to_string()));
+        assert_eq!(query_results.next_result().unwrap(), None);
+        }
+
+
+        {
+        let mut query_results = Query::get_matches(r#"find {bar: x::[{a: =="foo"}] || bar: y::[{a: =="baz"}]}
+                                                      return [x.v, y.v default=0] "#.to_string(), &index).unwrap();
+
+        assert_eq!(query_results.next_result().unwrap(),Some(r#"[[1],[0]]"#.to_string()));
+        assert_eq!(query_results.next_result().unwrap(), None);
+        }
+
+
+        {
+        let mut query_results = Query::get_matches(r#"find {bar: x::[{a: =="foo"}] && bar: y::[{a: =="baz"}]}
+                                                      return [x.v, y.v] "#.to_string(), &index).unwrap();
+
         assert_eq!(query_results.next_result().unwrap(), None);
         }
     }
