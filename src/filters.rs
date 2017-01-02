@@ -440,6 +440,7 @@ impl<'a> AndFilter<'a> {
 
             if base_result == next_result {
                 matches_count -= 1;
+                base_result.combine_bind_name_results(&mut next_result);
                 if matches_count == 0 {
                     return Ok(Some(base_result));
                 }
@@ -531,12 +532,12 @@ impl<'a> OrFilter<'a> {
         }
     }
     fn take_smallest(&mut self) -> Option<DocResult> {
-        if let Some(left) = self.left.result.take() {
+        if let Some(mut left) = self.left.result.take() {
             // left exists
-            if let Some(right) = self.right.result.take() {
+            if let Some(mut right) = self.right.result.take() {
                 // both exist, return smallest
                 match left.cmp(&right) {
-                    Ordering::Less    => {
+                    Ordering::Less => {
                         // left is smallest, return and put back right
                         self.right.result = Some(right);
                         Some(left)
@@ -546,9 +547,9 @@ impl<'a> OrFilter<'a> {
                         self.left.result = Some(left);
                         Some(right)
                     },
-                    Ordering::Equal   => {
-                        // return one and discard the other so we don't return
-                        // identical result in a subsequent call
+                    Ordering::Equal => {
+                        left.combine_bind_name_results(&mut right);
+                        self.right.result = Some(right);
                         Some(left)
                     },
                 }
@@ -582,3 +583,75 @@ impl<'a> QueryRuntimeFilter for OrFilter<'a> {
         Ok(self.take_smallest())
     }
 }
+
+pub struct BindFilter<'a> {
+    bind_var_name: String,
+    filter: Box<QueryRuntimeFilter + 'a>,
+    kb: KeyBuilder,
+    option_next: Option<DocResult>,
+}
+
+impl<'a> BindFilter<'a> {
+
+    pub fn new(bind_var_name: String,
+               filter: Box<QueryRuntimeFilter + 'a>,
+               kb: KeyBuilder) -> BindFilter {
+        BindFilter {
+            bind_var_name: bind_var_name,
+            filter: filter, 
+            kb: kb,
+            option_next: None,
+        }
+    }
+    
+    fn collect_results(&mut self, mut first: DocResult) -> Result<Option<DocResult>, Error> {
+        let value_key = self.kb.value_key_from_doc_result(&first);
+        first.add_bind_name_result(&self.bind_var_name, value_key);
+        
+        while let Some(next) = try!(self.filter.next_result()) {
+            if next.seq == first.seq {
+                let value_key = self.kb.value_key_from_doc_result(&next);
+                first.add_bind_name_result(&self.bind_var_name, value_key);
+            } else {
+                self.option_next = Some(next);
+                return Ok(Some(first));
+            }
+        }
+        Ok(Some(first))
+    }
+}
+
+impl<'a> QueryRuntimeFilter for BindFilter<'a> {
+    fn first_result(&mut self, start: &DocResult) -> Result<Option<DocResult>, Error> {
+        let first = if let Some(next) = self.option_next.take() {
+            if next >= *start {
+                Some(next)
+            } else {
+                try!(self.filter.first_result(&start))
+            }
+        } else {
+            try!(self.filter.first_result(&start))
+        };
+
+        if let Some(first) = first {
+            self.collect_results(first)
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn next_result(&mut self) -> Result<Option<DocResult>, Error> {
+        let first = if let Some(next) = self.option_next.take() {
+            Some(next)
+        } else {
+            try!(self.filter.next_result())
+        };
+
+        if let Some(first) = first {
+            self.collect_results(first)
+        } else {
+            Ok(None)
+        }
+    }
+}
+

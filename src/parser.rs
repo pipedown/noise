@@ -8,9 +8,10 @@ use error::Error;
 use key_builder::KeyBuilder;
 use stems::Stems;
 use json_value::JsonValue;
-use query::{Sort, Returnable, RetValue, RetObject, RetArray, RetLiteral, AggregateFun, SortInfo};
+use query::{Sort, Returnable, RetValue, RetObject, RetArray, RetLiteral, RetBind, AggregateFun,
+            SortInfo};
 use filters::{QueryRuntimeFilter, ExactMatchFilter, StemmedWordFilter, StemmedWordPosFilter,
-              StemmedPhraseFilter, DistanceFilter, AndFilter, OrFilter};
+              StemmedPhraseFilter, DistanceFilter, AndFilter, OrFilter, BindFilter};
 
 
 // TODO vmx 2016-11-02: Make it import "rocksdb" properly instead of needing to import the individual tihngs
@@ -139,6 +140,7 @@ impl<'a> Parser<'a> {
     }
     
     fn consume_aggregate(&mut self) -> Result<Option<(AggregateFun, 
+                                                      Option<String>,
                                                       KeyBuilder,
                                                       JsonValue)>, Error> {
         let offset = self.offset;
@@ -165,8 +167,10 @@ impl<'a> Parser<'a> {
         if self.consume("(") {
             if aggregate_fun == AggregateFun::Count {
                 try!(self.must_consume(")"));
-                Ok(Some((aggregate_fun, KeyBuilder::new(), JsonValue::Null)))
+                Ok(Some((aggregate_fun, None, KeyBuilder::new(), JsonValue::Null)))
             } else if aggregate_fun == AggregateFun::Concat {
+                let bind_name_option = self.consume_field();
+
                 if let Some(kb) = try!(self.consume_keypath()) {
                     let json = if self.consume("sep") {
                         try!(self.must_consume("="));
@@ -175,26 +179,30 @@ impl<'a> Parser<'a> {
                         JsonValue::String(",".to_string())
                     };
                     try!(self.must_consume(")"));
-                    Ok(Some((aggregate_fun, kb, json)))
+                    Ok(Some((aggregate_fun, bind_name_option, kb, json)))
                 } else {
                     Err(Error::Parse("Expected keypath or bind variable".to_string()))
                 }
-            } else if let Some(kb) = try!(self.consume_keypath()) {
-                if self.consume("order") {
-                    try!(self.must_consume("="));
-                    if self.consume("asc") {
-                        aggregate_fun = AggregateFun::GroupAsc;
-                    } else if self.consume("desc") {
-                        aggregate_fun = AggregateFun::GroupDesc;
-                    } else {
-                        return Err(Error::Parse("Expected asc or desc".to_string()));
-                    }
-                }
-                try!(self.must_consume(")"));
-
-                Ok(Some((aggregate_fun, kb, JsonValue::Null)))
             } else {
-                Err(Error::Parse("Expected keypath or bind variable".to_string()))
+                let bind_name_option = self.consume_field();
+
+                if let Some(kb) = try!(self.consume_keypath()) {
+                    if self.consume("order") {
+                        try!(self.must_consume("="));
+                        if self.consume("asc") {
+                            aggregate_fun = AggregateFun::GroupAsc;
+                        } else if self.consume("desc") {
+                            aggregate_fun = AggregateFun::GroupDesc;
+                        } else {
+                            return Err(Error::Parse("Expected asc or desc".to_string()));
+                        }
+                    }
+                    try!(self.must_consume(")"));
+
+                    Ok(Some((aggregate_fun, bind_name_option, kb, JsonValue::Null)))
+                } else {
+                    Err(Error::Parse("Expected keypath or bind variable".to_string()))
+                }
             }
         } else {
             // this consumed word above might be a Bind var. Unconsume and return nothing.
@@ -606,7 +614,11 @@ ws1
         } else if self.could_consume("{") {
             Ok(Some(try!(self.object())))
         } else {
-            Ok(None)
+            if let Some(filter) = try!(self.bind_var()) {
+                Ok(Some(filter))
+            } else {
+                Ok(None)
+            }
         }
     }
 
@@ -709,8 +721,28 @@ ws1
         } else if self.could_consume("{") {
             Ok(Some(try!(self.object())))
         } else {
-            Ok(None)
+            if let Some(filter) = try!(self.bind_var()) {
+                Ok(Some(filter))
+            } else {
+                Ok(None)
+            }
         }
+    }
+
+    fn bind_var<'b>(&'b mut self) -> Result<Option<Box<QueryRuntimeFilter + 'a>>, Error> {
+        let offset = self.offset;
+        if let Some(bind_name) = self.consume_field() {
+            if self.consume("::") {
+                let filter = try!(self.array());
+                self.kb.push_array();
+                let kb_clone = self.kb.clone();
+                self.kb.pop_array();
+                return Ok(Some(Box::new(BindFilter::new(bind_name, filter, kb_clone))));
+            }
+            //we got here so unconsume the chars
+            self.offset = offset;
+        }
+        Ok(None)
     }
 
     fn array<'b>(&'b mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
@@ -829,21 +861,50 @@ ws1
     }
 
     fn ret_value(&mut self) -> Result<Option<Box<Returnable>>, Error> {
-        if let Some((ag, kb, json)) = try!(self.consume_aggregate()) {
-            let default = if let Some(default) = try!(self.consume_default()) {
-                default
-            } else {
-                JsonValue::Null
-            };
-            Ok(Some(Box::new(RetValue{kb: kb, ag: Some((ag, json)),
-                                      default: default, sort:None})))
+        if self.consume("true") {
+            return Ok(Some(Box::new(RetLiteral{json: JsonValue::True})));
+        } else if self.consume("false") {
+            return Ok(Some(Box::new(RetLiteral{json: JsonValue::False})));
+        } else if self.consume("null") {
+            return Ok(Some(Box::new(RetLiteral{json: JsonValue::Null})));
         }
-        else if let Some(kb) = try!(self.consume_keypath()) {
+
+        if let Some((ag, bind_name_option, kb, json)) = try!(self.consume_aggregate()) {
             let default = if let Some(default) = try!(self.consume_default()) {
                 default
             } else {
                 JsonValue::Null
             };
+            if let Some(bind_name) = bind_name_option {
+                let extra_key = kb.value_key_path_only();
+                Ok(Some(Box::new(RetBind{bind_name: bind_name, extra_key: extra_key,
+                                         ag: Some((ag, json)), default: default, sort:None})))
+            } else {
+                Ok(Some(Box::new(RetValue{kb: kb, ag: Some((ag, json)),
+                                          default: default, sort:None})))
+            }
+        } else if let Some(bind_name) = self.consume_field() {
+            let extra_key = if let Some(kb) = try!(self.consume_keypath()) {
+                kb.value_key_path_only()
+            } else {
+                "".to_string()
+            };
+
+            let default = if let Some(default) = try!(self.consume_default()) {
+                default
+            } else {
+                JsonValue::Null
+            };
+
+            Ok(Some(Box::new(RetBind{bind_name: bind_name, extra_key: extra_key,
+                                        ag: None, default: default, sort:None})))
+        } else if let Some(kb) = try!(self.consume_keypath()) {
+            let default = if let Some(default) = try!(self.consume_default()) {
+                default
+            } else {
+                JsonValue::Null
+            };
+    
             Ok(Some(Box::new(RetValue{kb: kb, ag: None, default: default, sort: None})))
         } else if self.could_consume("{") {
             Ok(Some(try!(self.ret_object())))
@@ -854,15 +915,7 @@ ws1
         } else if let Some(num) = try!(self.consume_number()) {
             Ok(Some(Box::new(RetLiteral{json: JsonValue::Number(num)})))
         } else {
-            if self.consume("true") {
-                Ok(Some(Box::new(RetLiteral{json: JsonValue::True})))
-            } else if self.consume("false") {
-                Ok(Some(Box::new(RetLiteral{json: JsonValue::False})))
-            } else if self.consume("null") {
-                Ok(Some(Box::new(RetLiteral{json: JsonValue::Null})))
-            } else {
-                Ok(None)
-            }
+            Ok(None)
         }
     }
 
