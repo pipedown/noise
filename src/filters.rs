@@ -4,38 +4,112 @@ use std::str;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::collections::HashSet;
+use index::Index;
+use std::f32;
 
 use error::Error;
 use key_builder::KeyBuilder;
 use stems::StemmedWord;
-use query::DocResult;
+use query::{DocResult, QueryScoringInfo};
 
 // TODO vmx 2016-11-02: Make it import "rocksdb" properly instead of needing to import the individual tihngs
 use rocksdb::{self, DBIterator, IteratorMode};
 use records_capnp::payload;
 
+struct Scorer {
+    idf: f32,
+    boost: f32,
+    keypathword_count_key: String,
+    keypath_count_key: String,
+    term_ordinal: usize,
+}
+
+impl Scorer {
+    fn new(word: &str, kb: &KeyBuilder, boost: f32) -> Scorer {
+        Scorer {
+            idf: f32::NAN,
+            boost: boost,
+            keypathword_count_key: kb.keypathword_count_key(&word),
+            keypath_count_key: kb.keypath_count_key(),
+            term_ordinal: 0,
+        }
+    }
+
+    fn init(&mut self, mut iter: &mut DBIterator, qsi: &mut QueryScoringInfo) {
+        let doc_freq = if let Some(bytes) = self.get_value(&mut iter,
+                                                           &self.keypathword_count_key) {
+            Index::convert_bytes_to_u64(bytes.as_ref()) as f32
+        } else {
+            0.0
+        };
+        
+        let num_docs = if let Some(bytes) = self.get_value(&mut iter, &self.keypath_count_key) {
+            Index::convert_bytes_to_u64(bytes.as_ref()) as f32
+        } else {
+            0.0
+        };
+
+        self.idf = 1.0 + (num_docs/(doc_freq + 1.0)).ln();
+        self.term_ordinal = qsi.num_terms;
+        qsi.num_terms += 1;
+        qsi.sum_of_idt_sqs += self.idf * self.idf;
+    }
+
+    fn get_value(&self, iter: &mut DBIterator, key: &String) -> Option<Box<[u8]>> {
+        iter.set_mode(IteratorMode::From(key.as_bytes(), rocksdb::Direction::Forward));
+        if let Some((ret_key, ret_value)) = iter.next() {
+            if ret_key.len() == key.len() && ret_key.starts_with(key.as_bytes())  {
+                Some(ret_value)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    fn add_match_score(&self, num_matches: u32,
+                       total_field_words: u32, dr: &mut DocResult) {
+        if self.should_score() {
+            let tf: f32 = (num_matches as f32).sqrt();
+            let norm = 1.0/(total_field_words as f32).sqrt();
+            let score = self.idf * self.idf * tf * norm * self.boost;
+            dr.add_score(self.term_ordinal, score);
+        }
+    }
+
+    fn should_score(&self) -> bool {
+        !self.idf.is_nan()
+    }
+}
 
 pub trait QueryRuntimeFilter {
     fn first_result(&mut self, start: &DocResult) -> Result<Option<DocResult>, Error>;
     fn next_result(&mut self) -> Result<Option<DocResult>, Error>;
+    fn prepare_relevancy_scoring(&mut self, qsi: &mut QueryScoringInfo);
 }
 
 pub struct ExactMatchFilter {
     iter: DBIterator,
     keypathword: String,
-    word_pos: u64,
+    word_pos: u32,
+    suffix_offset: u32,
     suffix: String,
-    suffix_offset: u64,
+    scorer: Scorer,
 }
 
+
+
 impl ExactMatchFilter {
-    pub fn new(iter: DBIterator, stemmed_word: &StemmedWord, kb: &KeyBuilder) -> ExactMatchFilter {
+    pub fn new(iter: DBIterator, stemmed_word: &StemmedWord,
+               kb: &KeyBuilder, boost: f32) -> ExactMatchFilter {
         ExactMatchFilter{
             iter: iter,
             keypathword: kb.get_keypathword_only(&stemmed_word.stemmed),
-            word_pos: stemmed_word.word_pos as u64,
+            word_pos: stemmed_word.word_pos,
             suffix: stemmed_word.suffix.clone(),
-            suffix_offset: stemmed_word.suffix_offset as u64,
+            suffix_offset: stemmed_word.suffix_offset,
+            scorer: Scorer::new(&stemmed_word.stemmed, &kb, boost),
         }
     }
 }
@@ -55,10 +129,6 @@ impl QueryRuntimeFilter for ExactMatchFilter {
 
     fn next_result(&mut self) -> Result<Option<DocResult>, Error> {
         loop {
-            if !self.iter.valid() {
-                return Ok(None)
-            }
-
             let (key, value) = match self.iter.next() {
                 Some((key, value)) => (key, value),
                 None => return Ok(None),
@@ -74,30 +144,40 @@ impl QueryRuntimeFilter for ExactMatchFilter {
             let message_reader = ::capnp::serialize_packed::read_message(
                 &mut ref_value, ::capnp::message::ReaderOptions::new()).unwrap();
             let payload = message_reader.get_root::<payload::Reader>().unwrap();
-
-            for wi in try!(payload.get_wordinfos()).iter() {
+            let wordinfos = try!(payload.get_wordinfos());
+            for wi in wordinfos.iter() {
                 if self.word_pos == wi.get_word_pos() &&
                     self.suffix_offset == wi.get_suffix_offset() &&
                     self.suffix == try!(wi.get_suffix_text()) {
                         // We have a candidate document to return
                         let key_str = unsafe{str::from_utf8_unchecked(&key)};
-                        return Ok(Some(KeyBuilder::parse_doc_result_from_key(&key_str)));
+                        let mut dr = KeyBuilder::parse_doc_result_from_key(&key_str);
+                        self.scorer.add_match_score(wordinfos.len(),
+                                                    payload.get_total_words(), &mut dr);
+                        return Ok(Some(dr));
                 }
             }
         }
+    }
+
+    fn prepare_relevancy_scoring(&mut self, mut qsi: &mut QueryScoringInfo) {
+        self.scorer.init(&mut self.iter, &mut qsi);
     }
 }
 
 pub struct StemmedWordFilter {
     iter: DBIterator,
     keypathword: String,
+    scorer: Scorer,
 }
 
 impl StemmedWordFilter {
-    pub fn new(iter: DBIterator, stemmed_word: &str, kb: &KeyBuilder) -> StemmedWordFilter {
+    pub fn new(iter: DBIterator, stemmed_word: &str,
+               kb: &KeyBuilder, boost: f32) -> StemmedWordFilter {
         StemmedWordFilter {
             iter: iter,
             keypathword: kb.get_keypathword_only(&stemmed_word),
+            scorer: Scorer::new(stemmed_word, kb, boost),
         }
     }
 }
@@ -116,12 +196,8 @@ impl QueryRuntimeFilter for StemmedWordFilter {
     }
 
     fn next_result(&mut self) -> Result<Option<DocResult>, Error> {
-        if !self.iter.valid() {
-            return Ok(None)
-        }
-
-        let key = match self.iter.next() {
-            Some((key, _value)) => key,
+        let (key, value) = match self.iter.next() {
+            Some((key, value)) => (key, value),
             None => return Ok(None),
         };
         if !key.starts_with(self.keypathword.as_bytes()) {
@@ -131,7 +207,23 @@ impl QueryRuntimeFilter for StemmedWordFilter {
 
         // We have a candidate document to return
         let key_str = unsafe{str::from_utf8_unchecked(&key)};
-        Ok(Some(KeyBuilder::parse_doc_result_from_key(&key_str)))
+        let mut dr = KeyBuilder::parse_doc_result_from_key(&key_str);
+
+        if self.scorer.should_score() {
+            let message_reader = ::capnp::serialize_packed::read_message(
+                    &mut &*value, ::capnp::message::ReaderOptions::new()).unwrap();
+            let payload = message_reader.get_root::<payload::Reader>().unwrap();
+
+
+            self.scorer.add_match_score(try!(payload.get_wordinfos()).len(),
+                                        payload.get_total_words(), &mut dr);
+        }
+
+        Ok(Some(dr))
+    }
+
+    fn prepare_relevancy_scoring(&mut self, mut qsi: &mut QueryScoringInfo) {
+        self.scorer.init(&mut self.iter, &mut qsi);
     }
 }
 
@@ -140,18 +232,20 @@ impl QueryRuntimeFilter for StemmedWordFilter {
 pub struct StemmedWordPosFilter {
     iter: DBIterator,
     keypathword: String,
+    scorer: Scorer,
 }
 
 impl StemmedWordPosFilter {
-    pub fn new(iter: DBIterator, stemmed_word: &str, kb: &KeyBuilder) -> StemmedWordPosFilter {
+    pub fn new(iter: DBIterator, stemmed_word: &str, kb: &KeyBuilder, boost: f32) -> StemmedWordPosFilter {
         StemmedWordPosFilter{
             iter: iter,
             keypathword: kb.get_keypathword_only(&stemmed_word),
+            scorer: Scorer::new(&stemmed_word, &kb, boost),
         }
     }
 
     fn first_result(&mut self,
-                    start: &DocResult) -> Result<Option<(DocResult, Vec<i64>)>, Error> {
+                    start: &DocResult) -> Result<Option<(DocResult, Vec<u32>)>, Error> {
 
         KeyBuilder::add_doc_result_to_keypathword(&mut self.keypathword, &start);
         // Seek in index to >= entry
@@ -163,11 +257,7 @@ impl StemmedWordPosFilter {
         self.next_result()
     }
 
-    fn next_result(&mut self) -> Result<Option<(DocResult, Vec<i64>)>, Error> {
-        if !self.iter.valid() {
-            return Ok(None)
-        }
-
+    fn next_result(&mut self) -> Result<Option<(DocResult, Vec<u32>)>, Error> {
         let (key, value) = match self.iter.next() {
             Some((key, value)) => (key, value),
             None => return Ok(None),
@@ -176,20 +266,25 @@ impl StemmedWordPosFilter {
             // we passed the key path we are interested in. nothing left to do */
             return Ok(None)
         }
-        let mut ref_value = &*value;
+
         let message_reader = ::capnp::serialize_packed::read_message(
-                &mut ref_value, ::capnp::message::ReaderOptions::new()).unwrap();
+                &mut &*value, ::capnp::message::ReaderOptions::new()).unwrap();
         let payload = message_reader.get_root::<payload::Reader>().unwrap();
 
-        let positions = try!(payload.get_wordinfos())
-                                    .iter()
-                                    .map(|wi| wi.get_word_pos()as i64)
-                                    .collect();
-
+        let positions: Vec<u32> = try!(payload.get_wordinfos()).iter()
+                                                               .map(|wi| wi.get_word_pos())
+                                                               .collect();
+        
         let key_str = unsafe{str::from_utf8_unchecked(&key)};
-        let docresult = KeyBuilder::parse_doc_result_from_key(&key_str);
+        let mut dr = KeyBuilder::parse_doc_result_from_key(&key_str);
 
-        Ok(Some((docresult, positions)))
+        self.scorer.add_match_score(positions.len() as u32, payload.get_total_words(), &mut dr);
+
+        Ok(Some((dr, positions)))
+    }
+
+    fn prepare_relevancy_scoring(&mut self, mut qsi: &mut QueryScoringInfo) {
+        self.scorer.init(&mut self.iter, &mut qsi);
     }
 }
 
@@ -205,7 +300,7 @@ impl StemmedPhraseFilter {
     }
 
     fn result(&mut self,
-              base: Option<(DocResult, Vec<i64>)>) -> Result<Option<DocResult>, Error> {
+              base: Option<(DocResult, Vec<u32>)>) -> Result<Option<DocResult>, Error> {
         // this is the number of matches left before all terms match and we can return a result 
         let mut matches_left = self.filters.len() - 1;
 
@@ -277,16 +372,22 @@ impl QueryRuntimeFilter for StemmedPhraseFilter {
         let base_result = try!(self.filters[0].next_result());
         self.result(base_result)
     }
+
+    fn prepare_relevancy_scoring(&mut self, mut qsi: &mut QueryScoringInfo) {
+        for f in self.filters.iter_mut() {
+            f.prepare_relevancy_scoring(&mut qsi);
+        }
+    }
 }
 
 pub struct DistanceFilter {
     filters: Vec<StemmedWordPosFilter>,
     current_filter: usize,
-    distance: i64,
+    distance: u32,
 }
 
 impl DistanceFilter {
-    pub fn new(filters: Vec<StemmedWordPosFilter>, distance: i64) -> DistanceFilter {
+    pub fn new(filters: Vec<StemmedWordPosFilter>, distance: u32) -> DistanceFilter {
         DistanceFilter {
             filters: filters,
             current_filter: 0,
@@ -295,7 +396,7 @@ impl DistanceFilter {
     }
 
     fn result(&mut self,
-              base: Option<(DocResult, Vec<i64>)>) -> Result<Option<DocResult>, Error> {
+              base: Option<(DocResult, Vec<u32>)>) -> Result<Option<DocResult>, Error> {
         // yes this code complex. I tried to break it up, but it wants to be like this.
 
         // this is the number of matches left before all terms match and we can return a result 
@@ -306,7 +407,7 @@ impl DistanceFilter {
 
         // This contains tuples of word postions and the filter they came from,
         // sorted by word position.
-        let mut base_positions: Vec<(i64, usize)> = positions.iter()
+        let mut base_positions: Vec<(u32, usize)> = positions.iter()
                                                             .map(|pos|(*pos, self.current_filter))
                                                             .collect();
         
@@ -324,54 +425,63 @@ impl DistanceFilter {
             if next.is_none() { return Ok(None); }
             let (next_result, next_positions) = next.unwrap();
 
-            if base_result == next_result {
-                // so we are in the same field. Now to check the proximity of the values from the
-                // next result to previous results.
+            if base_result != next_result {
+                // not same field, next_result becomes base_result.
+                base_result = next_result;
+                base_positions = next_positions.iter()
+                                                .map(|pos| (*pos, self.current_filter))
+                                                .collect();
 
-                // new_positions_map will accept positions within range of pos. But only if all
-                // positions that can be are within range. We use the sorted map so we can add
-                // the same positions multiple times and it's a noop.
-                let mut new_positions_map = BTreeMap::new();
-                for &pos in next_positions.iter() {
-                    // coud these lines be any longer? No they could not.
-                    let start = match base_positions.binary_search_by_key(&(pos-dis),
-                                                                          |&(pos2,_)| pos2) {
-                        Ok(start) => start,
-                        Err(start) => start,
-                    };
+                matches_left = self.filters.len() - 1;
+                continue;
+            }
+            // so we are in the same field. Now to check the proximity of the values from the
+            // next result to previous results.
 
-                    let end = match base_positions.binary_search_by_key(&(pos+dis),
+            // new_positions_map will accept positions within range of pos. But only if all
+            // positions that can be are within range. We use the sorted map so we can add
+            // the same positions multiple times and it's a noop.
+            let mut new_positions_map = BTreeMap::new();
+            for &pos in next_positions.iter() {
+                // coud these lines be any longer? No they could not.
+                let sub = pos.saturating_sub(dis); // underflows othewises
+                let start = match base_positions.binary_search_by_key(&(sub),
                                                                         |&(pos2,_)| pos2) {
-                        Ok(end) => end,
-                        Err(end) => end,
-                    };
+                    Ok(start) => start,
+                    Err(start) => start,
+                };
 
-                    // we now collect all the filters within the range
-                    let mut filters_encountered = HashSet::new();
-                    for &(_, filter_n) in base_positions[start..end].iter() {
-                        filters_encountered.insert(filter_n);
-                    }
-                    
-                    if filters_encountered.len() == self.filters.len() - matches_left {
-                        // we encountered all the filters we can at this stage, 
-                        // so we should add them all to the new_positions_map
-                        for &(prev_pos, filter_n) in base_positions[start..end].iter() {
-                            new_positions_map.insert(prev_pos, filter_n);
-                        }
-                        // and add the current pos
-                        new_positions_map.insert(pos, self.current_filter);
-                    }
+                let end = match base_positions.binary_search_by_key(&(pos+dis),
+                                                                    |&(pos2,_)| pos2) {
+                    Ok(end) => end,
+                    Err(end) => end,
+                };
+
+                // we now collect all the filters within the range
+                let mut filters_encountered = HashSet::new();
+                for &(_, filter_n) in base_positions[start..end].iter() {
+                    filters_encountered.insert(filter_n);
                 }
-                if new_positions_map.len() > 0 {
-                    // we have valus that survive! reassign back to positions
-                    base_positions = new_positions_map.into_iter().collect();
-                    matches_left -= 1;
-
-                    if matches_left == 0 {
-                        return Ok(Some(base_result));
-                    } else {
-                        continue;
+                
+                if filters_encountered.len() == self.filters.len() - matches_left {
+                    // we encountered all the filters we can at this stage, 
+                    // so we should add them all to the new_positions_map
+                    for &(prev_pos, filter_n) in base_positions[start..end].iter() {
+                        new_positions_map.insert(prev_pos, filter_n);
                     }
+                    // and add the current pos
+                    new_positions_map.insert(pos, self.current_filter);
+                }
+            }
+            if new_positions_map.len() > 0 {
+                // we have valus that survive! reassign back to positions
+                base_positions = new_positions_map.into_iter().collect();
+                matches_left -= 1;
+
+                if matches_left == 0 {
+                    return Ok(Some(base_result));
+                } else {
+                    continue;
                 }
             }
             // we didn't match on next_result, so get next_result on current filter
@@ -398,6 +508,12 @@ impl QueryRuntimeFilter for DistanceFilter {
     fn next_result(&mut self) -> Result<Option<DocResult>, Error> {
         let base_result = try!(self.filters[self.current_filter].next_result());
         self.result(base_result)
+    }
+
+    fn prepare_relevancy_scoring(&mut self, mut qsi: &mut QueryScoringInfo) {
+        for f in self.filters.iter_mut() {
+            f.prepare_relevancy_scoring(&mut qsi);
+        }
     }
 }
 
@@ -440,7 +556,7 @@ impl<'a> AndFilter<'a> {
 
             if base_result == next_result {
                 matches_count -= 1;
-                base_result.combine_bind_name_results(&mut next_result);
+                base_result.combine(&mut next_result);
                 if matches_count == 0 {
                     return Ok(Some(base_result));
                 }
@@ -461,6 +577,12 @@ impl<'a> QueryRuntimeFilter for AndFilter<'a> {
     fn next_result(&mut self) -> Result<Option<DocResult>, Error> {
         let base_result = try!(self.filters[self.current_filter].next_result());
         self.result(base_result)
+    }
+
+    fn prepare_relevancy_scoring(&mut self, mut qsi: &mut QueryScoringInfo) {
+        for f in self.filters.iter_mut() {
+            f.prepare_relevancy_scoring(&mut qsi);
+        }
     }
 }
 
@@ -548,7 +670,7 @@ impl<'a> OrFilter<'a> {
                         Some(right)
                     },
                     Ordering::Equal => {
-                        left.combine_bind_name_results(&mut right);
+                        left.combine(&mut right);
                         self.right.result = Some(right);
                         Some(left)
                     },
@@ -581,6 +703,11 @@ impl<'a> QueryRuntimeFilter for OrFilter<'a> {
         try!(self.left.prime_next_result());
         try!(self.right.prime_next_result());
         Ok(self.take_smallest())
+    }
+
+    fn prepare_relevancy_scoring(&mut self, mut qsi: &mut QueryScoringInfo) {
+        self.left.filter.prepare_relevancy_scoring(&mut qsi);
+        self.right.filter.prepare_relevancy_scoring(&mut qsi);
     }
 }
 
@@ -652,6 +779,48 @@ impl<'a> QueryRuntimeFilter for BindFilter<'a> {
         } else {
             Ok(None)
         }
+    }
+
+    fn prepare_relevancy_scoring(&mut self, mut qsi: &mut QueryScoringInfo) {
+        self.filter.prepare_relevancy_scoring(&mut qsi);
+    }
+}
+
+pub struct BoostFilter<'a> {
+    filter: Box<QueryRuntimeFilter + 'a>,
+    boost: f32,
+}
+
+impl<'a> BoostFilter<'a> {
+    pub fn new(filter: Box<QueryRuntimeFilter + 'a>, boost: f32) -> BoostFilter {
+        BoostFilter {
+            filter: filter,
+            boost: boost,
+        }
+    }
+}
+
+impl<'a> QueryRuntimeFilter for BoostFilter<'a> {
+    fn first_result(&mut self, start: &DocResult) -> Result<Option<DocResult>, Error> {
+        if let Some(mut dr) = try!(self.filter.first_result(&start)) {
+            dr.boost_scores(self.boost);
+            Ok(Some(dr))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn next_result(&mut self) -> Result<Option<DocResult>, Error> {
+        if let Some(mut dr) = try!(self.filter.next_result()) {
+            dr.boost_scores(self.boost);
+            Ok(Some(dr))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn prepare_relevancy_scoring(&mut self, mut qsi: &mut QueryScoringInfo) {
+        self.filter.prepare_relevancy_scoring(&mut qsi);
     }
 }
 

@@ -18,9 +18,9 @@ pub struct Stems<'a> {
 #[derive(Debug, PartialEq)]
 pub struct StemmedWord {
     // Where the stemmed word starts
-    pub word_pos: usize,
+    pub word_pos: u32,
     // Where the suffix starts
-    pub suffix_offset: usize,
+    pub suffix_offset: u32,
     // The stemmed word
     pub stemmed: String,
     // The difference between the stemmed word and the original lowercased one. It can be
@@ -96,7 +96,7 @@ impl<'a> Iterator for Stems<'a> {
             self.word_position += 1;
             return Some(StemmedWord {
                             word_pos: 0,
-                            suffix_offset: word_to_stem.len(),
+                            suffix_offset: word_to_stem.len() as u32,
                             stemmed: word_to_stem,
                             suffix: String::new(),
                 });
@@ -123,8 +123,8 @@ impl<'a> Iterator for Stems<'a> {
         let stemmed = self.stemmer.stem(&word_to_stem.to_lowercase());
         let prefix_len = Stems::common_prefix_len(&stemmed, &suffix);
         let ret = StemmedWord {
-                    word_pos: self.word_position,
-                    suffix_offset: prefix_len,
+                    word_pos: self.word_position as u32,
+                    suffix_offset: prefix_len as u32,
                     stemmed: stemmed,
                     suffix: (&suffix[prefix_len..]).to_string(),
                  };

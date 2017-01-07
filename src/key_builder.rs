@@ -33,6 +33,26 @@ impl KeyBuilder {
         string
     }
 
+    pub fn keypathword_count_key(&self, word: &str) -> String {
+        let mut string = String::with_capacity(100);
+        string.push('F');
+        for segment in &self.keypath {
+            string.push_str(&segment);
+        }
+        string.push('!');
+        string.push_str(word);
+        string
+    }
+    
+    pub fn keypath_count_key(&self) -> String {
+        let mut string = String::with_capacity(100);
+        string.push('K');
+        for segment in &self.keypath {
+            string.push_str(&segment);
+        }
+        string
+    }
+
     /// Builds a stemmed word key for the input word and seq, using the key_path and arraypath
     /// built up internally.
     pub fn stemmed_word_key(&self, word: &str, seq: u64) -> String {

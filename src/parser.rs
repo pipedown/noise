@@ -1,4 +1,5 @@
 
+use std;
 use std::str;
 use std::collections::HashMap;
 use std::iter::Iterator;
@@ -8,10 +9,10 @@ use error::Error;
 use key_builder::KeyBuilder;
 use stems::Stems;
 use json_value::JsonValue;
-use query::{Sort, Returnable, RetValue, RetObject, RetArray, RetLiteral, RetBind, AggregateFun,
-            SortInfo};
+use query::{Sort, Returnable, RetValue, RetObject, RetArray, RetLiteral, RetBind, RetScore,
+            AggregateFun, SortInfo, SortField};
 use filters::{QueryRuntimeFilter, ExactMatchFilter, StemmedWordFilter, StemmedWordPosFilter,
-              StemmedPhraseFilter, DistanceFilter, AndFilter, OrFilter, BindFilter};
+              StemmedPhraseFilter, DistanceFilter, AndFilter, OrFilter, BindFilter, BoostFilter};
 
 
 // TODO vmx 2016-11-02: Make it import "rocksdb" properly instead of needing to import the individual tihngs
@@ -23,6 +24,7 @@ pub struct Parser<'a> {
     offset: usize,
     kb: KeyBuilder,
     pub snapshot: Snapshot<'a>,
+    pub needs_scoring: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -32,6 +34,7 @@ impl<'a> Parser<'a> {
             offset: 0,
             kb: KeyBuilder::new(),
             snapshot: snapshot,
+            needs_scoring: false,
         }
     }
 
@@ -252,6 +255,29 @@ impl<'a> Parser<'a> {
         }
         self.ws();
         Ok(Some(kb))
+    }
+
+    // if no boost is specified returns 1.0
+    fn consume_boost(&mut self) -> Result<f32, Error> {
+        if self.consume("^") {
+            if let Some(num) = try!(self.consume_number()) {
+                Ok(num as f32)
+            } else {
+                return Err(Error::Parse("Expected number after ^ symbol.".to_string()));
+            }
+        } else {
+            Ok(1.0)
+        }
+    }
+
+    fn consume_boost_and_wrap_filter(&mut self, filter: Box<QueryRuntimeFilter + 'a>)
+                        -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
+        let boost = try!(self.consume_boost());
+        if boost != 1.0 {
+            Ok(Box::new(BoostFilter::new(filter, boost)))
+        } else {
+            Ok(filter)
+        }
     }
 
     fn consume_number(&mut self) -> Result<Option<f64>, Error> {
@@ -544,8 +570,10 @@ ws1
 
     fn object<'b>(&'b mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
         if self.consume("{") {
-            let left = try!(self.obool());
+            let mut left = try!(self.obool());
             try!(self.must_consume("}"));
+            
+            left = try!(self.consume_boost_and_wrap_filter(left));
             
             if self.consume("&&") {
                 let right = try!(self.object());
@@ -566,7 +594,8 @@ ws1
         try!(self.must_consume("("));
         let filter = try!(self.object());
         try!(self.must_consume(")"));
-        Ok(filter)
+        
+        self.consume_boost_and_wrap_filter(filter)
     }
 
     fn obool<'b>(&'b mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
@@ -605,32 +634,39 @@ ws1
     }
 
     fn oparens<'b>(&'b mut self) -> Result<Option<Box<QueryRuntimeFilter + 'a>>, Error> {
-        if self.consume("(") {
+        let opt_filter = if self.consume("(") {
             let f = try!(self.obool());
             try!(self.must_consume(")"));
-            Ok(Some(f))
+            Some(f)
         } else if self.could_consume("[") {
-            Ok(Some(try!(self.array())))
+            Some(try!(self.array()))
         } else if self.could_consume("{") {
-            Ok(Some(try!(self.object())))
+            Some(try!(self.object()))
         } else {
             if let Some(filter) = try!(self.bind_var()) {
-                Ok(Some(filter))
+                Some(filter)
             } else {
-                Ok(None)
+                None
             }
+        };
+
+        if let Some(filter) = opt_filter {
+            Ok(Some(try!(self.consume_boost_and_wrap_filter(filter))))
+        } else {
+            Ok(None)
         }
     }
 
     fn compare<'b>(&'b mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
         if self.consume("==") {
             let literal = try!(self.must_consume_string_literal());
+            let boost = try!(self.consume_boost());
             let stems = Stems::new(&literal);
             let mut filters: Vec<Box<QueryRuntimeFilter + 'a>> = Vec::new();
             for stem in stems {
                 let iter = self.snapshot.iterator(IteratorMode::Start);
                 let filter = Box::new(ExactMatchFilter::new(
-                    iter, &stem, &self.kb));
+                    iter, &stem, &self.kb, boost));
                 filters.push(filter);
             }
             match filters.len() {
@@ -641,6 +677,7 @@ ws1
         } else if self.consume("~=") {
             // regular search
             let literal = try!(self.must_consume_string_literal());
+            let boost = try!(self.consume_boost());
             let stems = Stems::new(&literal);
             let stemmed_words: Vec<String> = stems.map(|stem| stem.stemmed).collect();
 
@@ -648,13 +685,14 @@ ws1
                 0 => panic!("Cannot create a StemmedWordFilter"),
                 1 => {
                     let iter = self.snapshot.iterator(IteratorMode::Start);
-                    Ok(Box::new(StemmedWordFilter::new(iter, &stemmed_words[0], &self.kb)))
+                    Ok(Box::new(StemmedWordFilter::new(iter, &stemmed_words[0], &self.kb, boost)))
                 },
                 _ => {
                     let mut filters: Vec<StemmedWordPosFilter> = Vec::new();
                     for stemmed_word in stemmed_words {
                         let iter = self.snapshot.iterator(IteratorMode::Start);
-                        let filter = StemmedWordPosFilter::new(iter, &stemmed_word, &self.kb);
+                        let filter = StemmedWordPosFilter::new(iter, &stemmed_word,
+                                                               &self.kb, boost);
                         filters.push(filter);
                     }
                     Ok(Box::new(StemmedPhraseFilter::new(filters)))
@@ -670,17 +708,21 @@ ws1
             try!(self.must_consume("="));
 
             let literal = try!(self.must_consume_string_literal());
+            let boost = try!(self.consume_boost());
             let stems = Stems::new(&literal);
             let mut filters: Vec<StemmedWordPosFilter> = Vec::new();
             for stem in stems {
                 let iter = self.snapshot.iterator(IteratorMode::Start);
                 let filter = StemmedWordPosFilter::new(
-                    iter, &stem.stemmed, &self.kb);
+                    iter, &stem.stemmed, &self.kb, boost);
                 filters.push(filter);
+            }
+            if word_distance > std::u32::MAX as i64 {
+                return Err(Error::Parse("Proximity search number too large.".to_string()));
             }
             match filters.len() {
                 0 => panic!("Cannot create a DistanceFilter"),
-                _ => Ok(Box::new(DistanceFilter::new(filters, word_distance))),
+                _ => Ok(Box::new(DistanceFilter::new(filters, word_distance as u32))),
             }
         } else {
             Err(Error::Parse("Expected comparison operator".to_string()))
@@ -712,20 +754,26 @@ ws1
     }
 
     fn aparens<'b>(&'b mut self) -> Result<Option<Box<QueryRuntimeFilter + 'a>>, Error> {
-        if self.consume("(") {
+        let opt_filter = if self.consume("(") {
             let f = try!(self.abool());
             try!(self.must_consume(")"));
-            Ok(Some(f))
+            Some(f)
         } else if self.could_consume("[") {
-            Ok(Some(try!(self.array())))
+            Some(try!(self.array()))
         } else if self.could_consume("{") {
-            Ok(Some(try!(self.object())))
+            Some(try!(self.object()))
         } else {
             if let Some(filter) = try!(self.bind_var()) {
-                Ok(Some(filter))
+                Some(filter)
             } else {
-                Ok(None)
+                None
             }
+        };
+
+        if let Some(filter) = opt_filter {
+            Ok(Some(try!(self.consume_boost_and_wrap_filter(filter))))
+        } else {
+            Ok(None)
         }
     }
 
@@ -753,7 +801,8 @@ ws1
         let filter = try!(self.abool());
         self.kb.pop_array();
         try!(self.must_consume("]"));
-        Ok(filter)
+
+        self.consume_boost_and_wrap_filter(filter)
     }
 
     pub fn sort_clause(&mut self) -> Result<HashMap<String, SortInfo>, Error> {
@@ -790,12 +839,31 @@ ws1
                         sort
                     };
 
-                    sort_infos.insert(kb.value_key(0), SortInfo{kb:kb,
-                                                                sort:sort,
-                                                                default:default});
-                    if !self.consume(",") {
-                        break;
-                    }
+                    sort_infos.insert(kb.value_key(0), SortInfo{field: SortField::FetchValue(kb),
+                                                                sort: sort,
+                                                                default: default});
+                } else {
+                    try!(self.must_consume("score"));
+                    try!(self.must_consume("("));
+                    try!(self.must_consume(")"));
+
+                    self.needs_scoring = true;
+
+                    let sort = if self.consume("asc") {
+                        Sort::Asc
+                    } else if self.consume("desc") {
+                        Sort::Desc
+                    } else {
+                        Sort::Asc
+                    };
+
+                    sort_infos.insert("score()".to_string(),
+                                      SortInfo{field: SortField::Score,
+                                               sort: sort, default: JsonValue::Null});
+                }
+
+                if !self.consume(",") {
+                    break;
                 }
             }
             if sort_infos.is_empty() {
@@ -867,6 +935,17 @@ ws1
             return Ok(Some(Box::new(RetLiteral{json: JsonValue::False})));
         } else if self.consume("null") {
             return Ok(Some(Box::new(RetLiteral{json: JsonValue::Null})));
+        } else if self.could_consume("score") {
+            let offset = self.offset;
+            let _ = self.consume("score");
+            if self.consume("(") {
+                try!(self.must_consume(")"));
+                self.needs_scoring = true;
+                return Ok(Some(Box::new(RetScore{sort: None})));
+            } else {
+                //wasn't the score, maybe it's a bind variable
+                self.offset = offset;
+            }
         }
 
         if let Some((ag, bind_name_option, kb, json)) = try!(self.consume_aggregate()) {
@@ -1006,6 +1085,17 @@ ws1
     pub fn build_filter(&mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
         self.ws();
         Ok(try!(self.find()))
+    }
+
+    pub fn non_ws_left(&mut self) -> Result<(), Error> {
+        self.ws();
+        if self.offset != self.query.len() {
+            Err(Error::Parse(format!("At character {} unexpected {}.",
+                                     self.offset,
+                                     &self.query[self.offset..])))
+        } else {
+            Ok(())
+        }
     }
 }
 
