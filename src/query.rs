@@ -25,6 +25,7 @@ pub struct DocResult {
     pub seq: u64,
     pub arraypath: Vec<u64>,
     pub bind_name_result: HashMap<String, Vec<String>>,
+    pub scores: Vec<(f32, usize)>, // (sum of score, num matches of term)
 }
 
 impl DocResult {
@@ -33,6 +34,7 @@ impl DocResult {
             seq: 0,
             arraypath: Vec::new(),
             bind_name_result: HashMap::new(),
+            scores: Vec::new(),
         }
     }
 
@@ -44,7 +46,7 @@ impl DocResult {
         self.bind_name_result.insert(bind_name.to_string(), vec![result_key]);
     }
 
-    pub fn combine_bind_name_results(&mut self, other: &mut DocResult) {
+    pub fn combine(&mut self, other: &mut DocResult) {
         let mut replace = HashMap::new();
         swap(&mut replace, &mut other.bind_name_result);
         for (bind_name, mut result_keys_other) in replace.into_iter() {
@@ -53,6 +55,21 @@ impl DocResult {
                 continue;
             }
             self.bind_name_result.insert(bind_name, result_keys_other);
+        }
+        self.scores.append(&mut other.scores);
+    }
+
+    pub fn add_score(&mut self, term_ordinal: usize, score: f32) {
+        if term_ordinal >= self.scores.len() {
+            self.scores.resize(term_ordinal + 1, (0.0, 0));
+        }
+        self.scores[term_ordinal].0 += score;
+        self.scores[term_ordinal].1 += 1;
+    }
+
+    pub fn boost_scores(&mut self, boost: f32) {
+        for &mut (ref mut score, ref mut _num_match) in self.scores.iter_mut() {
+            *score *= boost;
         }
     }
 }
@@ -85,123 +102,89 @@ impl Ord for DocResult {
     }
 }
 
+pub struct QueryScoringInfo {
+    pub num_terms: usize,
+    pub sum_of_idt_sqs: f32,
+}
 
 pub struct Query {}
 
 impl Query {
     pub fn get_matches<'a>(query: String, index: &'a Index) -> Result<QueryResults<'a>, Error> {
-        match index.rocks {
-            Some(ref rocks) => {
-                let snapshot = Snapshot::new(&rocks);
-                let mut parser = Parser::new(query, snapshot);
-                let filter = try!(parser.build_filter());
-                let mut sorts = try!(parser.sort_clause());
-                let mut returnable = try!(parser.return_clause());
-                let limit = try!(parser.limit_clause());
-                
-                let mut ags = Vec::new(); 
-                returnable.get_aggregate_funs(&mut ags);
+        if index.rocks.is_none() {
+            return Err(Error::Parse("You must open the index first".to_string()));
+        }
+        
+        let snapshot = Snapshot::new(&index.rocks.as_ref().unwrap());
+        let mut parser = Parser::new(query, snapshot);
+        let mut filter = try!(parser.build_filter());
+        let mut sorts = try!(parser.sort_clause());
+        let mut returnable = try!(parser.return_clause());
+        let limit = try!(parser.limit_clause());
+        try!(parser.non_ws_left());
+        
+        let mut ags = Vec::new(); 
+        returnable.get_aggregate_funs(&mut ags);
 
-                let mut has_ags = false;
-                for option_ag in ags.iter() {
-                    if option_ag.is_some() {
-                        has_ags = true;
-                        break;
+        let mut has_ags = false;
+        for option_ag in ags.iter() {
+            if option_ag.is_some() {
+                has_ags = true;
+                break;
+            }
+        }
+        let has_sorting = !sorts.is_empty();
+
+        returnable = if has_sorting && has_ags {
+            return Err(Error::Parse("Cannot have aggregates and sorting in the same query"
+                                    .to_string()));
+        } else if has_sorting {
+            returnable.take_sort_for_matching_fields(&mut sorts);
+            if !sorts.is_empty() {
+                let mut vec: Vec<Box<Returnable>> = Vec::new();
+                for (_key, sort_info) in sorts.into_iter() {
+                    match sort_info.field {
+                        SortField::FetchValue(kb) => {
+                            vec.push(Box::new(RetValue{ kb: kb, 
+                                                        ag: None,
+                                                        default: sort_info.default,
+                                                        sort: Some(sort_info.sort)}));
+                        },
+                        SortField::Score => {
+                            vec.push(Box::new(RetScore{ sort: Some(sort_info.sort)}));
+                        },
                     }
                 }
-                let has_sorting = !sorts.is_empty();
+                Box::new(RetHidden{unrendered: vec, visible: returnable})
+            } else {
+                returnable
+            }
+        } else {
+            returnable
+        };
 
-                returnable = if has_sorting && has_ags {
-                    return Err(Error::Parse("Cannot have aggregates and sorting in the same query"
-                                            .to_string()));
-                } else if has_sorting {
-                    returnable.take_sort_for_matching_fields(&mut sorts);
-                    if !sorts.is_empty() {
-                        let vec = sorts.into_iter()
-                                     .map(|(_key, sort_info)|
-                                          RetValue {kb: sort_info.kb, 
-                                                    ag: None,
-                                                    default: sort_info.default,
-                                                    sort: Some(sort_info.sort)})
-                                    .collect();
-                        Box::new(RetHidden{unrendered: vec, visible: returnable})
-                    } else {
-                        returnable
-                    }
-                } else {
-                    returnable
-                };
-
-                let option_ags = if has_ags {
-                    // we have at least one AggregationFun. Make sure they are all set.
-                    for option_ag in ags.iter() {
-                        if option_ag.is_none() {
-                            return Err(Error::Parse("Return keypaths must either all have \
-                                aggregate functions, or none can them.".to_string()));
-                        }
-                    }
-                    Some(ags.into_iter().map(|option| option.unwrap()).collect())
-                } else {
-                    None
-                };
-
-                let sorting = if has_sorting {
-                    let mut sorting = Vec::new();
-                    returnable.get_sorting(&mut sorting);
-                    Some(sorting)
-                } else {
-                    None
-                };
-                
-                Ok(QueryResults::new(filter, parser.snapshot, returnable,
-                                     option_ags, sorting, limit))
-            },
-            None => {
-                Err(Error::Parse("You must open the index first".to_string()))
-            },
+        if has_ags {
+            // we have at least one AggregationFun. Make sure they are all set.
+            for option_ag in ags.iter() {
+                if option_ag.is_none() {
+                    return Err(Error::Parse("Return keypaths must either all have \
+                        aggregate functions, or none can them.".to_string()));
+                }
+            }
         }
-    }
-}
 
-pub struct QueryResults<'a> {
-    filter: Box<QueryRuntimeFilter + 'a>,
-    doc_result_next: DocResult,
-    snapshot: Snapshot<'a>,
-    iter: DBIterator,
-    returnable: Box<Returnable>,
-    buffer: Vec<u8>,
-    needs_sorting_and_ags: bool,
-    done_with_sorting_and_ags: bool,
-    does_group_or_aggr: bool,
-    sorts: Option<Vec<(Sort, usize)>>,
-    aggr_inits: Vec<(fn (&mut JsonValue), usize)>,
-    aggr_actions: Vec<(fn (&mut JsonValue, JsonValue, &JsonValue), JsonValue, usize)>,
-    aggr_finals: Vec<(fn (&mut JsonValue), usize)>,
-    in_buffer: Vec<VecDeque<JsonValue>>,
-    sorted_buffer: Vec<VecDeque<JsonValue>>,
-    limit: usize,
-}
+        let needs_sorting_and_ags = has_ags || has_sorting;
 
-impl<'a> QueryResults<'a> {
-    fn new(filter: Box<QueryRuntimeFilter + 'a>,
-           snapshot: Snapshot<'a>,
-           returnable: Box<Returnable>,
-           ags: Option<Vec<(AggregateFun, JsonValue)>>,
-           sorting: Option<Vec<Option<Sort>>>,
-           limit: usize) -> QueryResults<'a> {
-        
         // the input args for sorts and ags are vecs where the slot is the same slot as
         // a result that the action needs to be applied to. We instead convert them
         // into several new fields with tuples of action and the slot to act on.
         // this way we don't needlesss loop over the actions where most are noops
 
-        // only one can be Some at a time
-        debug_assert!(!sorting.is_some() && !ags.is_some() || sorting.is_some() ^ ags.is_some());
 
-        let needs_sorting_and_ags = ags.is_some() || sorting.is_some();
-        
         let mut sorts = Vec::new();
-        if let Some(mut sorting) = sorting {
+        if has_sorting {
+            let mut sorting = Vec::new();
+            returnable.get_sorting(&mut sorting);
             let mut n = sorting.len();
             while let Some(option) = sorting.pop() {
                 n -= 1;
@@ -212,14 +195,16 @@ impl<'a> QueryResults<'a> {
             // order we process sorts is important
             sorts.reverse();
         }
+        
+        
         let mut does_group_or_aggr = false;
         let mut aggr_inits = Vec::new();
         let mut aggr_actions = Vec::new();
         let mut aggr_finals = Vec::new();
-        if let Some(mut ags) = ags {
+        if has_ags {
             does_group_or_aggr = true;
             let mut n = ags.len();
-            while let Some((ag, user_arg)) = ags.pop() {
+            while let Some(Some((ag, user_arg))) = ags.pop() {
                 n -= 1;
                 if ag == AggregateFun::GroupAsc {
                     sorts.push((Sort::Asc, n));
@@ -240,11 +225,23 @@ impl<'a> QueryResults<'a> {
             sorts.reverse();
         }
         
-        QueryResults{
+        let mut qsi = QueryScoringInfo{num_terms: 0, sum_of_idt_sqs: 0.0};
+        
+        if parser.needs_scoring {
+            filter.prepare_relevancy_scoring(&mut qsi);
+        }
+
+        let query_norm = if qsi.num_terms > 0 {
+            1.0/(qsi.sum_of_idt_sqs as f32)
+        } else {
+            0.0
+        };
+
+        Ok(QueryResults {
             filter: filter,
             doc_result_next: DocResult::new(),
-            iter: snapshot.iterator(IteratorMode::Start),
-            snapshot: snapshot,
+            iter: parser.snapshot.iterator(IteratorMode::Start),
+            snapshot: parser.snapshot,
             returnable: returnable,
             buffer: Vec::new(),
             needs_sorting_and_ags: needs_sorting_and_ags,
@@ -257,7 +254,49 @@ impl<'a> QueryResults<'a> {
             in_buffer: Vec::new(),
             sorted_buffer: Vec::new(),
             limit: limit,
+            scoring_num_terms: qsi.num_terms,
+            scoring_query_norm: query_norm,
+        })
+    }
+}
+
+pub struct QueryResults<'a> {
+    filter: Box<QueryRuntimeFilter + 'a>,
+    doc_result_next: DocResult,
+    snapshot: Snapshot<'a>,
+    iter: DBIterator,
+    returnable: Box<Returnable>,
+    buffer: Vec<u8>,
+    needs_sorting_and_ags: bool,
+    done_with_sorting_and_ags: bool,
+    does_group_or_aggr: bool,
+    sorts: Option<Vec<(Sort, usize)>>,
+    aggr_inits: Vec<(fn (&mut JsonValue), usize)>,
+    aggr_actions: Vec<(fn (&mut JsonValue, JsonValue, &JsonValue), JsonValue, usize)>,
+    aggr_finals: Vec<(fn (&mut JsonValue), usize)>,
+    in_buffer: Vec<VecDeque<JsonValue>>,
+    sorted_buffer: Vec<VecDeque<JsonValue>>,
+    limit: usize,
+    scoring_num_terms: usize,
+    scoring_query_norm: f32,
+}
+
+impl<'a> QueryResults<'a> {
+
+    fn compute_relevancy_score(& self, dr: &DocResult) -> f32 {
+        if self.scoring_num_terms == 0 {
+            return 0.0
         }
+        let mut num_terms_matched = 0;
+        let mut score: f32 = 0.0;
+        for &(ref total_term_score, ref num_times_term_matched) in dr.scores.iter() {
+            if *num_times_term_matched > 0 {
+                score += *total_term_score/(*num_times_term_matched as f32);
+                num_terms_matched += 1;
+            }
+        }
+        self.scoring_query_norm * score * (num_terms_matched as f32)
+                / (self.scoring_num_terms as f32)
     }
 
     fn get_next_result(&mut self) -> Result<Option<DocResult>, Error> {
@@ -307,8 +346,9 @@ impl<'a> QueryResults<'a> {
                 };
                 match next {
                     Some(dr) => {
+                        let score = self.compute_relevancy_score(&dr);
                         let mut results = VecDeque::new();
-                        try!(self.returnable.fetch_result(&mut self.iter, dr.seq,
+                        try!(self.returnable.fetch_result(&mut self.iter, dr.seq, score,
                                                           &dr.bind_name_result, &mut results));
                         self.in_buffer.push(results);
                         if self.in_buffer.len() == self.limit {
@@ -344,8 +384,9 @@ impl<'a> QueryResults<'a> {
                 Some(dr) => dr,
                 None => return Ok(None),
             };
+            let score = self.compute_relevancy_score(&dr);
             let mut results = VecDeque::new();
-            try!(self.returnable.fetch_result(&mut self.iter, dr.seq,
+            try!(self.returnable.fetch_result(&mut self.iter, dr.seq, score,
                                               &dr.bind_name_result, &mut results));
             self.buffer.clear();
             try!(self.returnable.write_result(&mut results, &mut self.buffer));
@@ -732,15 +773,20 @@ pub enum Sort {
     Desc,
 }
 
+pub enum SortField {
+    FetchValue(KeyBuilder),
+    Score,
+}
+
 pub struct SortInfo {
-    pub kb: KeyBuilder,
+    pub field: SortField,
     pub sort: Sort,
     pub default: JsonValue,
 }
 
 
 pub trait Returnable {
-    fn fetch_result(&self, iter: &mut DBIterator, seq: u64,
+    fn fetch_result(&self, iter: &mut DBIterator, seq: u64, score: f32,
                     bind_var_keys: &HashMap<String, Vec<String>>,
                     result: &mut VecDeque<JsonValue>) -> Result<(), Error>;
 
@@ -759,11 +805,11 @@ pub struct RetObject {
 }
 
 impl Returnable for RetObject {
-    fn fetch_result(&self, iter: &mut DBIterator, seq: u64,
+    fn fetch_result(&self, iter: &mut DBIterator, seq: u64, score: f32,
                     bind_var_keys: &HashMap<String, Vec<String>>,
                     result: &mut VecDeque<JsonValue>) -> Result<(), Error> {
         for &(ref _key, ref field) in self.fields.iter() {
-            try!(field.fetch_result(iter, seq, bind_var_keys, result));
+            try!(field.fetch_result(iter, seq, score, bind_var_keys, result));
         }
         Ok(())
     }
@@ -814,11 +860,11 @@ pub struct RetArray {
 }
 
 impl Returnable for RetArray {
-    fn fetch_result(&self, iter: &mut DBIterator, seq: u64,
+    fn fetch_result(&self, iter: &mut DBIterator, seq: u64, score: f32,
                     bind_var_keys: &HashMap<String, Vec<String>>,
                     result: &mut VecDeque<JsonValue>) -> Result<(), Error> {
         for ref slot in self.slots.iter() {
-            try!(slot.fetch_result(iter, seq, bind_var_keys, result));
+            try!(slot.fetch_result(iter, seq, score, bind_var_keys, result));
         }
         Ok(())
     }
@@ -863,19 +909,19 @@ impl Returnable for RetArray {
 
 
 pub struct RetHidden {
-    unrendered: Vec<RetValue>,
+    unrendered: Vec<Box<Returnable>>,
     visible: Box<Returnable>,
 }
 
 impl Returnable for RetHidden {
-    fn fetch_result(&self, iter: &mut DBIterator, seq: u64,
+    fn fetch_result(&self, iter: &mut DBIterator, seq: u64, score: f32,
                     bind_var_keys: &HashMap<String, Vec<String>>,
                     result: &mut VecDeque<JsonValue>) -> Result<(), Error> {
         for ref mut unrendered in self.unrendered.iter() {
-            try!(unrendered.fetch_result(iter, seq, bind_var_keys, result));
+            try!(unrendered.fetch_result(iter, seq, score, bind_var_keys, result));
         }
 
-        self.visible.fetch_result(iter, seq, bind_var_keys, result)
+        self.visible.fetch_result(iter, seq, score, bind_var_keys, result)
     }
 
     fn get_aggregate_funs(&self, funs: &mut Vec<Option<(AggregateFun, JsonValue)>>) {
@@ -909,7 +955,7 @@ pub struct RetLiteral {
 }
 
 impl Returnable for RetLiteral {
-    fn fetch_result(&self, _iter: &mut DBIterator, _seq: u64,
+    fn fetch_result(&self, _iter: &mut DBIterator, _seq: u64, _score: f32,
                     _bind_var_keys: &HashMap<String, Vec<String>>,
                     _result: &mut VecDeque<JsonValue>) -> Result<(), Error> {
         Ok(())
@@ -1077,7 +1123,7 @@ impl RetValue {
 }
 
 impl Returnable for RetValue {
-    fn fetch_result(&self, iter: &mut DBIterator, seq: u64,
+    fn fetch_result(&self, iter: &mut DBIterator, seq: u64, _score: f32,
                     _bind_var_keys: &HashMap<String, Vec<String>>,
                     result: &mut VecDeque<JsonValue>) -> Result<(), Error> {
         if Some((AggregateFun::Count, JsonValue::Null)) == self.ag {
@@ -1146,7 +1192,7 @@ pub struct RetBind {
 
 
 impl Returnable for RetBind {
-    fn fetch_result(&self, iter: &mut DBIterator, _seq: u64,
+    fn fetch_result(&self, iter: &mut DBIterator, _seq: u64, _score: f32,
                     bind_var_keys: &HashMap<String, Vec<String>>,
                     result: &mut VecDeque<JsonValue>) -> Result<(), Error> {
 
@@ -1206,6 +1252,44 @@ impl Returnable for RetBind {
     }
 }
 
+
+pub struct RetScore {
+    pub sort: Option<Sort>,
+}
+
+
+impl Returnable for RetScore {
+    fn fetch_result(&self, _iter: &mut DBIterator, _seq: u64, score: f32,
+                    _bind_var_keys: &HashMap<String, Vec<String>>,
+                    result: &mut VecDeque<JsonValue>) -> Result<(), Error> {
+        result.push_back(JsonValue::Number(score as f64));
+        Ok(())
+    }
+
+    fn get_aggregate_funs(&self, _funs: &mut Vec<Option<(AggregateFun, JsonValue)>>) {
+        // noop
+    }
+
+    fn get_sorting(&self, sorts: &mut Vec<Option<Sort>>) {
+        sorts.push(self.sort.clone());
+    }
+    
+    fn take_sort_for_matching_fields(&mut self, map: &mut HashMap<String,SortInfo>) {
+        if let Some(sort_info) = map.remove("score()") {
+            self.sort = Some(sort_info.sort);
+        }
+    }
+
+    fn write_result(&self, results: &mut VecDeque<JsonValue>,
+                    write: &mut Write) -> Result<(), Error> {
+        if let Some(json) = results.pop_front() {
+            try!(json.render(write));
+        } else {
+            panic!("missing result!");
+        }
+        Ok(())
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -1328,6 +1412,10 @@ mod tests {
         assert_eq!(query_results.get_next_id().unwrap(), None);
 
         query_results = Query::get_matches(r#"find {A: ~5= "a bunch of words sentence"}"#.to_string(), &index).unwrap();
+        assert_eq!(query_results.get_next_id().unwrap(), Some("10".to_string()));
+        assert_eq!(query_results.get_next_id().unwrap(), None);
+
+        query_results = Query::get_matches(r#"find {A: ~10= "a bunch of words sentence"}"#.to_string(), &index).unwrap();
         assert_eq!(query_results.get_next_id().unwrap(), Some("10".to_string()));
         assert_eq!(query_results.get_next_id().unwrap(), None);
 
@@ -1773,6 +1861,171 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_query_score() {
+        let dbname = "target/tests/querytestscore";
+
+        let _ = Index::delete(dbname);
+
+        let mut index = Index::new();
+        index.open(dbname, Some(OpenOptions::Create)).unwrap();
+
+        assert_eq!(Ok(()), index.add(r#"{"_id":"1", "bar": "fox"}"#));
+        assert_eq!(Ok(()), index.add(r#"{"_id":"2", "bar": "quick fox"}"#));
+        assert_eq!(Ok(()), index.add(r#"{"_id":"3", "bar": "quick brown fox"}"#));
+        
+        index.flush().unwrap();
+
+        {
+        let mut query_results = Query::get_matches(r#"find {bar: ~="fox" || bar: ~="brown" || bar: ~="quick"}
+                                                      sort score() desc
+                                                      return ._id "#.to_string(), &index).unwrap();
+
+        assert_eq!(query_results.next_result().unwrap(),Some(r#""3""#.to_string()));
+        assert_eq!(query_results.next_result().unwrap(),Some(r#""2""#.to_string()));
+        assert_eq!(query_results.next_result().unwrap(),Some(r#""1""#.to_string()));
+        assert_eq!(query_results.next_result().unwrap(), None);
+        }
+
+
+
+        {
+        let mut query_results = Query::get_matches(r#"find {bar: ~="quick brown fox"}
+                                                      sort score() desc
+                                                      return ._id "#.to_string(), &index).unwrap();
+
+        assert_eq!(query_results.next_result().unwrap(),Some(r#""3""#.to_string()));
+        assert_eq!(query_results.next_result().unwrap(), None);
+        }
+
+
+
+        {
+        //score boosting
+        let mut query_results = Query::get_matches(r#"find {bar: ~="quick brown fox"}
+                                                      return score() "#.to_string(), &index).unwrap();
+
+        
+        let mut query_results2 = Query::get_matches(r#"find {bar: ~="quick brown fox"^2}
+                                                      return score() "#.to_string(), &index).unwrap();
+
+
+        assert_eq!(query_results.next_result().unwrap().unwrap().parse::<f32>().unwrap()*2.0,
+                   query_results2.next_result().unwrap().unwrap().parse::<f32>().unwrap());
+        }
+
+
+        {
+        let mut query_results = Query::get_matches(r#"find {bar: =="quick brown fox"}
+                                                      return score() "#.to_string(), &index).unwrap();
+
+        
+        let mut query_results2 = Query::get_matches(r#"find {bar: =="quick brown fox"^2}
+                                                      return score() "#.to_string(), &index).unwrap();
+
+
+        assert_eq!(query_results.next_result().unwrap().unwrap().parse::<f32>().unwrap()*2.0,
+                   query_results2.next_result().unwrap().unwrap().parse::<f32>().unwrap());
+        }
+
+        {
+        let mut query_results = Query::get_matches(r#"find {bar: ~2="quick brown fox"}
+                                                      return score() "#.to_string(), &index).unwrap();
+
+        
+        let mut query_results2 = Query::get_matches(r#"find {bar: ~2="quick brown fox"^2}
+                                                      return score() "#.to_string(), &index).unwrap();
+
+
+        assert_eq!(query_results.next_result().unwrap().unwrap().parse::<f32>().unwrap()*2.0,
+                   query_results2.next_result().unwrap().unwrap().parse::<f32>().unwrap());
+        }
+
+        {
+        let mut query_results = Query::get_matches(r#"find {bar: ~="fox" || bar: ~="brown" || bar: ~="quick"}
+                                                      sort score() desc
+                                                      return score() "#.to_string(), &index).unwrap();
+        let mut query_results2 = Query::get_matches(r#"find ({bar: ~="fox" || bar: ~="brown" || bar: ~="quick"})^2
+                                                      sort score() desc
+                                                      return score() "#.to_string(), &index).unwrap();
+        assert_eq!(query_results.next_result().unwrap().unwrap().parse::<f32>().unwrap()*2.0,
+                   query_results2.next_result().unwrap().unwrap().parse::<f32>().unwrap());
+        }
+
+
+        {
+        let mut query_results = Query::get_matches(r#"find {bar: ~="fox" || bar: ~="brown" || bar: ~="quick"}
+                                                      sort score() desc
+                                                      return score() "#.to_string(), &index).unwrap();
+        let mut query_results2 = Query::get_matches(r#"find {bar: ~="fox" || bar: ~="brown" || bar: ~="quick"}^2
+                                                      sort score() desc
+                                                      return score() "#.to_string(), &index).unwrap();
+        assert_eq!(query_results.next_result().unwrap().unwrap().parse::<f32>().unwrap()*2.0,
+                   query_results2.next_result().unwrap().unwrap().parse::<f32>().unwrap());
+        }
+
+        {
+        let mut query_results = Query::get_matches(r#"find {bar: ~="fox" || bar: ~="brown" || bar: ~="quick"}
+                                                      sort score() desc
+                                                      return score() "#.to_string(), &index).unwrap();
+        let mut query_results2 = Query::get_matches(r#"find {bar: ~="fox"^2 || (bar: ~="brown" || bar: ~="quick")^2 }
+                                                      sort score() desc
+                                                      return score() "#.to_string(), &index).unwrap();
+        assert_eq!(query_results.next_result().unwrap().unwrap().parse::<f32>().unwrap()*2.0,
+                   query_results2.next_result().unwrap().unwrap().parse::<f32>().unwrap());
+        }
+
+        {
+        let mut query_results = Query::get_matches(r#"find {bar: ~="fox" || bar: ~="brown" || bar: ~="quick"}
+                                                      sort score() desc
+                                                      return score() "#.to_string(), &index).unwrap();
+        let mut query_results2 = Query::get_matches(r#"find {bar: ~="fox"}^2 || {bar: ~="brown" || bar: ~="quick"}^2
+                                                      sort score() desc
+                                                      return score() "#.to_string(), &index).unwrap();
+        assert_eq!(query_results.next_result().unwrap().unwrap().parse::<f32>().unwrap()*2.0,
+                   query_results2.next_result().unwrap().unwrap().parse::<f32>().unwrap());
+        }
+
+        assert_eq!(Ok(()), index.add(r#"{"_id":"4", "bar": ["fox"]}"#));
+        assert_eq!(Ok(()), index.add(r#"{"_id":"5", "bar": ["quick fox"]}"#));
+        assert_eq!(Ok(()), index.add(r#"{"_id":"6", "bar": ["quick brown fox"]}"#));
+        
+        index.flush().unwrap();
+
+        {
+        let mut query_results = Query::get_matches(r#"find {bar:[ ~="fox" || ~="brown" || ~="quick"]}
+                                                      sort score() desc
+                                                      return score() "#.to_string(), &index).unwrap();
+        let mut query_results2 = Query::get_matches(r#"find {bar:[~="fox" || ~="brown" || ~="quick"]^2}
+                                                      sort score() desc
+                                                      return score() "#.to_string(), &index).unwrap();
+        assert_eq!(query_results.next_result().unwrap().unwrap().parse::<f32>().unwrap()*2.0,
+                   query_results2.next_result().unwrap().unwrap().parse::<f32>().unwrap());
+        }
+
+        {
+        let mut query_results = Query::get_matches(r#"find {bar:[ ~="fox" || ~="brown" || ~="quick"]}
+                                                      sort score() desc
+                                                      return score() "#.to_string(), &index).unwrap();
+        let mut query_results2 = Query::get_matches(r#"find {bar:[~="fox"]^2 || bar:[~="brown" || ~="quick"]^2}
+                                                      sort score() desc
+                                                      return score() "#.to_string(), &index).unwrap();
+        assert_eq!(query_results.next_result().unwrap().unwrap().parse::<f32>().unwrap()*2.0,
+                   query_results2.next_result().unwrap().unwrap().parse::<f32>().unwrap());
+        }
+
+        {
+        let mut query_results = Query::get_matches(r#"find {bar:[ ~="fox" || ~="brown" || ~="quick"]}
+                                                      sort score() desc
+                                                      return score() "#.to_string(), &index).unwrap();
+        let mut query_results2 = Query::get_matches(r#"find {bar:[~="fox"]^2 || (bar:[~="brown"] || bar:[~="quick"])^2}
+                                                      sort score() desc
+                                                      return score() "#.to_string(), &index).unwrap();
+        assert_eq!(query_results.next_result().unwrap().unwrap().parse::<f32>().unwrap()*2.0,
+                   query_results2.next_result().unwrap().unwrap().parse::<f32>().unwrap());
+        }
+
+    }
 
     #[test]
     fn test_query_more_docs() {

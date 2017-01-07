@@ -2,8 +2,11 @@ extern crate rocksdb;
 
 use std::collections::HashMap;
 use std::str;
+use std::mem;
 
 use records_capnp::header;
+
+use rocksdb::MergeOperands;
 
 use error::Error;
 use json_shred::{Shredder};
@@ -64,7 +67,6 @@ impl Index {
     //fn open(&mut self, name: &str, open_options: Option<OpenOptions>) -> Result<DB, String> {
     pub fn open(&mut self, name: &str, open_options: Option<OpenOptions>) -> Result<(), Error> {
         let mut rocks_options = rocksdb::Options::default();
-        println!("still here1");
         let rocks = match rocksdb::DB::open(&rocks_options, name) {
             Ok(rocks) => rocks,
             Err(error) => {
@@ -75,6 +77,8 @@ impl Index {
 
                 rocks_options.create_if_missing(true);
                 rocks_options.set_comparator("noise", Index::compare_keys);
+                rocks_options.set_merge_operator("noise", Index::sum_merge);
+                
 
                 let rocks = try!(rocksdb::DB::open(&rocks_options, name));
 
@@ -186,6 +190,40 @@ impl Index {
                 Ordering::Equal   =>  0,
             }
         }
+    }
+
+    pub fn convert_bytes_to_u64(bytes: &[u8]) -> u64 {
+        debug_assert!(bytes.len() == 8);
+        let mut buffer = [0; 8];
+        for (n, b) in bytes.iter().enumerate() {
+            buffer[n] = *b;
+        }
+        unsafe{ mem::transmute(buffer) }
+    }
+    
+    pub fn convert_u64_to_bytes(val: u64) -> [u8; 8] {
+        unsafe{ mem::transmute(val) }
+    }
+
+    fn sum_merge(new_key: &[u8],
+                    existing_val: Option<&[u8]>,
+                    operands: &mut MergeOperands)
+                    -> Vec<u8> {
+        if !(new_key[0] as char == 'F' || new_key[0] as char == 'K') {
+            panic!("unknown key type to merge!");
+        }
+
+        let mut count:u64 = if let Some(bytes) = existing_val {
+            Index::convert_bytes_to_u64(&bytes)
+        } else {
+            0
+        };
+        
+        for bytes in operands {
+            count += Index::convert_bytes_to_u64(&bytes);
+        }
+
+        Index::convert_u64_to_bytes(count).into_iter().map(|b| *b).collect()
     }
 }
 

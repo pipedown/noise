@@ -21,14 +21,14 @@ use stems::Stems;
 #[derive(Debug, PartialEq)]
 struct WordInfo {
     //offset in the text field where the stemmed text starts
-    word_pos: u64,
+    word_pos: u32,
+
+    // the start of the suffixText
+    suffix_offset: u32,
 
     // the suffix of the stemmed text. When applied over stemmed, the original
     // text is returned.
     suffix_text: String,
-
-    // the start of the suffixText
-    suffix_offset: u64,
 }
 
 type ArrayOffsets = Vec<u64>;
@@ -53,7 +53,7 @@ pub trait Indexable {
 pub struct Shredder {
     kb: KeyBuilder,
     // Top-level fields prefixed with an underscore are ignored
-    ignore_children: u64,
+    ignore_children: usize,
     doc_id: String,
 }
 
@@ -71,20 +71,26 @@ impl Shredder {
             Result<(), Error> {
         let stems = Stems::new(text.as_str());
         let mut word_to_word_infos = HashMap::new();
+        let mut total_words = 0;
 
         for stem in stems {
             let word_infos = word_to_word_infos.entry(stem.stemmed).or_insert(Vec::new());
+            total_words += 1;
             word_infos.push(WordInfo{
-                word_pos: stem.word_pos as u64,
+                word_pos: stem.word_pos,
                 suffix_text: stem.suffix.to_string(),
-                suffix_offset: stem.suffix_offset as u64,
+                suffix_offset: stem.suffix_offset,
             });
         }
+
         for (stemmed, word_infos) in word_to_word_infos {
             let mut message = ::capnp::message::Builder::new_default();
+            let count: u32;
             {
-                let capn_payload = message.init_root::<payload::Builder>();
-                let mut capn_wordinfos = capn_payload.init_wordinfos(word_infos.len() as u32);
+                let mut capn_payload = message.init_root::<payload::Builder>();
+                count = word_infos.len() as u32;
+                capn_payload.set_total_words(total_words);
+                let mut capn_wordinfos = capn_payload.init_wordinfos(count);
                 for (pos, word_info) in word_infos.iter().enumerate() {
                     let mut capn_wordinfo = capn_wordinfos.borrow().get(pos as u32);
                     capn_wordinfo.set_word_pos(word_info.word_pos);
@@ -97,6 +103,14 @@ impl Shredder {
             ::capnp::serialize_packed::write_message(&mut bytes, &message).unwrap();
             let key = self.kb.stemmed_word_key(&stemmed, docseq);
             try!(batch.put(&key.into_bytes(), &bytes));
+
+            let bytes = unsafe{ transmute::<u64, [u8; 8]>(count as u64) };
+            let key = self.kb.keypathword_count_key(&stemmed);
+            try!(batch.merge(&key.into_bytes(), &bytes));
+
+            let bytes = unsafe{ transmute::<u64, [u8; 8]>(1) };
+            let key = self.kb.keypath_count_key();
+            try!(batch.merge(&key.into_bytes(), &bytes));
 
         }
         let key = self.kb.value_key(docseq);
@@ -319,8 +333,9 @@ mod tests {
     use std::str;
     use records_capnp;
     use super::{WordInfo};
+    use index::{Index, OpenOptions};
 
-    fn wordinfos_from_rocks(rocks: rocksdb::DB) -> Vec<(String, Vec<WordInfo>)> {
+    fn wordinfos_from_rocks(rocks: &rocksdb::DB) -> Vec<(String, Vec<WordInfo>)> {
         let mut result = Vec::new();
         for (key, value) in rocks.iterator(rocksdb::IteratorMode::Start) {
             if key[0] as char == 'W' {
@@ -353,9 +368,15 @@ mod tests {
         let mut batch = rocksdb::WriteBatch::default();
         shredder.shred(json, docseq, &mut batch).unwrap();
 
-        let rocks = rocksdb::DB::open_default("target/tests/test_shred_netsted").unwrap();
+        let dbname = "target/tests/test_shred_netsted";
+        let _ = Index::delete(dbname);
+
+        let mut index = Index::new();
+        index.open(dbname, Some(OpenOptions::Create)).unwrap();
+        let rocks = &index.rocks.unwrap();
+
         rocks.write(batch).unwrap();
-        let result = wordinfos_from_rocks(rocks);
+        let result = wordinfos_from_rocks(&rocks);
 
         let expected = vec![
             ("W.some$!array#123,0".to_string(), vec![
@@ -382,9 +403,15 @@ mod tests {
         let mut batch = rocksdb::WriteBatch::default();
         shredder.shred(json, docseq, &mut batch).unwrap();
 
-        let rocks = rocksdb::DB::open_default("target/tests/test_shred_objects").unwrap();
+        let dbname = "target/tests/test_shred_objects";
+        let _ = Index::delete(dbname);
+
+        let mut index = Index::new();
+        index.open(dbname, Some(OpenOptions::Create)).unwrap();
+        let rocks = &index.rocks.unwrap();
+
         rocks.write(batch).unwrap();
-        let result = wordinfos_from_rocks(rocks);
+        let result = wordinfos_from_rocks(&rocks);
         println!("result: {:?}", result);
         let expected = vec![
             ("W.A$.B!b1#1234,1".to_string(), vec![
@@ -416,9 +443,16 @@ mod tests {
         let mut batch = rocksdb::WriteBatch::default();
         shredder.shred(json, docseq, &mut batch).unwrap();
 
-        let rocks = rocksdb::DB::open_default("target/tests/test_shred_empty_object").unwrap();
+        let dbname = "target/tests/test_shred_empty_object";
+        let _ = Index::delete(dbname);
+
+        let mut index = Index::new();
+        index.open(dbname, Some(OpenOptions::Create)).unwrap();
+        
+        let rocks = &index.rocks.unwrap();
+
         rocks.write(batch).unwrap();
-        let result = wordinfos_from_rocks(rocks);
+        let result = wordinfos_from_rocks(&rocks);
         assert!(result.is_empty());
     }
 }
