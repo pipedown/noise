@@ -1438,6 +1438,14 @@ mod tests {
         assert_eq!(query_results.get_next_id().unwrap(), Some("9".to_string()));
         assert_eq!(query_results.get_next_id().unwrap(), None);
 
+        query_results = Query::get_matches(r#"find {A:[ == "A1" && == "A" || == "A1"]}"#.to_string(), &index).unwrap();
+        assert_eq!(query_results.get_next_id().unwrap(), Some("8".to_string()));
+        assert_eq!(query_results.get_next_id().unwrap(), Some("9".to_string()));
+        assert_eq!(query_results.get_next_id().unwrap(), None);
+
+        query_results = Query::get_matches(r#"find {A:[=="A" || == "A1" && == "A"]}"#.to_string(), &index).unwrap();
+        assert_eq!(query_results.get_next_id().unwrap(), None);
+
         query_results = Query::get_matches(r#"find {A: ~= "Multi"}"#.to_string(), &index).unwrap();
         assert_eq!(query_results.get_next_id().unwrap(), Some("3".to_string()));
         assert_eq!(query_results.get_next_id().unwrap(), None);
