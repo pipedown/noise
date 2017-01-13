@@ -262,7 +262,8 @@ impl KeyBuilder {
     /* parses a seq and array path portion (ex "123,0,0,10) of a key into a doc result */
     pub fn parse_doc_result_from_key(str: &str) -> DocResult {
         let mut dr = DocResult::new();
-        let (_path_str, seq_str, arraypath_str) = KeyBuilder::split_keypath_seq_arraypath_from_key(&str);
+        let (_path_str, seq_str, arraypath_str) =
+                KeyBuilder::split_keypath_seq_arraypath_from_key(&str);
         dr.seq = seq_str.parse().unwrap(); 
         if !arraypath_str.is_empty() {
             for numstr in arraypath_str.split(",") {
@@ -274,15 +275,17 @@ impl KeyBuilder {
 
     pub fn compare_keys(akey: &str, bkey: &str) -> i32 {
         use std::cmp::Ordering;
-        assert!(akey.starts_with('W'));
-        assert!(bkey.starts_with('W'));
-        let (apath_str, aseq_str, aarraypath_str) = KeyBuilder::split_keypath_seq_arraypath_from_key(&akey);
-        let (bpath_str, bseq_str, barraypath_str) = KeyBuilder::split_keypath_seq_arraypath_from_key(&bkey);
+        debug_assert!(akey.starts_with('W'));
+        debug_assert!(bkey.starts_with('W'));
+        let (apath_str, aseq_str, aarraypath_str) =
+                KeyBuilder::split_keypath_seq_arraypath_from_key(&akey);
+        let (bpath_str, bseq_str, barraypath_str) =
+                KeyBuilder::split_keypath_seq_arraypath_from_key(&bkey);
 
         match apath_str[1..].cmp(&bpath_str[1..]) {
-            Ordering::Less    =>  -1,
-            Ordering::Greater =>   1,
-            Ordering::Equal   => {
+            Ordering::Less => -1,
+            Ordering::Greater => 1,
+            Ordering::Equal => {
                 let aseq: u64 = aseq_str.parse().unwrap();
                 let bseq: u64 = bseq_str.parse().unwrap();;
                 if aseq < bseq {
@@ -290,10 +293,39 @@ impl KeyBuilder {
                 } else if aseq > bseq {
                     1
                 } else {
-                    match aarraypath_str.cmp(barraypath_str) {
-                        Ordering::Less    => -1,
-                        Ordering::Greater =>  1,
-                        Ordering::Equal   =>  0,
+                    if aarraypath_str.is_empty() || barraypath_str.is_empty() {
+                        match aarraypath_str.len().cmp(&barraypath_str.len()) {
+                            Ordering::Less => -1,
+                            Ordering::Greater => 1,
+                            Ordering::Equal => 0,
+                        }
+                    } else {
+                        let mut a_nums = aarraypath_str.split(",");
+                        let mut b_nums = barraypath_str.split(",");
+                        loop {
+                            if let Some(ref a_num_str) = a_nums.next() {
+                                if let Some(ref b_num_str) = b_nums.next() {
+                                    let a_num: u64 = a_num_str.parse().unwrap();
+                                    let b_num: u64 = b_num_str.parse().unwrap();
+                                    match a_num.cmp(&b_num) {
+                                        Ordering::Less => return -1,
+                                        Ordering::Greater => return 1,
+                                        Ordering::Equal => (),
+                                    }
+                                } else {
+                                    //b is shorter than a, so greater
+                                    return 1;
+                                }
+                            } else {
+                                if b_nums.next().is_some() {
+                                    //a is shorter than b so less
+                                    return -1;
+                                } else {
+                                    // same length and must have hit all equal before this, so equal
+                                    return 0;
+                                }
+                            }
+                        }
                     }
                 }
             },
