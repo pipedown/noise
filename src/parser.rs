@@ -12,7 +12,8 @@ use json_value::JsonValue;
 use query::{Sort, Returnable, RetValue, RetObject, RetArray, RetLiteral, RetBind, RetScore,
             AggregateFun, SortInfo, SortField};
 use filters::{QueryRuntimeFilter, ExactMatchFilter, StemmedWordFilter, StemmedWordPosFilter,
-              StemmedPhraseFilter, DistanceFilter, AndFilter, OrFilter, BindFilter, BoostFilter};
+              StemmedPhraseFilter, DistanceFilter, AndFilter, OrFilter, BindFilter, BoostFilter,
+              NotFilter};
 
 
 // TODO vmx 2016-11-02: Make it import "rocksdb" properly instead of needing to import the individual tihngs
@@ -565,7 +566,15 @@ ws1
         if !self.consume("find") {
             return Err(Error::Parse("Missing 'find' keyword".to_string()));
         }
-        self.object()
+        self.not_object()
+    }
+
+    fn not_object<'b>(&'b mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
+        if self.consume("!") {
+            Ok(Box::new(NotFilter::new(try!(self.object()), self.kb.arraypath_len())))
+        } else {
+            self.object()
+        }
     }
 
     fn object<'b>(&'b mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
@@ -576,11 +585,11 @@ ws1
             left = try!(self.consume_boost_and_wrap_filter(left));
             
             if self.consume("&&") {
-                let right = try!(self.object());
+                let right = try!(self.not_object());
                 Ok(Box::new(AndFilter::new(vec![left, right], self.kb.arraypath_len())))
 
             } else if self.consume("||") {
-                let right = try!(self.object());
+                let right = try!(self.not_object());
                 Ok(Box::new(OrFilter::new(left, right, self.kb.arraypath_len())))
             } else {
                 Ok(left)
@@ -591,6 +600,9 @@ ws1
     }
 
     fn parens<'b>(&'b mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
+        if self.consume("!") {
+            return Ok(Box::new(NotFilter::new(try!(self.parens()), self.kb.arraypath_len())));
+        }
         try!(self.must_consume("("));
         let filter = try!(self.object());
         try!(self.must_consume(")"));
@@ -634,6 +646,15 @@ ws1
     }
 
     fn oparens<'b>(&'b mut self) -> Result<Option<Box<QueryRuntimeFilter + 'a>>, Error> {
+        let offset = self.offset;
+        if self.consume("!") {
+            if let Some(f) = try!(self.oparens()) {
+                return Ok(Some(Box::new(NotFilter::new(f, self.kb.arraypath_len()))));
+            } else {
+                self.offset = offset;
+                return Ok(None);
+            }
+        }
         let opt_filter = if self.consume("(") {
             let f = try!(self.obool());
             try!(self.must_consume(")"));
@@ -658,6 +679,9 @@ ws1
     }
 
     fn compare<'b>(&'b mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
+        if self.consume("!") {
+            return Ok(Box::new(NotFilter::new(try!(self.compare()), self.kb.arraypath_len())));
+        }
         if self.consume("==") {
             let literal = try!(self.must_consume_string_literal());
             let boost = try!(self.consume_boost());
@@ -754,6 +778,15 @@ ws1
     }
 
     fn aparens<'b>(&'b mut self) -> Result<Option<Box<QueryRuntimeFilter + 'a>>, Error> {
+        let offset = self.offset;
+        if self.consume("!") {
+            if let Some(f) = try!(self.aparens()) {
+                return Ok(Some(Box::new(NotFilter::new(f, self.kb.arraypath_len()))));
+            } else {
+                self.offset = offset;
+                return Ok(None);
+            }
+        }
         let opt_filter = if self.consume("(") {
             let f = try!(self.abool());
             try!(self.must_consume(")"));

@@ -67,9 +67,75 @@ impl DocResult {
         self.scores[term_ordinal].1 += 1;
     }
 
+    pub fn clone_only_seq_and_arraypath(&self) -> DocResult {
+        let mut dr = DocResult::new();
+        dr.seq = self.seq;
+        dr.arraypath = self.arraypath.clone();
+        dr
+    }
+
     pub fn boost_scores(&mut self, boost: f32) {
         for &mut (ref mut score, ref mut _num_match) in self.scores.iter_mut() {
             *score *= boost;
+        }
+    }
+
+    pub fn less(&self, other: &DocResult, mut array_depth: usize) -> bool {
+        if self.seq < other.seq {
+            return true;
+        }
+        let mut s = self.arraypath.iter();
+        let mut o = other.arraypath.iter();
+        loop {
+            if array_depth == 0 {
+                return false;
+            }
+            array_depth -= 1;
+            if let Some(i_s) = s.next() {
+                if let Some(i_o) = o.next() {
+                    if i_s < i_o {
+                        return true;
+                    }
+                } else {
+                    // self cannot be less than other
+                    return false;
+                }
+            } else {
+                loop {
+                    if array_depth == 0 {
+                        return false;
+                    }
+                    array_depth -= 1;
+                    if let Some(i_o) = o.next() {
+                        if *i_o > 0 {
+                            return true;
+                        }
+                    } else {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
+    // arraypaths must be the same length
+    pub fn cmp(&self, other: &DocResult) -> Ordering {
+        debug_assert_eq!(self.arraypath.len(), other.arraypath.len());
+        match self.seq.cmp(&other.seq) {
+            Ordering::Less => Ordering::Less,
+            Ordering::Greater => Ordering::Greater,
+            Ordering::Equal => self.arraypath.cmp(&other.arraypath),
+        }
+    }
+
+    pub fn increment_last(&mut self, array_depth: usize) {
+        if array_depth == 0 {
+            self.seq += 1;
+        } else {
+            self.arraypath.resize(array_depth, 0);
+            if let Some(mut i) = self.arraypath.last_mut() {
+                *i += 1;
+            }
         }
     }
 }
@@ -85,22 +151,6 @@ impl PartialEq for DocResult {
 }
 
 impl Eq for DocResult {}
-
-impl PartialOrd for DocResult {
-    fn partial_cmp(&self, other: &DocResult) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for DocResult {
-    fn cmp(&self, other: &DocResult) -> Ordering {
-        match self.seq.cmp(&other.seq) {
-            Ordering::Less    =>  Ordering::Less,
-            Ordering::Greater =>   Ordering::Greater,
-            Ordering::Equal =>  self.arraypath.cmp(&other.arraypath),
-        }
-    }
-}
 
 pub struct QueryScoringInfo {
     pub num_terms: usize,
@@ -122,6 +172,12 @@ impl Query {
         let mut returnable = try!(parser.return_clause());
         let limit = try!(parser.limit_clause());
         try!(parser.non_ws_left());
+        try!(filter.check_double_not(false));
+
+        if filter.is_all_not() {
+            return Err(Error::Parse("query cannot be made up of only logical not. Must have at least \
+                                    match clause not negated.".to_string()));
+        }
         
         let mut ags = Vec::new(); 
         returnable.get_aggregate_funs(&mut ags);
@@ -2025,6 +2081,137 @@ mod tests {
                    query_results2.next_result().unwrap().unwrap().parse::<f32>().unwrap());
         }
 
+    }
+
+    #[test]
+    fn test_query_not() {
+        let dbname = "target/tests/querytestnot";
+
+        let _ = Index::delete(dbname);
+
+        let mut index = Index::new();
+        index.open(dbname, Some(OpenOptions::Create)).unwrap();
+
+        assert_eq!(Ok(()), index.add(r#"{"_id":"1", "bar": "fox"}"#));
+        assert_eq!(Ok(()), index.add(r#"{"_id":"2", "bar": "quick fox"}"#));
+        assert_eq!(Ok(()), index.add(r#"{"_id":"3", "bar": "quick brown fox"}"#));
+        assert_eq!(Ok(()), index.add(r#"{"_id":"4", "bar": ["fox"]}"#));
+        assert_eq!(Ok(()), index.add(r#"{"_id":"5", "bar": ["quick fox"]}"#));
+        assert_eq!(Ok(()), index.add(r#"{"_id":"6", "bar": ["quick brown fox"]}"#));
+        assert_eq!(Ok(()), index.add(r#"{"_id":"7", "baz": ["fox"]}"#));
+        assert_eq!(Ok(()), index.add(r#"{"_id":"8", "baz": ["quick","fox"]}"#));
+        assert_eq!(Ok(()), index.add(r#"{"_id":"9", "baz": ["quick","brown","fox"]}"#));
+        
+        index.flush().unwrap();
+
+        {
+        let mut query_results = Query::get_matches(r#"find {(bar: ~="fox" || bar: ~="brown") && (bar: !~="quick")}
+                                                      return ._id "#.to_string(), &index).unwrap();
+
+        assert_eq!(query_results.next_result().unwrap(),Some(r#""1""#.to_string()));
+        assert_eq!(query_results.next_result().unwrap(), None);
+        }
+
+        {
+        let mut query_results = Query::get_matches(r#"find {(bar: ~="fox" || bar: ~="brown") && !(bar: ~="quick")}
+                                                      return ._id "#.to_string(), &index).unwrap();
+
+        assert_eq!(query_results.next_result().unwrap(),Some(r#""1""#.to_string()));
+        assert_eq!(query_results.next_result().unwrap(), None);
+        }
+
+        {
+        let mut query_results = Query::get_matches(r#"find {bar: ~="fox" || bar: ~="brown"} && !{bar: ~="quick"}
+                                                      return ._id "#.to_string(), &index).unwrap();
+
+        assert_eq!(query_results.next_result().unwrap(),Some(r#""1""#.to_string()));
+        assert_eq!(query_results.next_result().unwrap(), None);
+        }
+
+
+        {
+        let mut query_results = Query::get_matches(r#"find {bar: [(~="fox" || ~="brown") && !~="quick"]}
+                                                      return ._id "#.to_string(), &index).unwrap();
+
+        assert_eq!(query_results.next_result().unwrap(),Some(r#""4""#.to_string()));
+        assert_eq!(query_results.next_result().unwrap(), None);
+        }
+
+        {
+        let mut query_results = Query::get_matches(r#"find {bar: [(~="fox" || ~="brown") && !(~="quick")]}
+                                                      return ._id "#.to_string(), &index).unwrap();
+
+        assert_eq!(query_results.next_result().unwrap(),Some(r#""4""#.to_string()));
+        assert_eq!(query_results.next_result().unwrap(), None);
+        }
+
+
+        {
+        let mut query_results = Query::get_matches(r#"find {bar: [~="fox" || ~="brown"] && bar: ![~="quick"]}
+                                                      return ._id "#.to_string(), &index).unwrap();
+
+        assert_eq!(query_results.next_result().unwrap(),Some(r#""4""#.to_string()));
+        assert_eq!(query_results.next_result().unwrap(), None);
+        }
+
+        {
+        let mut query_results = Query::get_matches(r#"find {baz: [(~="fox" || ~="brown") && !~="quick"]}
+                                                      return ._id "#.to_string(), &index).unwrap();
+
+        assert_eq!(query_results.next_result().unwrap(),Some(r#""7""#.to_string()));
+        assert_eq!(query_results.next_result().unwrap(),Some(r#""8""#.to_string()));
+        assert_eq!(query_results.next_result().unwrap(),Some(r#""9""#.to_string()));
+        assert_eq!(query_results.next_result().unwrap(), None);
+        }
+
+        {
+        let mut query_results = Query::get_matches(r#"find {baz: [(~="fox" || ~="brown") && !(~="quick")]}
+                                                      return ._id "#.to_string(), &index).unwrap();
+
+        assert_eq!(query_results.next_result().unwrap(),Some(r#""7""#.to_string()));
+        assert_eq!(query_results.next_result().unwrap(),Some(r#""8""#.to_string()));
+        assert_eq!(query_results.next_result().unwrap(),Some(r#""9""#.to_string()));
+        assert_eq!(query_results.next_result().unwrap(), None);
+        }
+
+
+        {
+        let mut query_results = Query::get_matches(r#"find {baz: [~="fox" || ~="brown"] && baz: ![~="quick"]}
+                                                      return ._id "#.to_string(), &index).unwrap();
+
+        assert_eq!(query_results.next_result().unwrap(),Some(r#""7""#.to_string()));
+        assert_eq!(query_results.next_result().unwrap(), None);
+        }
+        
+        {
+        let result = Query::get_matches(r#"find !{baz: [~="fox"]}
+                                    return ._id "#.to_string(), &index);
+        match result {
+            Ok(_foo) => panic!("Didn't detect all logical nots."),
+            Err(_foo) => (),
+        }
+        }
+
+
+        {
+        let result = Query::get_matches(r#"find !{baz: ~="fox"} && !{baz: =="foo"}
+                                    return ._id "#.to_string(), &index);
+        match result {
+            Ok(_foo) => panic!("Didn't detect all logical nots."),
+            Err(_foo) => (),
+        }
+        }
+
+
+        {
+        let result = Query::get_matches(r#"find {foo: =="bar"} && !{baz: !~="fox"}}
+                                    return ._id "#.to_string(), &index);
+        match result {
+            Ok(_foo) => panic!("Didn't detect nested logical nots."),
+            Err(_foo) => (),
+        }
+        }
+        
     }
 
     #[test]

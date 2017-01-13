@@ -87,6 +87,12 @@ pub trait QueryRuntimeFilter {
     fn first_result(&mut self, start: &DocResult) -> Result<Option<DocResult>, Error>;
     fn next_result(&mut self) -> Result<Option<DocResult>, Error>;
     fn prepare_relevancy_scoring(&mut self, qsi: &mut QueryScoringInfo);
+    
+    /// returns error is a double negation is detected
+    fn check_double_not(&self, parent_is_neg: bool) -> Result<(), Error>;
+    
+    /// return true if filter or all subfilters are NotFilters
+    fn is_all_not(&self) -> bool;
 }
 
 pub struct ExactMatchFilter {
@@ -163,6 +169,14 @@ impl QueryRuntimeFilter for ExactMatchFilter {
     fn prepare_relevancy_scoring(&mut self, mut qsi: &mut QueryScoringInfo) {
         self.scorer.init(&mut self.iter, &mut qsi);
     }
+
+    fn check_double_not(&self, _parent_is_neg: bool) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn is_all_not(&self) -> bool {
+        false
+    }
 }
 
 pub struct StemmedWordFilter {
@@ -224,6 +238,14 @@ impl QueryRuntimeFilter for StemmedWordFilter {
 
     fn prepare_relevancy_scoring(&mut self, mut qsi: &mut QueryScoringInfo) {
         self.scorer.init(&mut self.iter, &mut qsi);
+    }
+
+    fn check_double_not(&self, _parent_is_neg: bool) -> Result<(), Error> {
+        Ok(())
+    }
+    
+    fn is_all_not(&self) -> bool {
+        false
     }
 }
 
@@ -378,6 +400,14 @@ impl QueryRuntimeFilter for StemmedPhraseFilter {
             f.prepare_relevancy_scoring(&mut qsi);
         }
     }
+
+    fn check_double_not(&self, _parent_is_neg: bool) -> Result<(), Error> {
+        Ok(())
+    }
+    
+    fn is_all_not(&self) -> bool {
+        false
+    }
 }
 
 pub struct DistanceFilter {
@@ -515,6 +545,14 @@ impl QueryRuntimeFilter for DistanceFilter {
             f.prepare_relevancy_scoring(&mut qsi);
         }
     }
+    
+    fn check_double_not(&self, _parent_is_neg: bool) -> Result<(), Error> {
+        Ok(())
+    }
+    
+    fn is_all_not(&self) -> bool {
+        false
+    }
 }
 
 
@@ -584,6 +622,22 @@ impl<'a> QueryRuntimeFilter for AndFilter<'a> {
             f.prepare_relevancy_scoring(&mut qsi);
         }
     }
+
+    fn check_double_not(&self, parent_is_neg: bool) -> Result<(), Error> {
+        for f in self.filters.iter() {
+            try!(f.check_double_not(parent_is_neg));
+        }
+        Ok(())
+    }
+    
+    fn is_all_not(&self) -> bool {
+        for f in self.filters.iter() {
+            if !f.is_all_not() {
+                return false;
+            }
+        }
+        true
+    }
 }
 
 /// Used by OrFilter to maintain a already fetched result so we don't refetch when one side isn't
@@ -603,7 +657,7 @@ impl<'a> FilterWithResult<'a> {
         }
         if self.result.is_none() {
             self.result = try!(self.filter.first_result(start));
-        } else if self.result.as_ref().unwrap() < start {
+        } else if self.result.as_ref().unwrap().less(start, self.array_depth) {
             self.result = try!(self.filter.first_result(start));
         }
         if self.result.is_none() {
@@ -650,7 +704,7 @@ impl<'a> OrFilter<'a> {
                                  result: None,
                                  array_depth: array_depth,
                                  is_done: false,
-                                 }
+                                 },
         }
     }
     fn take_smallest(&mut self) -> Option<DocResult> {
@@ -709,11 +763,86 @@ impl<'a> QueryRuntimeFilter for OrFilter<'a> {
         self.left.filter.prepare_relevancy_scoring(&mut qsi);
         self.right.filter.prepare_relevancy_scoring(&mut qsi);
     }
+
+    fn check_double_not(&self, parent_is_neg: bool) -> Result<(), Error> {
+        try!(self.left.filter.check_double_not(parent_is_neg));
+        try!(self.right.filter.check_double_not(parent_is_neg));
+        Ok(())
+    }
+    
+    fn is_all_not(&self) -> bool {
+        if self.left.filter.is_all_not() && self.right.filter.is_all_not() {
+            true
+        } else {
+            false
+        }
+    }
+}
+
+
+pub struct NotFilter<'a> {
+    filter: Box<QueryRuntimeFilter + 'a>,
+    last_doc_returned: Option<DocResult>,
+    array_depth: usize,
+}
+
+impl<'a> NotFilter<'a> {
+    pub fn new(filter: Box<QueryRuntimeFilter + 'a>, array_depth: usize) -> NotFilter {
+        NotFilter {
+            filter: filter,
+            last_doc_returned: Some(DocResult::new()),
+            array_depth: array_depth,
+        }
+    }
+}
+
+impl<'a> QueryRuntimeFilter for NotFilter<'a> {
+    fn first_result(&mut self, start: &DocResult) -> Result<Option<DocResult>, Error> {
+        let mut start = start.clone_only_seq_and_arraypath();
+        while let Some(dr) = try!(self.filter.first_result(&start)) {
+            if start.less(&dr, self.array_depth) {
+                self.last_doc_returned = Some(start.clone_only_seq_and_arraypath());
+                return Ok(Some(start.clone_only_seq_and_arraypath()));
+            }
+            start.increment_last(self.array_depth);
+        }
+        self.last_doc_returned = None;
+        Ok(Some(start))
+    }
+
+    fn next_result(&mut self) -> Result<Option<DocResult>, Error> {
+        let next = if let Some(ref last_doc_returned) = self.last_doc_returned {
+            let mut next = last_doc_returned.clone_only_seq_and_arraypath();
+            next.increment_last(self.array_depth);
+            next
+        } else {
+            return Ok(None);
+        };
+        self.first_result(&next)
+    }
+
+    fn prepare_relevancy_scoring(&mut self, _qsi: &mut QueryScoringInfo) {
+        // no op
+    }
+
+    fn check_double_not(&self, parent_is_neg: bool) -> Result<(), Error> {
+        if parent_is_neg {
+            return Err(Error::Parse("Logical not (\"!\") is nested inside of another logical not. \
+                                     This is not allowed.".to_string()));
+        }
+        try!(self.filter.check_double_not(true));
+        Ok(())
+    }
+    
+    fn is_all_not(&self) -> bool {
+        true
+    }
 }
 
 pub struct BindFilter<'a> {
     bind_var_name: String,
     filter: Box<QueryRuntimeFilter + 'a>,
+    array_depth: usize,
     kb: KeyBuilder,
     option_next: Option<DocResult>,
 }
@@ -725,7 +854,8 @@ impl<'a> BindFilter<'a> {
                kb: KeyBuilder) -> BindFilter {
         BindFilter {
             bind_var_name: bind_var_name,
-            filter: filter, 
+            filter: filter,
+            array_depth: kb.arraypath_len(),
             kb: kb,
             option_next: None,
         }
@@ -751,7 +881,7 @@ impl<'a> BindFilter<'a> {
 impl<'a> QueryRuntimeFilter for BindFilter<'a> {
     fn first_result(&mut self, start: &DocResult) -> Result<Option<DocResult>, Error> {
         let first = if let Some(next) = self.option_next.take() {
-            if next >= *start {
+            if start.less(&next, self.array_depth) {
                 Some(next)
             } else {
                 try!(self.filter.first_result(&start))
@@ -783,6 +913,14 @@ impl<'a> QueryRuntimeFilter for BindFilter<'a> {
 
     fn prepare_relevancy_scoring(&mut self, mut qsi: &mut QueryScoringInfo) {
         self.filter.prepare_relevancy_scoring(&mut qsi);
+    }
+
+    fn check_double_not(&self, parent_is_neg: bool) -> Result<(), Error> {
+        self.filter.check_double_not(parent_is_neg)
+    }
+    
+    fn is_all_not(&self) -> bool {
+        self.filter.is_all_not()
     }
 }
 
@@ -821,6 +959,14 @@ impl<'a> QueryRuntimeFilter for BoostFilter<'a> {
 
     fn prepare_relevancy_scoring(&mut self, mut qsi: &mut QueryScoringInfo) {
         self.filter.prepare_relevancy_scoring(&mut qsi);
+    }
+
+    fn check_double_not(&self, parent_is_neg: bool) -> Result<(), Error> {
+        self.filter.check_double_not(parent_is_neg)
+    }
+    
+    fn is_all_not(&self) -> bool {
+        self.filter.is_all_not()
     }
 }
 
