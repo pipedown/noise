@@ -1044,7 +1044,7 @@ pub struct RetValue {
 }
 
 impl RetValue {
-    fn bytes_to_json_value(bytes: &[u8]) -> JsonValue {
+    pub fn bytes_to_json_value(bytes: &[u8]) -> JsonValue {
         match bytes[0] as char {
             's' => {
                 let string = unsafe{str::from_utf8_unchecked(&bytes[1..])}.to_string();
@@ -1166,7 +1166,7 @@ impl RetValue {
                         value_key_next.truncate(value_key.len());
                         value_key_next.push_str(&escaped2);
                     } else {
-                        return RetValue::return_array(array);;
+                        return RetValue::return_array(array);
                     }
                 }
             },

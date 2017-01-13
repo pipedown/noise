@@ -1,4 +1,4 @@
-extern crate capnp;
+extern crate varint;
 
 use std::str;
 use std::cmp::Ordering;
@@ -6,45 +6,49 @@ use std::collections::BTreeMap;
 use std::collections::HashSet;
 use index::Index;
 use std::f32;
+use std::io::Cursor;
 
 use error::Error;
 use key_builder::KeyBuilder;
-use stems::StemmedWord;
-use query::{DocResult, QueryScoringInfo};
+use query::{DocResult, QueryScoringInfo, RetValue};
+use json_value::JsonValue;
 
 // TODO vmx 2016-11-02: Make it import "rocksdb" properly instead of needing to import the individual tihngs
-use rocksdb::{self, DBIterator, IteratorMode};
-use records_capnp::payload;
+use rocksdb::{self, DBIterator, Snapshot, IteratorMode};
+use self::varint::VarintRead;
 
 struct Scorer {
+    iter: DBIterator,
     idf: f32,
     boost: f32,
-    keypathword_count_key: String,
-    keypath_count_key: String,
+    kb: KeyBuilder,
+    word: String,
     term_ordinal: usize,
 }
 
 impl Scorer {
-    fn new(word: &str, kb: &KeyBuilder, boost: f32) -> Scorer {
+    fn new(iter: DBIterator, word: &str, kb: &KeyBuilder, boost: f32) -> Scorer {
         Scorer {
+            iter: iter,
             idf: f32::NAN,
             boost: boost,
-            keypathword_count_key: kb.keypathword_count_key(&word),
-            keypath_count_key: kb.keypath_count_key(),
+            kb: kb.clone(),
+            word: word.to_string(),
             term_ordinal: 0,
         }
     }
 
-    fn init(&mut self, mut iter: &mut DBIterator, qsi: &mut QueryScoringInfo) {
-        let doc_freq = if let Some(bytes) = self.get_value(&mut iter,
-                                                           &self.keypathword_count_key) {
-            Index::convert_bytes_to_u64(bytes.as_ref()) as f32
+    fn init(&mut self, qsi: &mut QueryScoringInfo) {
+        let key = self.kb.keypathword_count_key(&self.word);
+        let doc_freq = if let Some(bytes) = self.get_value(&key) {
+            Index::convert_bytes_to_u32(bytes.as_ref()) as f32
         } else {
             0.0
         };
-        
-        let num_docs = if let Some(bytes) = self.get_value(&mut iter, &self.keypath_count_key) {
-            Index::convert_bytes_to_u64(bytes.as_ref()) as f32
+
+        let key = self.kb.keypath_count_key();
+        let num_docs = if let Some(bytes) = self.get_value(&key) {
+            Index::convert_bytes_to_u32(bytes.as_ref()) as f32
         } else {
             0.0
         };
@@ -55,9 +59,9 @@ impl Scorer {
         qsi.sum_of_idt_sqs += self.idf * self.idf;
     }
 
-    fn get_value(&self, iter: &mut DBIterator, key: &String) -> Option<Box<[u8]>> {
-        iter.set_mode(IteratorMode::From(key.as_bytes(), rocksdb::Direction::Forward));
-        if let Some((ret_key, ret_value)) = iter.next() {
+    fn get_value(&mut self, key: &str) -> Option<Box<[u8]>> {
+        self.iter.set_mode(IteratorMode::From(key.as_bytes(), rocksdb::Direction::Forward));
+        if let Some((ret_key, ret_value)) = self.iter.next() {
             if ret_key.len() == key.len() && ret_key.starts_with(key.as_bytes())  {
                 Some(ret_value)
             } else {
@@ -68,9 +72,15 @@ impl Scorer {
         }
     }
 
-    fn add_match_score(&self, num_matches: u32,
-                       total_field_words: u32, dr: &mut DocResult) {
+    fn add_match_score(&mut self, num_matches: u32, dr: &mut DocResult) {
         if self.should_score() {
+            let key = self.kb.field_length_key_from_doc_result(dr);
+            let total_field_words = if let Some(bytes) = self.get_value(&key) {
+                Index::convert_bytes_to_u32(bytes.as_ref()) as f32
+            } else {
+                panic!("Couldn't find field length for a match!! WHAT!");
+            };
+
             let tf: f32 = (num_matches as f32).sqrt();
             let norm = 1.0/(total_field_words as f32).sqrt();
             let score = self.idf * self.idf * tf * norm * self.boost;
@@ -95,89 +105,6 @@ pub trait QueryRuntimeFilter {
     fn is_all_not(&self) -> bool;
 }
 
-pub struct ExactMatchFilter {
-    iter: DBIterator,
-    keypathword: String,
-    word_pos: u32,
-    suffix_offset: u32,
-    suffix: String,
-    scorer: Scorer,
-}
-
-
-
-impl ExactMatchFilter {
-    pub fn new(iter: DBIterator, stemmed_word: &StemmedWord,
-               kb: &KeyBuilder, boost: f32) -> ExactMatchFilter {
-        ExactMatchFilter{
-            iter: iter,
-            keypathword: kb.get_keypathword_only(&stemmed_word.stemmed),
-            word_pos: stemmed_word.word_pos,
-            suffix: stemmed_word.suffix.clone(),
-            suffix_offset: stemmed_word.suffix_offset,
-            scorer: Scorer::new(&stemmed_word.stemmed, &kb, boost),
-        }
-    }
-}
-
-impl QueryRuntimeFilter for ExactMatchFilter {
-    fn first_result(&mut self, start: &DocResult) -> Result<Option<DocResult>, Error> {
-
-        KeyBuilder::add_doc_result_to_keypathword(&mut self.keypathword, &start);
-        // Seek in index to >= entry
-        self.iter.set_mode(IteratorMode::From(self.keypathword.as_bytes(),
-                           rocksdb::Direction::Forward));
-        
-        KeyBuilder::truncate_to_keypathword(&mut self.keypathword);
-
-        self.next_result()
-    }
-
-    fn next_result(&mut self) -> Result<Option<DocResult>, Error> {
-        loop {
-            let (key, value) = match self.iter.next() {
-                Some((key, value)) => (key, value),
-                None => return Ok(None),
-            };
-            if !key.starts_with(self.keypathword.as_bytes()) {
-                // we passed the key path we are interested in. nothing left to do */
-                return Ok(None)
-            }
-
-            // NOTE vmx 2016-10-13: I'm not really sure why the dereferencing is needed
-            // and why we pass on mutable reference of it to `read_message()`
-            let mut ref_value = &*value;
-            let message_reader = ::capnp::serialize_packed::read_message(
-                &mut ref_value, ::capnp::message::ReaderOptions::new()).unwrap();
-            let payload = message_reader.get_root::<payload::Reader>().unwrap();
-            let wordinfos = try!(payload.get_wordinfos());
-            for wi in wordinfos.iter() {
-                if self.word_pos == wi.get_word_pos() &&
-                    self.suffix_offset == wi.get_suffix_offset() &&
-                    self.suffix == try!(wi.get_suffix_text()) {
-                        // We have a candidate document to return
-                        let key_str = unsafe{str::from_utf8_unchecked(&key)};
-                        let mut dr = KeyBuilder::parse_doc_result_from_key(&key_str);
-                        self.scorer.add_match_score(wordinfos.len(),
-                                                    payload.get_total_words(), &mut dr);
-                        return Ok(Some(dr));
-                }
-            }
-        }
-    }
-
-    fn prepare_relevancy_scoring(&mut self, mut qsi: &mut QueryScoringInfo) {
-        self.scorer.init(&mut self.iter, &mut qsi);
-    }
-
-    fn check_double_not(&self, _parent_is_neg: bool) -> Result<(), Error> {
-        Ok(())
-    }
-
-    fn is_all_not(&self) -> bool {
-        false
-    }
-}
 
 pub struct StemmedWordFilter {
     iter: DBIterator,
@@ -186,19 +113,18 @@ pub struct StemmedWordFilter {
 }
 
 impl StemmedWordFilter {
-    pub fn new(iter: DBIterator, stemmed_word: &str,
+    pub fn new(snapshot: &Snapshot, stemmed_word: &str,
                kb: &KeyBuilder, boost: f32) -> StemmedWordFilter {
         StemmedWordFilter {
-            iter: iter,
+            iter: snapshot.iterator(IteratorMode::Start),
             keypathword: kb.get_keypathword_only(&stemmed_word),
-            scorer: Scorer::new(stemmed_word, kb, boost),
+            scorer: Scorer::new(snapshot.iterator(IteratorMode::Start), stemmed_word, kb, boost),
         }
     }
 }
 
 impl QueryRuntimeFilter for StemmedWordFilter {
     fn first_result(&mut self, start: &DocResult) -> Result<Option<DocResult>, Error> {
-
         KeyBuilder::add_doc_result_to_keypathword(&mut self.keypathword, &start);
         // Seek in index to >= entry
         self.iter.set_mode(IteratorMode::From(self.keypathword.as_bytes(),
@@ -224,20 +150,21 @@ impl QueryRuntimeFilter for StemmedWordFilter {
         let mut dr = KeyBuilder::parse_doc_result_from_key(&key_str);
 
         if self.scorer.should_score() {
-            let message_reader = ::capnp::serialize_packed::read_message(
-                    &mut &*value, ::capnp::message::ReaderOptions::new()).unwrap();
-            let payload = message_reader.get_root::<payload::Reader>().unwrap();
-
-
-            self.scorer.add_match_score(try!(payload.get_wordinfos()).len(),
-                                        payload.get_total_words(), &mut dr);
+            let mut vec = Vec::with_capacity(value.len());
+            vec.extend(value.into_iter());
+            let mut bytes = Cursor::new(vec);
+            let mut count = 0;
+            while let Ok(_pos) = bytes.read_unsigned_varint_32() {
+                count += 1;
+            }
+            self.scorer.add_match_score(count, &mut dr);
         }
 
         Ok(Some(dr))
     }
 
     fn prepare_relevancy_scoring(&mut self, mut qsi: &mut QueryScoringInfo) {
-        self.scorer.init(&mut self.iter, &mut qsi);
+        self.scorer.init(&mut qsi);
     }
 
     fn check_double_not(&self, _parent_is_neg: bool) -> Result<(), Error> {
@@ -258,11 +185,13 @@ pub struct StemmedWordPosFilter {
 }
 
 impl StemmedWordPosFilter {
-    pub fn new(iter: DBIterator, stemmed_word: &str, kb: &KeyBuilder, boost: f32) -> StemmedWordPosFilter {
+    pub fn new(snapshot: &Snapshot, stemmed_word: &str,
+               kb: &KeyBuilder, boost: f32) -> StemmedWordPosFilter {
         StemmedWordPosFilter{
-            iter: iter,
+            iter: snapshot.iterator(IteratorMode::Start),
             keypathword: kb.get_keypathword_only(&stemmed_word),
-            scorer: Scorer::new(&stemmed_word, &kb, boost),
+            scorer: Scorer::new(snapshot.iterator(IteratorMode::Start),
+                                &stemmed_word, &kb, boost),
         }
     }
 
@@ -289,24 +218,24 @@ impl StemmedWordPosFilter {
             return Ok(None)
         }
 
-        let message_reader = ::capnp::serialize_packed::read_message(
-                &mut &*value, ::capnp::message::ReaderOptions::new()).unwrap();
-        let payload = message_reader.get_root::<payload::Reader>().unwrap();
-
-        let positions: Vec<u32> = try!(payload.get_wordinfos()).iter()
-                                                               .map(|wi| wi.get_word_pos())
-                                                               .collect();
-        
         let key_str = unsafe{str::from_utf8_unchecked(&key)};
         let mut dr = KeyBuilder::parse_doc_result_from_key(&key_str);
 
-        self.scorer.add_match_score(positions.len() as u32, payload.get_total_words(), &mut dr);
+        let mut vec = Vec::with_capacity(value.len());
+        vec.extend(value.into_iter());
+        let mut bytes = Cursor::new(vec);
+        let mut positions = Vec::new();
+        while let Ok(pos) = bytes.read_unsigned_varint_32() {
+            positions.push(pos);
+        }
+
+        self.scorer.add_match_score(positions.len() as u32, &mut dr);
 
         Ok(Some((dr, positions)))
     }
 
     fn prepare_relevancy_scoring(&mut self, mut qsi: &mut QueryScoringInfo) {
-        self.scorer.init(&mut self.iter, &mut qsi);
+        self.scorer.init(&mut qsi);
     }
 }
 
@@ -316,6 +245,7 @@ pub struct StemmedPhraseFilter {
 
 impl StemmedPhraseFilter {
     pub fn new(filters: Vec<StemmedWordPosFilter>) -> StemmedPhraseFilter {
+        assert!(filters.len() > 0);
         StemmedPhraseFilter {
             filters: filters,
         }
@@ -328,6 +258,10 @@ impl StemmedPhraseFilter {
 
         if base.is_none() { return Ok(None); }
         let (mut base_result, mut base_positions) = base.unwrap();
+
+        if matches_left == 0 {
+            return Ok(Some(base_result));
+        }
 
         let mut current_filter = 0;
         loop {
@@ -344,7 +278,7 @@ impl StemmedPhraseFilter {
             if base_result == next_result {
                 let mut new_positions = Vec::new();
                 for &pos in next_positions.iter() {
-                    if let Ok(_) = base_positions.binary_search(&(pos-1)) {
+                    if let Ok(_) = base_positions.binary_search(&(pos.saturating_sub(1))) {
                         new_positions.push(pos);
                     }
                 }
@@ -407,6 +341,92 @@ impl QueryRuntimeFilter for StemmedPhraseFilter {
     
     fn is_all_not(&self) -> bool {
         false
+    }
+}
+
+
+pub struct ExactMatchFilter {
+    iter: DBIterator,
+    filter: StemmedPhraseFilter,
+    kb: KeyBuilder,
+    phrase: String,
+    case_sensitive: bool,
+}
+
+impl ExactMatchFilter {
+    pub fn new(snapshot: &Snapshot, filter: StemmedPhraseFilter,
+            kb: KeyBuilder, phrase: String, case_sensitive: bool) -> ExactMatchFilter {
+        ExactMatchFilter {
+            iter: snapshot.iterator(IteratorMode::Start),
+            filter: filter,
+            kb: kb,
+            phrase: if case_sensitive {phrase} else {phrase.to_lowercase()},
+            case_sensitive: case_sensitive,
+        }
+    }
+
+    fn check_exact(&mut self, mut dr: DocResult) -> Result<Option<DocResult>, Error> {
+        loop {
+            let value_key = self.kb.value_key_from_doc_result(&dr);
+
+            self.iter.set_mode(IteratorMode::From(value_key.as_bytes(),
+                               rocksdb::Direction::Forward));
+
+            if let Some((key, value)) = self.iter.next() {
+                debug_assert!(key.starts_with(value_key.as_bytes())); // must always be true!
+                if let JsonValue::String(string) = RetValue::bytes_to_json_value(&*value) {
+                    let matches = if self.case_sensitive {
+                        self.phrase == string
+                    } else {
+                        self.phrase == string.to_lowercase()
+                    };
+                    if matches {
+                        return Ok(Some(dr));
+                    } else {
+                        if let Some(next) = try!(self.filter.next_result()) {
+                            dr = next;
+                            // continue looping
+                        } else {
+                            return Ok(None);
+                        }
+                    }
+                } else {
+                    panic!("Not a string, wtf!");
+                }
+            } else {
+                panic!("Couldn't find value, hulk smash!");
+            }
+        }
+    }
+}
+
+impl QueryRuntimeFilter for ExactMatchFilter {
+    fn first_result(&mut self, start: &DocResult) -> Result<Option<DocResult>, Error> {
+        if let Some(dr) = try!(self.filter.first_result(start)) {
+            self.check_exact(dr)
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn next_result(&mut self) -> Result<Option<DocResult>, Error> {
+        if let Some(dr) = try!(self.filter.next_result()) {
+            self.check_exact(dr)
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn prepare_relevancy_scoring(&mut self, mut qsi: &mut QueryScoringInfo) {
+        self.filter.prepare_relevancy_scoring(&mut qsi);
+    }
+
+    fn check_double_not(&self, parent_is_neg: bool) -> Result<(), Error> {
+        self.filter.check_double_not(parent_is_neg)
+    }
+    
+    fn is_all_not(&self) -> bool {
+        self.filter.is_all_not()
     }
 }
 

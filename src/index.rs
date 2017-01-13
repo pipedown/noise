@@ -1,10 +1,13 @@
 extern crate rocksdb;
+extern crate varint;
 
 use std::collections::HashMap;
 use std::str;
+use std::io::Cursor;
 use std::mem;
+use std::io::Write;
 
-use records_capnp::header;
+use self::varint::{VarintRead, VarintWrite};
 
 use rocksdb::MergeOperands;
 
@@ -12,32 +15,6 @@ use error::Error;
 use json_shred::{Shredder};
 
 const NOISE_HEADER_VERSION: u64 = 1;
-
-struct Header {
-    version: u64,
-    high_seq: u64,
-}
-
-impl Header {
-    fn new() -> Header {
-        Header{
-            version: NOISE_HEADER_VERSION,
-            high_seq: 0,
-        }
-    }
-    fn serialize(&self) -> Vec<u8> {
-        let mut message = ::capnp::message::Builder::new_default();
-        {
-            let mut header = message.init_root::<header::Builder>();
-            header.set_version(self.version);
-            header.set_high_seq(self.high_seq);
-        }
-        let mut bytes = Vec::new();
-        ::capnp::serialize_packed::write_message(&mut bytes, &message).unwrap();
-        bytes
-    }
-}
-
 
 pub struct Index {
     write_options: rocksdb::WriteOptions,
@@ -82,24 +59,25 @@ impl Index {
 
                 let rocks = try!(rocksdb::DB::open(&rocks_options, name));
 
-                let header = Header::new();
-                let status = rocks.put_opt(b"HDB", &*header.serialize(), &self.write_options);
-                println!("put was ok? {}", status.is_ok());
+                
+                let mut bytes = Vec::with_capacity(8*2);
+                bytes.write(&Index::convert_u64_to_bytes(NOISE_HEADER_VERSION)).unwrap();
+                bytes.write(&Index::convert_u64_to_bytes(0)).unwrap();
+                try!(rocks.put_opt(b"HDB", &bytes, &self.write_options));
+                
                 rocks
             }
         };
 
         // validate header is there
         let value = try!(rocks.get(b"HDB")).unwrap();
-        // NOTE vmx 2016-10-13: I'm not really sure why the dereferencing is needed
-        // and why we pass on mutable reference of it to `read_message()`
-        let mut ref_value = &*value;
-        let message_reader = ::capnp::serialize_packed::read_message(
-            &mut ref_value, ::capnp::message::ReaderOptions::new()).unwrap();
-        let header = message_reader.get_root::<header::Reader>().unwrap();
-        assert_eq!(header.get_version(), NOISE_HEADER_VERSION);
-        self.high_doc_seq = header.get_high_seq();
         self.rocks = Some(rocks);
+        assert_eq!(value.len(), 8*2);
+        // first 8 is version
+        assert_eq!(Index::convert_bytes_to_u64(&value[..8]), NOISE_HEADER_VERSION);
+        // next 8 is high seq
+        self.high_doc_seq = Index::convert_bytes_to_u64(&value[8..]);
+
         Ok(())
     }
 
@@ -150,9 +128,10 @@ impl Index {
             try!(self.batch.as_mut().unwrap().put(id.as_bytes(), seq.as_bytes()));
         }
 
-        let mut header = Header::new();
-        header.high_seq = self.high_doc_seq;
-        try!(self.batch.as_mut().unwrap().put(b"HDB", &*header.serialize()));
+        let mut bytes = Vec::with_capacity(8*2);
+        bytes.write(&Index::convert_u64_to_bytes(NOISE_HEADER_VERSION)).unwrap();
+        bytes.write(&Index::convert_u64_to_bytes(self.high_doc_seq)).unwrap();
+        try!(self.batch.as_mut().unwrap().put(b"HDB", &bytes));
 
         let status = try!(rocks.write(self.batch.take().unwrap()));
         // Make sure there's a always a valid WriteBarch after writing it into RocksDB,
@@ -160,6 +139,36 @@ impl Index {
         self.batch = Some(rocksdb::WriteBatch::default());
         self.id_str_to_id_seq.clear();
         Ok(status)
+    }
+
+    /// Should not be used generally since it not varint. Used for header fields
+    /// since only one header is in the database it's not a problem with excess size.
+    fn convert_bytes_to_u64(bytes: &[u8]) -> u64 {
+        debug_assert!(bytes.len() == 8);
+        let mut buffer = [0; 8];
+        for (n, b) in bytes.iter().enumerate() {
+            buffer[n] = *b;
+        }
+        unsafe{ mem::transmute(buffer) }
+    }
+    
+    /// Should not be used generally since it not varint. Used for header fields
+    /// since only one header is in the database it's not a problem with excess size.
+    fn convert_u64_to_bytes(val: u64) -> [u8; 8] {
+        unsafe{ mem::transmute(val) }
+    }
+
+    pub fn convert_bytes_to_u32(bytes: &[u8]) -> u32 {
+        let mut vec = Vec::with_capacity(bytes.len());
+        vec.extend(bytes.into_iter());
+        let mut read = Cursor::new(vec);
+        read.read_unsigned_varint_32().unwrap()
+    }
+    
+    pub fn convert_u32_to_bytes(val: u32) -> Vec<u8> {
+        let mut bytes = Cursor::new(Vec::new());
+        assert!(bytes.write_unsigned_varint_32(val).is_ok());
+        bytes.into_inner()
     }
 
     pub fn fetch_id(&self, seq: u64) ->  Result<Option<String>, String> {
@@ -192,19 +201,6 @@ impl Index {
         }
     }
 
-    pub fn convert_bytes_to_u64(bytes: &[u8]) -> u64 {
-        debug_assert!(bytes.len() == 8);
-        let mut buffer = [0; 8];
-        for (n, b) in bytes.iter().enumerate() {
-            buffer[n] = *b;
-        }
-        unsafe{ mem::transmute(buffer) }
-    }
-    
-    pub fn convert_u64_to_bytes(val: u64) -> [u8; 8] {
-        unsafe{ mem::transmute(val) }
-    }
-
     fn sum_merge(new_key: &[u8],
                     existing_val: Option<&[u8]>,
                     operands: &mut MergeOperands)
@@ -213,17 +209,17 @@ impl Index {
             panic!("unknown key type to merge!");
         }
 
-        let mut count:u64 = if let Some(bytes) = existing_val {
-            Index::convert_bytes_to_u64(&bytes)
+        let mut count = if let Some(bytes) = existing_val {
+            Index::convert_bytes_to_u32(&bytes)
         } else {
             0
         };
         
         for bytes in operands {
-            count += Index::convert_bytes_to_u64(&bytes);
+            count += Index::convert_bytes_to_u32(&bytes);
         }
 
-        Index::convert_u64_to_bytes(count).into_iter().map(|b| *b).collect()
+        Index::convert_u32_to_bytes(count)
     }
 }
 
@@ -235,9 +231,12 @@ mod tests {
 
     #[test]
     fn test_open() {
+        let dbname = "target/tests/firstnoisedb";
+        let _ = Index::delete(dbname);
+
         let mut index = Index::new();
         //let db = super::Index::open("firstnoisedb", Option::None).unwrap();
-        index.open("target/tests/firstnoisedb", Some(OpenOptions::Create)).unwrap();
+        index.open(dbname, Some(OpenOptions::Create)).unwrap();
         index.flush().unwrap();
     }
 }
