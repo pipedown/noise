@@ -63,6 +63,36 @@ impl KeyBuilder {
         string
     }
 
+    /// Builds a field length key for the seq, using the key_path and arraypath
+    /// built up internally.
+    pub fn field_length_key(&self, seq: u64) -> String {
+        let mut string = String::with_capacity(100);
+        string.push('L');
+        for segment in &self.keypath {
+            string.push_str(&segment);
+        }
+        string.push('#');
+        string.push_str(seq.to_string().as_str());
+
+        KeyBuilder::add_arraypath(&mut string, &self.arraypath);
+        string
+    }
+    
+    /// Builds a field length key for the DocResult, using the key_path
+    /// built up internally and the arraypath from the DocResult.
+    pub fn field_length_key_from_doc_result(&self, dr: &DocResult) -> String {
+        let mut string = String::with_capacity(100);
+        string.push('L');
+        for segment in &self.keypath {
+            string.push_str(&segment);
+        }
+        string.push('#');
+        string.push_str(dr.seq.to_string().as_str());
+
+        KeyBuilder::add_arraypath(&mut string, &dr.arraypath);
+        string
+    }
+
     /// Adds DocResult seq and array path an already created keypathword.
     pub fn add_doc_result_to_keypathword(keypathword: &mut String, dr: &DocResult) {
         keypathword.push_str(dr.seq.to_string().as_str());

@@ -1,35 +1,24 @@
 extern crate rocksdb;
 extern crate rustc_serialize;
+extern crate varint;
 
 use std::collections::HashMap;
 use std::mem::transmute;
 use std::io::Write;
 use std::str::Chars;
+use std::io::Cursor;
 
+use self::varint::VarintWrite;
 use self::rustc_serialize::json::{JsonEvent, Parser, StackElement};
 
 use error::Error;
 use key_builder::KeyBuilder;
-use records_capnp::payload;
 use stems::Stems;
+use index::Index;
 
 // Good example of using rustc_serialize: https://github.com/ajroetker/beautician/blob/master/src/lib.rs
 // Callback based JSON streaming parser: https://github.com/gyscos/json-streamer.rs
 // Another parser pased on rustc_serializ: https://github.com/isagalaev/ijson-rust/blob/master/src/test.rs#L11
-
-
-#[derive(Debug, PartialEq)]
-struct WordInfo {
-    //offset in the text field where the stemmed text starts
-    word_pos: u32,
-
-    // the start of the suffixText
-    suffix_offset: u32,
-
-    // the suffix of the stemmed text. When applied over stemmed, the original
-    // text is returned.
-    suffix_text: String,
-}
 
 type ArrayOffsets = Vec<u64>;
 
@@ -70,49 +59,33 @@ impl Shredder {
     fn add_entries(&mut self, text: &String, docseq: u64, batch: &mut rocksdb::WriteBatch) ->
             Result<(), Error> {
         let stems = Stems::new(text.as_str());
-        let mut word_to_word_infos = HashMap::new();
-        let mut total_words = 0;
+        let mut word_to_word_positions = HashMap::new();
+        let mut total_words: u32 = 0;
 
+        let mut one_enc_bytes = Cursor::new(Vec::new());
+        assert!(one_enc_bytes.write_unsigned_varint_32(1).is_ok());
         for stem in stems {
-            let word_infos = word_to_word_infos.entry(stem.stemmed).or_insert(Vec::new());
             total_words += 1;
-            word_infos.push(WordInfo{
-                word_pos: stem.word_pos,
-                suffix_text: stem.suffix.to_string(),
-                suffix_offset: stem.suffix_offset,
-            });
+            let &mut (ref mut word_positions, ref mut count) = word_to_word_positions.entry(stem.stemmed)
+                                                           .or_insert((Cursor::new(Vec::new()), 0));
+            assert!(word_positions.write_unsigned_varint_32(stem.word_pos).is_ok());
+            *count += 1;
         }
 
-        for (stemmed, word_infos) in word_to_word_infos {
-            let mut message = ::capnp::message::Builder::new_default();
-            let count: u32;
-            {
-                let mut capn_payload = message.init_root::<payload::Builder>();
-                count = word_infos.len() as u32;
-                capn_payload.set_total_words(total_words);
-                let mut capn_wordinfos = capn_payload.init_wordinfos(count);
-                for (pos, word_info) in word_infos.iter().enumerate() {
-                    let mut capn_wordinfo = capn_wordinfos.borrow().get(pos as u32);
-                    capn_wordinfo.set_word_pos(word_info.word_pos);
-                    capn_wordinfo.set_suffix_text(&word_info.suffix_text);
-                    capn_wordinfo.set_suffix_offset(word_info.suffix_offset);
-                }
-            }
-
-            let mut bytes = Vec::new();
-            ::capnp::serialize_packed::write_message(&mut bytes, &message).unwrap();
+        for (stemmed, (word_positions, count)) in word_to_word_positions {
             let key = self.kb.stemmed_word_key(&stemmed, docseq);
-            try!(batch.put(&key.into_bytes(), &bytes));
+            try!(batch.put(&key.into_bytes(), &word_positions.into_inner()));
 
-            let bytes = unsafe{ transmute::<u64, [u8; 8]>(count as u64) };
+            let key = self.kb.field_length_key(docseq);
+            try!(batch.put(&key.into_bytes(), &Index::convert_u32_to_bytes(total_words)));
+            
             let key = self.kb.keypathword_count_key(&stemmed);
-            try!(batch.merge(&key.into_bytes(), &bytes));
+            try!(batch.merge(&key.into_bytes(), &Index::convert_u32_to_bytes(count)));
 
-            let bytes = unsafe{ transmute::<u64, [u8; 8]>(1) };
             let key = self.kb.keypath_count_key();
-            try!(batch.merge(&key.into_bytes(), &bytes));
-
+            try!(batch.merge(&key.into_bytes(), one_enc_bytes.get_ref()));
         }
+
         let key = self.kb.value_key(docseq);
         let mut buffer = String::with_capacity(text.len() + 1);
         buffer.push('s');
@@ -326,7 +299,7 @@ impl Shredder {
    }
 }
 
-
+/*
 #[cfg(test)]
 mod tests {
     extern crate rocksdb;
@@ -455,4 +428,4 @@ mod tests {
         let result = wordinfos_from_rocks(&rocks);
         assert!(result.is_empty());
     }
-}
+} */

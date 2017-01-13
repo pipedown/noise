@@ -17,7 +17,7 @@ use filters::{QueryRuntimeFilter, ExactMatchFilter, StemmedWordFilter, StemmedWo
 
 
 // TODO vmx 2016-11-02: Make it import "rocksdb" properly instead of needing to import the individual tihngs
-use rocksdb::{IteratorMode, Snapshot};
+use rocksdb::Snapshot;
 
 
 pub struct Parser<'a> {
@@ -623,19 +623,16 @@ impl<'a> Parser<'a> {
         if self.consume("==") {
             let literal = try!(self.must_consume_string_literal());
             let boost = try!(self.consume_boost());
-            let stems = Stems::new(&literal);
-            let mut filters: Vec<Box<QueryRuntimeFilter + 'a>> = Vec::new();
-            for stem in stems {
-                let iter = self.snapshot.iterator(IteratorMode::Start);
-                let filter = Box::new(ExactMatchFilter::new(
-                    iter, &stem, &self.kb, boost));
-                filters.push(filter);
+            let mut filters: Vec<StemmedWordPosFilter> = Vec::new();
+            {
+                let stems = Stems::new(&literal);
+                for stem in stems {
+                    filters.push(StemmedWordPosFilter::new(&self.snapshot,
+                                                           &stem.stemmed, &self.kb, boost));
+                }
             }
-            match filters.len() {
-                0 => panic!("Cannot create a ExactMatchFilter"),
-                1 => Ok(filters.pop().unwrap()),
-                _ => Ok(Box::new(AndFilter::new(filters, self.kb.arraypath_len()))),
-            }
+            let filter = StemmedPhraseFilter::new(filters);
+            Ok(Box::new(ExactMatchFilter::new(&self.snapshot, filter, self.kb.clone(), literal, true)))
         } else if self.consume("~=") {
             // regular search
             let literal = try!(self.must_consume_string_literal());
@@ -646,15 +643,14 @@ impl<'a> Parser<'a> {
             match stemmed_words.len() {
                 0 => panic!("Cannot create a StemmedWordFilter"),
                 1 => {
-                    let iter = self.snapshot.iterator(IteratorMode::Start);
-                    Ok(Box::new(StemmedWordFilter::new(iter, &stemmed_words[0], &self.kb, boost)))
+                    Ok(Box::new(StemmedWordFilter::new(&self.snapshot,
+                                                       &stemmed_words[0], &self.kb, boost)))
                 },
                 _ => {
                     let mut filters: Vec<StemmedWordPosFilter> = Vec::new();
                     for stemmed_word in stemmed_words {
-                        let iter = self.snapshot.iterator(IteratorMode::Start);
-                        let filter = StemmedWordPosFilter::new(iter, &stemmed_word,
-                                                               &self.kb, boost);
+                        let filter = StemmedWordPosFilter::new(&self.snapshot,
+                                                               &stemmed_word, &self.kb, boost);
                         filters.push(filter);
                     }
                     Ok(Box::new(StemmedPhraseFilter::new(filters)))
@@ -674,9 +670,8 @@ impl<'a> Parser<'a> {
             let stems = Stems::new(&literal);
             let mut filters: Vec<StemmedWordPosFilter> = Vec::new();
             for stem in stems {
-                let iter = self.snapshot.iterator(IteratorMode::Start);
-                let filter = StemmedWordPosFilter::new(
-                    iter, &stem.stemmed, &self.kb, boost);
+                let filter = StemmedWordPosFilter::new(&self.snapshot,
+                    &stem.stemmed, &self.kb, boost);
                 filters.push(filter);
             }
             if word_distance > std::u32::MAX as i64 {
@@ -1081,8 +1076,11 @@ mod tests {
     
     #[test]
     fn test_whitespace() {
+        let dbname = "target/tests/test_whitespace";
+        let _ = Index::delete(dbname);
+
         let mut index = Index::new();
-        index.open("target/tests/test_whitespace", Some(OpenOptions::Create)).unwrap();
+        index.open(dbname, Some(OpenOptions::Create)).unwrap();
         let rocks = &index.rocks.unwrap();
         let mut snapshot = Snapshot::new(rocks);
 
@@ -1100,8 +1098,11 @@ mod tests {
 
     #[test]
     fn test_must_consume_string_literal() {
+        let dbname = "target/tests/test_must_consume_string_literal";
+        let _ = Index::delete(dbname);
+
         let mut index = Index::new();
-        index.open("target/tests/test_must_consume_string_literal", Some(OpenOptions::Create)).unwrap();
+        index.open(dbname, Some(OpenOptions::Create)).unwrap();
         let rocks = &index.rocks.unwrap();
         let snapshot = Snapshot::new(rocks);
 
