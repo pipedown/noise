@@ -1,5 +1,9 @@
+extern crate unicode_normalization;
+
 use query::DocResult;
 use std::str;
+
+use self::unicode_normalization::UnicodeNormalization;
 
 pub enum Segment {
     ObjectKey(String),
@@ -77,7 +81,7 @@ impl KeyBuilder {
         KeyBuilder::add_arraypath(&mut string, &self.arraypath);
         string
     }
-    
+
     /// Builds a field length key for the DocResult, using the key_path
     /// built up internally and the arraypath from the DocResult.
     pub fn field_length_key_from_doc_result(&self, dr: &DocResult) -> String {
@@ -217,7 +221,9 @@ impl KeyBuilder {
     pub fn push_object_key(&mut self, key: &str) {
         let mut escaped_key = String::with_capacity((key.len() * 2) + 1); // max expansion
         escaped_key.push('.');
-        for cc in key.chars() {
+        
+        // normalize the key otherwise we might not match unnormalized but equivelent keys
+        for cc in key.nfkc() {
             // Escape chars that conflict with delimiters
             if "\\$.!#".contains(cc) {
                 escaped_key.push('\\');
@@ -406,6 +412,13 @@ mod tests {
 
         kb.pop_object_key();
         assert_eq!(kb.keypath_segments_len(), 0, "No segments so far");
+    }
+
+    #[test]
+    fn test_segments_canonical() {
+        let mut kb = KeyBuilder::new();
+        kb.push_object_key("\u{0041}\u{030A}");
+        assert_eq!(kb.stemmed_word_key("word", 1), "W.Å!word#1,");
     }
 
     #[test]
