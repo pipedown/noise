@@ -299,34 +299,32 @@ impl Shredder {
    }
 }
 
-/*
+
 #[cfg(test)]
 mod tests {
     extern crate rocksdb;
+    extern crate varint;
+
+    use self::varint::VarintRead;
+
+    use std::io::Cursor;
     use std::str;
-    use records_capnp;
-    use super::{WordInfo};
+
     use index::{Index, OpenOptions};
 
-    fn wordinfos_from_rocks(rocks: &rocksdb::DB) -> Vec<(String, Vec<WordInfo>)> {
+    fn positions_from_rocks(rocks: &rocksdb::DB) -> Vec<(String, Vec<u32>)> {
         let mut result = Vec::new();
         for (key, value) in rocks.iterator(rocksdb::IteratorMode::Start) {
             if key[0] as char == 'W' {
-                let mut ref_value = &*value;
-                let message_reader = ::capnp::serialize_packed::read_message(
-                    &mut ref_value, ::capnp::message::ReaderOptions::new()).unwrap();
-                let payload = message_reader.get_root::<records_capnp::payload::Reader>().unwrap();
-
-                let mut wordinfos = Vec::new();
-                for wi in payload.get_wordinfos().unwrap().iter() {
-                    wordinfos.push(WordInfo{
-                        word_pos: wi.get_word_pos(),
-                        suffix_text: wi.get_suffix_text().unwrap().to_string(),
-                        suffix_offset: wi.get_suffix_offset(),
-                    });
+                let mut vec = Vec::with_capacity(value.len());
+                vec.extend(value.into_iter());
+                let mut bytes = Cursor::new(vec);
+                let mut positions = Vec::new();
+                while let Ok(pos) = bytes.read_unsigned_varint_32() {
+                    positions.push(pos);
                 }
                 let key_string = unsafe { str::from_utf8_unchecked((&key)) }.to_string();
-                result.push((key_string, wordinfos));
+                result.push((key_string, positions));
             }
         }
         result
@@ -349,17 +347,13 @@ mod tests {
         let rocks = &index.rocks.unwrap();
 
         rocks.write(batch).unwrap();
-        let result = wordinfos_from_rocks(&rocks);
+        let result = positions_from_rocks(&rocks);
 
         let expected = vec![
-            ("W.some$!array#123,0".to_string(), vec![
-                WordInfo { word_pos: 0, suffix_text: "".to_string(), suffix_offset: 5 }]),
-            ("W.some$!data#123,1".to_string(), vec![
-                WordInfo { word_pos: 0, suffix_text: "".to_string(), suffix_offset: 4 }]),
-            ("W.some$$!also#123,2,0".to_string(), vec![
-                WordInfo { word_pos: 0, suffix_text: "".to_string(), suffix_offset: 4 }]),
-            ("W.some$$!nest#123,2,1".to_string(), vec![
-                WordInfo { word_pos: 0, suffix_text: "ed".to_string(), suffix_offset: 4 }]),
+            ("W.some$!array#123,0".to_string(), vec![0]),
+            ("W.some$!data#123,1".to_string(), vec![0]),
+            ("W.some$$!also#123,2,0".to_string(), vec![0]),
+            ("W.some$$!nest#123,2,1".to_string(), vec![0]),
             ];
         assert_eq!(result, expected);
     }
@@ -384,26 +378,17 @@ mod tests {
         let rocks = &index.rocks.unwrap();
 
         rocks.write(batch).unwrap();
-        let result = wordinfos_from_rocks(&rocks);
+        let result = positions_from_rocks(&rocks);
         println!("result: {:?}", result);
         let expected = vec![
-            ("W.A$.B!b1#1234,1".to_string(), vec![
-                WordInfo { word_pos: 0, suffix_text: "".to_string(), suffix_offset: 2 }]),
-            ("W.A$.B!b2vmx#1234,0".to_string(), vec![
-                WordInfo { word_pos: 0, suffix_text: "B2 VMX ".to_string(),
-                           suffix_offset: 0 }]),
-            ("W.A$.B!three#1234,0".to_string(), vec![
-                WordInfo { word_pos: 10, suffix_text: "".to_string(), suffix_offset: 15 }]),
-            ("W.A$.B!two#1234,0".to_string(), vec![
-                WordInfo { word_pos: 6, suffix_text: " ".to_string(), suffix_offset: 9 }]),
-            ("W.A$.C!..#1234,0".to_string(), vec![
-                WordInfo { word_pos: 0, suffix_text: "".to_string(), suffix_offset: 2 }]),
-            ("W.A$.C!..#1234,1".to_string(), vec![
-                WordInfo { word_pos: 0, suffix_text: "".to_string(), suffix_offset: 2 }]),
-            ("W.A$.C!c2#1234,0".to_string(), vec![
-                WordInfo { word_pos: 2, suffix_text: "C2".to_string(), suffix_offset: 2 }]),
-            ("W.A$.C!c2#1234,1".to_string(), vec![
-                WordInfo { word_pos: 2, suffix_text: "C2".to_string(), suffix_offset: 2 }]),
+            ("W.A$.B!b1#1234,1".to_string(), vec![0]),
+            ("W.A$.B!b2vmx#1234,0".to_string(), vec![0]),
+            ("W.A$.B!three#1234,0".to_string(), vec![10]),
+            ("W.A$.B!two#1234,0".to_string(), vec![6]),
+            ("W.A$.C!..#1234,0".to_string(), vec![0]),
+            ("W.A$.C!..#1234,1".to_string(), vec![0]),
+            ("W.A$.C!c2#1234,0".to_string(), vec![2]),
+            ("W.A$.C!c2#1234,1".to_string(), vec![2]),
             ];
         assert_eq!(result, expected);
     }
@@ -425,7 +410,7 @@ mod tests {
         let rocks = &index.rocks.unwrap();
 
         rocks.write(batch).unwrap();
-        let result = wordinfos_from_rocks(&rocks);
+        let result = positions_from_rocks(&rocks);
         assert!(result.is_empty());
     }
-} */
+}

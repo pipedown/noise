@@ -19,13 +19,8 @@ pub struct Stems<'a> {
 pub struct StemmedWord {
     // Where the stemmed word starts
     pub word_pos: u32,
-    // Where the suffix starts
-    pub suffix_offset: u32,
     // The stemmed word
     pub stemmed: String,
-    // The difference between the stemmed word and the original lowercased one. It can be
-    // used to recontruct the original word (for exact match searches)
-    pub suffix: String,
 }
 
 
@@ -36,14 +31,6 @@ impl<'a> Stems<'a> {
             stemmer: Stemmer::new("english").unwrap(),
             word_position: 0,
         }
-    }
-
-    /// Return the *byte* length of the common prefix between two strings
-    fn common_prefix_len(aa: &str, bb: &str) -> usize {
-        aa.chars()
-            .zip(bb.chars())
-            .take_while(|&(a, b)| a == b)
-            .fold(0, |acc, (a, _)| acc + a.len_utf8())
     }
 }
 
@@ -75,9 +62,7 @@ impl<'a> Iterator for Stems<'a> {
                             // wouldn't be possible.
                             return Some(StemmedWord {
                                 word_pos: 0,
-                                suffix_offset: 0,
                                 stemmed: String::new(),
-                                suffix: String::new(),
                             });
                         } else {
                             return None;
@@ -96,15 +81,12 @@ impl<'a> Iterator for Stems<'a> {
             self.word_position += 1;
             return Some(StemmedWord {
                             word_pos: 0,
-                            suffix_offset: word_to_stem.len() as u32,
                             stemmed: word_to_stem,
-                            suffix: String::new(),
                 });
         }
         // normalized contains our stemmable word. advance the iter since we only peeked.
         self.words.next();
         word_to_stem = normalized;
-        let mut suffix = word_to_stem.clone();
         loop {
             // loop through all non-alphabetic chars and add to suffix 
             match self.words.peek() {
@@ -113,7 +95,6 @@ impl<'a> Iterator for Stems<'a> {
                     if normalized.chars().next().unwrap().is_alphabetic() {
                         break;
                     } else {
-                        suffix.push_str(&normalized);
                         self.words.next();
                     }
                 },
@@ -121,12 +102,9 @@ impl<'a> Iterator for Stems<'a> {
             }
         }
         let stemmed = self.stemmer.stem(&word_to_stem.to_lowercase());
-        let prefix_len = Stems::common_prefix_len(&stemmed, &suffix);
         let ret = StemmedWord {
                     word_pos: self.word_position as u32,
-                    suffix_offset: prefix_len as u32,
                     stemmed: stemmed,
-                    suffix: (&suffix[prefix_len..]).to_string(),
                  };
         self.word_position += 1;
         Some(ret)
@@ -143,21 +121,14 @@ mod tests {
         let input = "THEse Words deeplY test smOOthly that stemmING";
         let result = Stems::new(input).collect::<Vec<StemmedWord>>();
         let expected = vec![
-            StemmedWord { word_pos: 0, suffix_offset: 0,
-                          stemmed: String::from("these"), suffix: String::from("THEse ") },
-            StemmedWord { word_pos: 1, suffix_offset: 0,
-                          stemmed: String::from("word"), suffix: String::from("Words ") },
+            StemmedWord { word_pos: 0, stemmed: String::from("these")},
+            StemmedWord { word_pos: 1, stemmed: String::from("word")},
             // "deeply" stems to "deepli"
-            StemmedWord { word_pos: 2, suffix_offset: 5,
-                          stemmed: String::from("deepli"), suffix: String::from("Y ") },
-            StemmedWord { word_pos: 3, suffix_offset: 4,
-                          stemmed: String::from("test"), suffix: String::from(" ") },
-            StemmedWord { word_pos: 4, suffix_offset: 2,
-                          stemmed: String::from("smooth"), suffix: String::from("OOthly ") },
-            StemmedWord { word_pos: 5, suffix_offset: 4,
-                          stemmed: String::from("that"), suffix: String::from(" ") },
-            StemmedWord { word_pos: 6, suffix_offset: 4,
-                          stemmed: String::from("stem"), suffix: String::from("mING") },
+            StemmedWord { word_pos: 2, stemmed: String::from("deepli")},
+            StemmedWord { word_pos: 3, stemmed: String::from("test")},
+            StemmedWord { word_pos: 4, stemmed: String::from("smooth")},
+            StemmedWord { word_pos: 5, stemmed: String::from("that")},
+            StemmedWord { word_pos: 6, stemmed: String::from("stem")},
             ];
         assert_eq!(result.len(), expected.len());
         for (stem, expected_stem) in result.iter().zip(expected.iter()) {
@@ -169,10 +140,7 @@ mod tests {
     fn test_stems_nonchars() {
         let input = "  @#$!== \t+-";
         let result = Stems::new(input).collect::<Vec<StemmedWord>>();
-        assert_eq!(result, vec![
-            StemmedWord { word_pos: 0, suffix_offset: 12,
-                          stemmed: String::from("  @#$!== \t+-"), suffix: String::from("") },
-            ]);
+        assert_eq!(result, vec![StemmedWord { word_pos: 0, stemmed: String::from("  @#$!== \t+-")}]);
     }
 
     #[test]
@@ -180,12 +148,9 @@ mod tests {
         let input = "@!?   Let's seeing...";
         let result = Stems::new(input).collect::<Vec<StemmedWord>>();
         let expected = vec![
-            StemmedWord { word_pos: 0, suffix_offset: 6,
-                          stemmed: String::from("@!?   "), suffix: String::from("") },
-            StemmedWord { word_pos: 1, suffix_offset: 0,
-                          stemmed: String::from("let"), suffix: String::from("Let's ") },
-            StemmedWord { word_pos: 2, suffix_offset: 3,
-                          stemmed: String::from("see"), suffix: String::from("ing...") },
+            StemmedWord { word_pos: 0, stemmed: String::from("@!?   ")},
+            StemmedWord { word_pos: 1, stemmed: String::from("let")},
+            StemmedWord { word_pos: 2, stemmed: String::from("see")},
             ];
         assert_eq!(result.len(), expected.len());
         for (stem, expected_stem) in result.iter().zip(expected.iter()) {
@@ -198,10 +163,8 @@ mod tests {
         let input = "Ünicöde stemming";
         let result = Stems::new(input).collect::<Vec<StemmedWord>>();
         let expected = vec![
-            StemmedWord { word_pos: 0, suffix_offset: 0,
-                          stemmed: String::from("ünicöd"), suffix: String::from("Ünicöde ") },
-            StemmedWord { word_pos: 1, suffix_offset: 4,
-                          stemmed: String::from("stem"), suffix: String::from("ming") },
+            StemmedWord { word_pos: 0, stemmed: String::from("ünicöd")},
+            StemmedWord { word_pos: 1, stemmed: String::from("stem")},
             ];
         assert_eq!(result.len(), expected.len());
         for (stem, expected_stem) in result.iter().zip(expected.iter()) {
@@ -213,10 +176,7 @@ mod tests {
     fn test_stems_unicode_lowercase_has_more_bytes() {
         let input = "İ";
         let result = Stems::new(input).collect::<Vec<StemmedWord>>();
-        let expected = vec![
-            StemmedWord { word_pos: 0, suffix_offset: 0,
-                          stemmed: String::from("i̇"), suffix: String::from("İ") },
-            ];
+        let expected = vec![StemmedWord { word_pos: 0, stemmed: String::from("i̇")}];
         assert_eq!(result.len(), expected.len());
         for (stem, expected_stem) in result.iter().zip(expected.iter()) {
             assert_eq!(stem, expected_stem);
@@ -249,38 +209,11 @@ mod tests {
         let input = "\u{03A1}\u{0313}\u{03C1}\u{0313}\u{1FE4}";
         let result = Stems::new(input).collect::<Vec<StemmedWord>>();
         let expected = vec![
-            StemmedWord { word_pos: 0, suffix_offset: 0,
-                          stemmed: String::from("\u{03C1}\u{0313}\u{1FE4}\u{1FE4}"),
-                          suffix: String::from("\u{03A1}\u{0313}\u{1FE4}\u{1FE4}") },
+            StemmedWord { word_pos: 0, stemmed: String::from("\u{03C1}\u{0313}\u{1FE4}\u{1FE4}")},
            ];
         assert_eq!(result.len(), expected.len());
         for (stem, expected_stem) in result.iter().zip(expected.iter()) {
             assert_eq!(stem, expected_stem);
-        }
-    }
-
-    #[test]
-    fn test_common_prefix_len() {
-        let tests = vec![
-            ("a", "a", 1),
-            ("ab", "a", 1),
-            ("a", "ab", 1),
-            ("ab", "ab", 2),
-            ("a", "b", 0),
-            ("b", "a", 0),
-            ("ab", "cd", 0),
-            ("ab", "bc", 0),
-            ("abc", "abd", 2),
-            ("ac", "abcd", 1),
-            (" a", "a", 0),
-            ("a", "a ", 1),
-            ("xyzabc", "xyz", 3),
-            ("xyz", "xyzabc", 3),
-            ("öxyz", "öx", 3),
-            ];
-        for (aa, bb, expected) in tests {
-            let prefix_len = Stems::common_prefix_len(aa, bb);
-            assert_eq!(prefix_len, expected);
         }
     }
 }
