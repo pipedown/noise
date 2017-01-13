@@ -500,68 +500,6 @@ impl<'a> Parser<'a> {
         Ok(Some(lit))
     }
 
-/*
-
-find
-	= "find" ws object ws
-
-object
-	= "{" ws obool ws "}" ws (("&&" / "||")  ws object)?
-   / parens
-
-parens
-	= "(" ws object ws ")"
-
-obool
-   = ws ocompare ws (('&&' / ',' / '||') ws obool)?
-   
-ocompare
-   = oparens
-   / key ws ":" ws (oparens / compare)
-   
-oparens
-   = '(' ws obool ws ')' ws
-   / array
-   / object
-
-compare
-   = ("==" / "~=" / "~" digits "=" ) ws string ws
-
-abool
-	= ws acompare ws (('&&'/ ',' / '||') ws abool)?
-    
-acompare
-   = aparens
-   / compare
-
-aparens
-   = '(' ws abool ')' ws
-   / array
-   / object
-
-array
-   = '[' ws abool ']' ws
-
-key
-   = field / string
-
-field
-	= [a-z_$]i [a-z_$0-9]i*
-
-string
-   = '"' ('\\\\' / '\\' [\"tfvrnb] / [^\\\"])* '"' ws
-
-digits
-    = [0-9]+
-
-ws
- = [ \t\n\r]*
-
-ws1
- = [ \t\n\r]+
-*/
-
-
     fn find<'b>(&'b mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
         if !self.consume("find") {
             return Err(Error::Parse("Missing 'find' keyword".to_string()));
