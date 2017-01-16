@@ -125,49 +125,88 @@ impl JsonValue {
         }
     }
 
-    pub fn render(&self, write: &mut Write) -> Result<(), Error> {
+    pub fn render(&self, write: &mut Write, pretty: &mut PrettyPrint) -> Result<(), Error> {
         match self {
-            &JsonValue::Number(ref num) => try!(write.write_all(num.to_string().as_bytes())),
+            &JsonValue::Number(ref num) => {
+                try!(write.write_all(pretty.prefix()));
+                try!(write.write_all(num.to_string().as_bytes()));
+            },
             &JsonValue::String(ref string) => {
+                try!(write.write_all(pretty.prefix()));
                 try!(write.write_all(JsonValue::str_to_literal(&string).as_bytes()))
             },
             &JsonValue::Array(ref array) => {
+                if array.is_empty() {
+                    try!(write.write_all(pretty.prefix()));
+                    try!(write.write_all("[]".as_bytes()));
+                    return Ok(());
+                }
+                try!(write.write_all(pretty.prefix()));
                 try!(write.write_all("[".as_bytes()));
+                try!(write.write_all(pretty.newline()));
+                pretty.push();
 
                 let mut iter = array.iter().peekable();
                 loop {
                     match iter.next() {
-                        Some(json) => try!(json.render(write)),
+                        Some(json) => {
+                            try!(json.render(write, pretty))
+                        },
                         None => break,
                     }
                     if iter.peek().is_some() {
                         try!(write.write_all(",".as_bytes()));
                     }
+                    try!(write.write_all(pretty.newline()));
                 }
+                pretty.pop();
+                try!(write.write_all(pretty.prefix()));
                 try!(write.write_all("]".as_bytes()));
             },
             &JsonValue::Object(ref object) => {
+                if object.is_empty() {
+                    try!(write.write_all(pretty.prefix()));
+                    try!(write.write_all("{}".as_bytes()));
+                    return Ok(());
+                }
+                try!(write.write_all(pretty.prefix()));
                 try!(write.write_all("{".as_bytes()));
+                try!(write.write_all(pretty.newline()));
+                pretty.push();
 
                 let mut iter = object.iter().peekable();
                 loop {
                     match iter.next() {
                         Some(&(ref key, ref json)) => {
+                            try!(write.write_all(pretty.prefix()));
                             try!(write.write_all(JsonValue::str_to_literal(&key).as_bytes()));
                             try!(write.write_all(":".as_bytes()));
-                            try!(json.render(write));
+                            pretty.next_prefix_is_space();
+                            try!(json.render(write, pretty));
                         }
                         None => break,
                     }
                     if iter.peek().is_some() {
                         try!(write.write_all(",".as_bytes()));
                     }
+                    try!(write.write_all(pretty.newline()));
                 }
+                pretty.pop();
+                try!(write.write_all(pretty.prefix()));
                 try!(write.write_all("}".as_bytes()));
             },
-            &JsonValue::True => try!(write.write_all("true".as_bytes())),
-            &JsonValue::False => try!(write.write_all("false".as_bytes())),
-            &JsonValue::Null => try!(write.write_all("null".as_bytes())),
+            &JsonValue::True => {
+                try!(write.write_all(pretty.prefix()));
+                try!(write.write_all("true".as_bytes()));
+            },
+            &JsonValue::False => {
+                try!(write.write_all(pretty.prefix()));
+                try!(write.write_all("false".as_bytes()));
+            },
+            &JsonValue::Null => {
+                try!(write.write_all(pretty.prefix()));
+                try!(write.write_all("null".as_bytes()))
+            },
         }
         Ok(())
     }
@@ -184,5 +223,51 @@ impl Ord for JsonValue {
             Ordering::Greater => Ordering::Greater,
             Ordering::Equal => self_cmp_fun(self, other),
         }
+    }
+}
+
+pub struct PrettyPrint {
+    indention: String,
+    newline: String,
+    spacing: String,
+    buffer: String,
+    next_prefix_is_space: bool
+}
+
+impl PrettyPrint {
+    pub fn new(indention: &str, newline: &str, spacing: &str) -> PrettyPrint {
+        PrettyPrint {
+            indention: indention.to_string(),
+            newline: newline.to_string(),
+            spacing: spacing.to_string(),
+            buffer: String::new(),
+            next_prefix_is_space: false,
+        }
+    }
+
+    pub fn push(&mut self) {
+        self.buffer += &self.indention;
+    }
+
+    pub fn pop(&mut self) {
+        let len = self.buffer.len() - self.indention.len();
+        self.buffer.truncate(len);
+    }
+
+    pub fn next_prefix_is_space(&mut self) {
+        self.next_prefix_is_space = true;
+    }
+
+    pub fn prefix(&mut self) -> &[u8] {
+        if self.next_prefix_is_space {
+            self.next_prefix_is_space = false;
+            self.spacing.as_bytes()
+        } else {
+            self.buffer.as_bytes()
+        }
+    }
+
+    pub fn newline(&mut self) -> &[u8] {
+        self.newline.as_bytes()
     }
 }

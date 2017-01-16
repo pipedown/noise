@@ -35,7 +35,7 @@ impl Index {
             high_doc_seq: 0,
             rocks: None,
             id_str_to_id_seq: HashMap::new(),
-            batch: Some(rocksdb::WriteBatch::default()),
+            batch: None,
         }
     }
     // NOTE vmx 2016-10-13: Perhpas the name should be specified on `new()` as it is bound
@@ -44,6 +44,9 @@ impl Index {
     //fn open(&mut self, name: &str, open_options: Option<OpenOptions>) -> Result<DB, String> {
     pub fn open(&mut self, name: &str, open_options: Option<OpenOptions>) -> Result<(), Error> {
         let mut rocks_options = rocksdb::Options::default();
+        rocks_options.set_comparator("noise", Index::compare_keys);
+        rocks_options.set_merge_operator("noise", Index::sum_merge);
+        
         let rocks = match rocksdb::DB::open(&rocks_options, name) {
             Ok(rocks) => rocks,
             Err(error) => {
@@ -53,12 +56,8 @@ impl Index {
                 }
 
                 rocks_options.create_if_missing(true);
-                rocks_options.set_comparator("noise", Index::compare_keys);
-                rocks_options.set_merge_operator("noise", Index::sum_merge);
-                
 
                 let rocks = try!(rocksdb::DB::open(&rocks_options, name));
-
                 
                 let mut bytes = Vec::with_capacity(8*2);
                 bytes.write(&Index::convert_u64_to_bytes(NOISE_HEADER_VERSION)).unwrap();
@@ -78,6 +77,8 @@ impl Index {
         // next 8 is high seq
         self.high_doc_seq = Index::convert_bytes_to_u64(&value[8..]);
 
+        self.batch = Some(rocksdb::WriteBatch::default());
+
         Ok(())
     }
 
@@ -88,28 +89,29 @@ impl Index {
         Ok(ret)
     }
 
-    pub fn add(&mut self, json: &str) -> Result<(), Error> {
-        let mut shredder = Shredder::new();
-        // NOTE vmx 2016-10-13: Needed for the lifetime-checker, though not sure if it now really
-        // does the right thing. Does the `try!()` still return as epected?
-        {
-            let docid = try!(shredder.shred(json, self.high_doc_seq + 1,
-                                            self.batch.as_mut().unwrap()));
-            if self.id_str_to_id_seq.contains_key(&docid) {
-                return Err(Error::Write("Attempt to insert multiple docs with same _id"
-                                        .to_string()));
-            }
-            self.high_doc_seq += 1;
-            self.id_str_to_id_seq.insert(format!("I{}", docid), format!("{}", self.high_doc_seq));
+    pub fn add(&mut self, json: &str) -> Result<String, Error> {
+        if self.rocks.is_none() {
+            return Err(Error::Write("Index isn't open.".to_string()));
         }
-        Ok(())
+        let mut shredder = Shredder::new();
+        
+        let docid = try!(shredder.shred(json, self.high_doc_seq + 1,
+                                        self.batch.as_mut().unwrap()));
+        if self.id_str_to_id_seq.contains_key(&docid) {
+            return Err(Error::Write("Attempt to insert multiple docs with same _id"
+                                    .to_string()));
+        }
+        self.high_doc_seq += 1;
+        self.id_str_to_id_seq.insert(format!("I{}", docid), format!("{}", self.high_doc_seq));
+        Ok(docid)
     }
 
     // Store the current batch
     pub fn flush(&mut self) -> Result<(), Error> {
         // Flush can only be called if the index is open
-        // NOTE vmx 2016-10-17: Perhaps that shouldn't panic?
-        assert!(&self.rocks.is_some());
+        if self.rocks.is_none() {
+            return Err(Error::Write("Index isn't open.".to_string()));
+        }
         let rocks = self.rocks.as_ref().unwrap();
 
         // Look up all doc ids and 'delete' from the seq_to_ids keyspace

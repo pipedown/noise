@@ -1,0 +1,227 @@
+# Some basic tests
+
+drop target/tests/querytestdbbasic1;
+create target/tests/querytestdbbasic1;
+
+
+add {"_id":"1", "A":[{"B":"B2","C":"C2"},{"B": "b1","C":"C2"}]};
+"1"
+add {"_id":"2", "A":[{"B":"B2","C":[{"D":"D"}]},{"B": "b1","C":"C2"}]};
+"2"
+add {"_id":"3", "A":"Multi word sentence"};
+"3"
+add {"_id":"4", "A":"%&%}{}@);€"};
+"4"
+add {"_id":"5", "A":"{}€52 deeply \\n\\v "};
+"5"
+add {"_id":"6", "A":[{"B":"B3"},{"B": "B3"}]};
+"6"
+add {"_id":"7", "A":[{"B":"B3"},{"B": "B4"}]};
+"7"
+add {"_id":"8", "A":["A1", "A1"]};
+"8"
+add {"_id":"9", "A":["A1", "A2"]};
+"9"
+add {"_id":"10", "A":"a bunch of words in this sentence"};
+"10"
+add {"_id":"11", "A":""};
+"11"
+add {"_id":"12", "A":["1","2","3","4","5","6","7","8","9","10","11","12"]};
+"12"
+add {"_id":"13", "A":["foo",1,true,false,null,{},[]]};
+"13"
+
+
+# Exact match object fields in arrays
+
+find {A:[{B: =="B2", C: [{D: =="D"} ]}]};
+[
+"2"
+]
+
+find {A:[{B: == "B2", C: == "C2"}]};
+[
+"1"
+]
+
+find {A:[{B: == "B2", C: == "C8"}]};
+[]
+
+find {A:[{B: == "b1", C: == "C2"}]};
+[
+"1",
+"2"
+]
+
+# exact match stuff in fields
+
+find {A: == "Multi word sentence"};
+[
+"3"
+]
+
+find {A: == "%&%}{}@);€"};
+[
+"4"
+]
+
+find {A: == "{}€52 deeply \\n\\v "};
+[
+"5"
+]
+
+find {A:[{C: == "C2"}]};
+[
+"1",
+"2"
+]
+
+find {A:[{B: == "B3" || B: == "B4"}]};
+[
+"6",
+"7"
+]
+
+# exact match strings in arrays
+
+
+
+find {A:[ == "A1" || == "A2"]};
+[
+"8",
+"9"
+]
+
+find {A:[ == "A1" && == "A" || == "A1"]};
+[
+"8",
+"9"
+]
+
+find {A:[=="A" || == "A1" && == "A"]};
+[]
+
+# full text search fields
+
+
+
+find {A: ~= "Multi"};
+[
+"3"
+]
+
+# phrase match
+
+find {A: ~= "multi word"};
+[
+"3"
+]
+
+find {A: ~= "word sentence"};
+[
+"3"
+]
+
+find {A: ~= "sentence word"};
+[]
+
+# proximity match. Number indicates how many word away terms can be.
+
+find {A: ~1= "multi sentence"};
+[
+"3"
+]
+
+find {A: ~4= "a sentence"};
+[]
+
+find {A: ~5= "a sentence"};
+[
+"10"
+]
+
+find {A: ~4= "a bunch of words sentence"};
+[]
+
+find {A: ~5= "a bunch of words sentence"};
+[
+"10"
+]
+
+find {A: ~10= "a bunch of words sentence"};
+[
+"10"
+]
+
+find {A: == ""};
+[
+"11"
+]
+
+# test return json elements
+
+find {A:[ == "1"]}
+return .A ;
+[
+["1","2","3","4","5","6","7","8","9","10","11","12"]
+]
+
+find {A:[ == "2"]}
+return .A[0] ;
+[
+"1"
+]
+
+find {A:[ == "2"]}
+return [.A[0], ._id] ;
+[
+["1","12"]
+]
+
+find {A:[ == "2"]}
+return {foo:.A[0], bar: ._id} ;
+[
+{"foo":"1","bar":"12"}
+]
+
+find {A:[ == "foo"]}
+return .A ;
+[
+["foo",1,true,false,null,{},[]]
+]
+
+# returning null when missing
+
+find {A:[ == "foo"]}
+return .B ;
+[
+null
+]
+
+# returning default values when missing
+
+find {A:[ == "foo"]}
+return .B default={foo:"foo"};
+[
+{"foo":"foo"}
+]
+
+find {A:[ == "foo"]}
+return .B default={};
+[
+{}
+]
+
+find {A:[ == "foo"]}
+return {foo: .B default={bar:"bar"}};
+[
+{"foo":{"bar":"bar"}}
+]
+
+# return every kind of element
+
+find {A:[ == "foo"]}
+return {"a":"a","b":1.123,"true":true,"false":false,"null":null,array:[],object:{}};
+[
+{"a":"a","b":1.123,"true":true,"false":false,"null":null,"array":[],"object":{}}
+]
