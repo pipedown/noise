@@ -9,8 +9,8 @@ use error::Error;
 use key_builder::KeyBuilder;
 use stems::Stems;
 use json_value::JsonValue;
-use query::{Sort, Returnable, RetValue, RetObject, RetArray, RetLiteral, RetBind, RetScore,
-            AggregateFun, SortInfo, SortField};
+use query::{Sort, AggregateFun, SortInfo, SortField};
+use returnable::{Returnable, RetValue, RetObject, RetArray, RetLiteral, RetBind, RetScore};
 use filters::{QueryRuntimeFilter, ExactMatchFilter, StemmedWordFilter, StemmedWordPosFilter,
               StemmedPhraseFilter, DistanceFilter, AndFilter, OrFilter, BindFilter, BoostFilter,
               NotFilter};

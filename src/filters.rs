@@ -10,7 +10,8 @@ use std::io::Cursor;
 
 use error::Error;
 use key_builder::KeyBuilder;
-use query::{DocResult, QueryScoringInfo, RetValue};
+use query::{DocResult, QueryScoringInfo};
+use returnable::RetValue;
 use json_value::JsonValue;
 
 // TODO vmx 2016-11-02: Make it import "rocksdb" properly instead of needing to import the individual tihngs
