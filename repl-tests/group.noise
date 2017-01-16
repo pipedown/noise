@@ -1,0 +1,163 @@
+# Group and aggregate tests
+
+drop target/tests/querytestgroup;
+create target/tests/querytestgroup;
+
+add {"_id":"1", "foo":"group", "baz": "a", "bar": 1};
+"1"
+add {"_id":"2", "foo":"group", "baz": "b", "bar": 2};
+"2"
+add {"_id":"3", "foo":"group", "baz": "c", "bar": 3};
+"3"
+add {"_id":"4", "foo":"group", "baz": "a", "bar": 1};
+"4"
+add {"_id":"5", "foo":"group", "baz": "b", "bar": 2};
+"5"
+add {"_id":"6", "foo":"group", "baz": "c", "bar": 3};
+"6"
+add {"_id":"7", "foo":"group", "baz": "a", "bar": 1};
+"7"
+add {"_id":"8", "foo":"group", "baz": "b", "bar": 2};
+"8"
+add {"_id":"9", "foo":"group", "baz": "c", "bar": 3};
+"9"
+add {"_id":"10", "foo":"group", "baz": "a", "bar": 1};
+"10"
+add {"_id":"11", "foo":"group", "baz": "b", "bar": 2};
+"11"
+add {"_id":"12", "foo":"group", "baz": "c", "bar": 3};
+"12"
+
+find {foo: =="group"}
+return {baz: group(.baz), bar: sum(.bar)};
+[
+{"baz":"a","bar":4},
+{"baz":"b","bar":8},
+{"baz":"c","bar":12}
+]
+
+find {foo: =="group"}
+return {bar: sum(.bar)};
+[
+{"bar":24}
+]
+
+find {foo: =="group"}
+return {bar: avg(.bar)};
+[
+{"bar":2}
+]
+
+find {foo: =="group"}
+return {baz: group(.baz), concat: concat(.baz sep="|")};
+[
+{"baz":"a","concat":"a|a|a|a"},
+{"baz":"b","concat":"b|b|b|b"},
+{"baz":"c","concat":"c|c|c|c"}
+]
+
+find {foo: =="group"}
+return {baz: group(.baz), list: list(.baz)};
+[
+{"baz":"a","list":["a","a","a","a"]},
+{"baz":"b","list":["b","b","b","b"]},
+{"baz":"c","list":["c","c","c","c"]}
+]
+
+find {foo: =="group"}
+return {baz: group(.baz), count: count()};
+[
+{"baz":"a","count":4},
+{"baz":"b","count":4},
+{"baz":"c","count":4}
+]
+
+find {foo: =="group"}
+return {max: max(.bar)};
+[
+{"max":3}
+]
+
+find {foo: =="group"}
+return {min: min(.bar)};
+[
+{"min":1}
+]
+
+find {foo: =="group"}
+return {max: max(.baz)};
+[
+{"max":"c"}
+]
+
+add {"_id":"1", "foo":"group2", "baz": "a", "bar": "a"};
+"1"
+add {"_id":"2", "foo":"group2", "baz": "a", "bar": "b"};
+"2"
+add {"_id":"3", "foo":"group2", "baz": "b", "bar": "a"};
+"3"
+add {"_id":"4", "foo":"group2", "baz": "b", "bar": "b"};
+"4"
+add {"_id":"5", "foo":"group2", "baz": "a", "bar": "a"};
+"5"
+add {"_id":"6", "foo":"group2", "baz": "a", "bar": "c"};
+"6"
+add {"_id":"7", "foo":"group2", "baz": "b", "bar": "d"};
+"7"
+add {"_id":"8", "foo":"group2", "baz": "b", "bar": "e"};
+"8"
+add {"_id":"9", "foo":"group2", "baz": "a", "bar": "f"};
+"9"
+
+find {foo: =="group2"}
+return [group(.baz order=asc), group(.bar order=desc), count()];
+[
+["a","f",1],
+["a","c",1],
+["a","b",1],
+["a","a",2],
+["b","e",1],
+["b","d",1],
+["b","b",1],
+["b","a",1]
+]
+
+find {foo: =="group2"}
+return [group(.baz order=asc), group(.bar order=desc), count()]
+limit 2;
+[
+["a","f",1],
+["a","c",1]
+]
+
+add {"_id":"1", "foo":"group3", "baz": "a", "bar": "a"};
+"1"
+add {"_id":"2", "foo":"group3",             "bar": "b"};
+"2"
+add {"_id":"3", "foo":"group3", "baz": "b", "bar": "a"};
+"3"
+add {"_id":"4", "foo":"group3", "baz": "b", "bar": "b"};
+"4"
+add {"_id":"5", "foo":"group3", "baz": "a", "bar": "a"};
+"5"
+add {"_id":"6", "foo":"group3", "baz": "a"            };
+"6"
+add {"_id":"7", "foo":"group3", "baz": "b", "bar": "d"};
+"7"
+add {"_id":"8", "foo":"group3", "baz": "b", "bar": "e"};
+"8"
+add {"_id":"9", "foo":"group3", "baz": "a", "bar": "f"};
+"9"
+
+find {foo: =="group2"}
+return [group(.baz order=asc) default="a", group(.bar order=desc) default="c", count()];
+[
+["a","f",1],
+["a","c",1],
+["a","b",1],
+["a","a",2],
+["b","e",1],
+["b","d",1],
+["b","b",1],
+["b","a",1]
+]

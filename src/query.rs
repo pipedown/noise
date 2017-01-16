@@ -1,7 +1,6 @@
 
 use std::str;
 use std::cmp::Ordering;
-use std::io::Write;
 use std::collections::HashMap;
 use std::iter::Peekable;
 use std::mem::{transmute, swap};
@@ -13,7 +12,7 @@ use error::Error;
 use index::Index;
 use key_builder::{KeyBuilder, Segment};
 use parser::Parser;
-use json_value::JsonValue;
+use json_value::{JsonValue};
 use filters::QueryRuntimeFilter;
 
 // TODO vmx 2016-11-02: Make it import "rocksdb" properly instead of needing to import the individual tihngs
@@ -160,7 +159,7 @@ pub struct QueryScoringInfo {
 pub struct Query {}
 
 impl Query {
-    pub fn get_matches<'a>(query: String, index: &'a Index) -> Result<QueryResults<'a>, Error> {
+    pub fn get_matches<'a>(query: &str, index: &'a Index) -> Result<QueryResults<'a>, Error> {
         if index.rocks.is_none() {
             return Err(Error::Parse("You must open the index first".to_string()));
         }
@@ -299,7 +298,6 @@ impl Query {
             iter: parser.snapshot.iterator(IteratorMode::Start),
             snapshot: parser.snapshot,
             returnable: returnable,
-            buffer: Vec::new(),
             needs_sorting_and_ags: needs_sorting_and_ags,
             done_with_sorting_and_ags: false,
             does_group_or_aggr: does_group_or_aggr,
@@ -316,13 +314,13 @@ impl Query {
     }
 }
 
+
 pub struct QueryResults<'a> {
     filter: Box<QueryRuntimeFilter + 'a>,
     doc_result_next: DocResult,
     snapshot: Snapshot<'a>,
     iter: DBIterator,
     returnable: Box<Returnable>,
-    buffer: Vec<u8>,
     needs_sorting_and_ags: bool,
     done_with_sorting_and_ags: bool,
     does_group_or_aggr: bool,
@@ -392,7 +390,7 @@ impl<'a> QueryResults<'a> {
         }
     }
 
-    pub fn next_result(&mut self) -> Result<Option<String>, Error> {
+    pub fn next_result(&mut self) -> Result<Option<JsonValue>, Error> {
         if self.needs_sorting_and_ags {
             loop {
                 let next = if self.done_with_sorting_and_ags {
@@ -424,11 +422,8 @@ impl<'a> QueryResults<'a> {
                                 }
                             }
                         }
-                        if let Some(mut result) = self.sorted_buffer.pop() {
-                            self.buffer.clear();
-                            try!(self.returnable.write_result(&mut result, &mut self.buffer));
-                            let str = unsafe{str::from_utf8_unchecked(&self.buffer[..])};
-                            return Ok(Some(str.to_string()));
+                        if let Some(mut results) = self.sorted_buffer.pop() {
+                            return Ok(Some(try!(self.returnable.json_result(&mut results))));
                         } else {
                             return Ok(None);
                         }
@@ -444,9 +439,7 @@ impl<'a> QueryResults<'a> {
             let mut results = VecDeque::new();
             try!(self.returnable.fetch_result(&mut self.iter, dr.seq, score,
                                               &dr.bind_name_result, &mut results));
-            self.buffer.clear();
-            try!(self.returnable.write_result(&mut results, &mut self.buffer));
-            Ok(Some(unsafe{str::from_utf8_unchecked(&self.buffer[..])}.to_string()))
+            Ok(Some(try!(self.returnable.json_result(&mut results))))
         }
     }
 
@@ -631,7 +624,17 @@ impl<'a> QueryResults<'a> {
     }
 }
 
+impl<'a> Iterator for QueryResults<'a> {
+    type Item = Result<JsonValue, Error>;
 
+    fn next(&mut self) -> Option<Result<JsonValue, Error>> {
+        match self.next_result() {
+            Ok(Some(json)) => Some(Ok(json)),
+            Ok(None) => None,
+            Err(reason) => Some(Err(reason)),
+        }
+    }
+}
 
 
 #[derive(PartialEq, Eq, Clone)]
@@ -852,8 +855,7 @@ pub trait Returnable {
 
     fn take_sort_for_matching_fields(&mut self, map: &mut HashMap<String, SortInfo>);
 
-    fn write_result(&self, results: &mut VecDeque<JsonValue>,
-                    write: &mut Write) -> Result<(), Error>;
+    fn json_result(&self, results: &mut VecDeque<JsonValue>) -> Result<JsonValue, Error>;
 }
 
 pub struct RetObject {
@@ -888,25 +890,12 @@ impl Returnable for RetObject {
        }
     }
 
-    fn write_result(&self, results: &mut VecDeque<JsonValue>,
-                    write: &mut Write) -> Result<(), Error> {
-        try!(write.write_all("{".as_bytes()));
-        let mut iter = self.fields.iter().peekable();
-        loop {
-            match iter.next() {
-                Some(&(ref key, ref returnable)) => {
-                    try!(write.write_all(JsonValue::str_to_literal(key).as_bytes()));
-                    try!(write.write_all(":".as_bytes()));
-                    try!(returnable.write_result(results, write));
-                },
-                None => break,
-            }
-            if iter.peek().is_some() {
-                try!(write.write_all(",".as_bytes()));
-            }
+    fn json_result(&self, results: &mut VecDeque<JsonValue>) -> Result<JsonValue, Error> {
+        let mut vec = Vec::with_capacity(self.fields.len());
+        for &(ref key, ref returnable) in self.fields.iter() {
+            vec.push((key.clone(), try!(returnable.json_result(results))));
         }
-        try!(write.write_all("}".as_bytes()));
-        Ok(())
+        Ok(JsonValue::Object(vec))
     }
 }
 
@@ -943,22 +932,12 @@ impl Returnable for RetArray {
        }
     }
 
-    fn write_result(&self, results: &mut VecDeque<JsonValue>,
-                    write: &mut Write) -> Result<(), Error> {
-        
-        try!(write.write_all("[".as_bytes()));
-        let mut iter = self.slots.iter().peekable();
-        loop {
-            match iter.next() {
-                Some(ref returnable) => try!(returnable.write_result(results, write)),
-                None => break,
-            }
-            if iter.peek().is_some() {
-                try!(write.write_all(",".as_bytes()));
-            }
+    fn json_result(&self, results: &mut VecDeque<JsonValue>) -> Result<JsonValue, Error> {
+        let mut vec = Vec::with_capacity(self.slots.len());
+        for slot in self.slots.iter() {
+            vec.push(try!(slot.json_result(results)));
         }
-        try!(write.write_all("]".as_bytes()));
-        Ok(())
+        Ok(JsonValue::Array(vec))
     }
 }
 
@@ -996,13 +975,12 @@ impl Returnable for RetHidden {
         self.visible.take_sort_for_matching_fields(map);
     }
 
-    fn write_result(&self, results: &mut VecDeque<JsonValue>,
-                    write: &mut Write) -> Result<(), Error> {
+    fn json_result(&self, results: &mut VecDeque<JsonValue>) -> Result<JsonValue, Error> {
         for _n in 0..self.unrendered.len() {
             // we already sorted at this point, now discard the values
             results.pop_front();
         }
-        self.visible.write_result(results, write)
+        self.visible.json_result(results)
     }
 }
 
@@ -1029,10 +1007,8 @@ impl Returnable for RetLiteral {
         //noop
     }
 
-    fn write_result(&self, _results: &mut VecDeque<JsonValue>,
-                    write: &mut Write) -> Result<(), Error> {
-        
-        self.json.render(write)
+    fn json_result(&self, _results: &mut VecDeque<JsonValue>) -> Result<JsonValue, Error> {
+        Ok(self.json.clone())
     }
 }
 
@@ -1227,14 +1203,12 @@ impl Returnable for RetValue {
         }
     }
 
-    fn write_result(&self, results: &mut VecDeque<JsonValue>,
-                    write: &mut Write) -> Result<(), Error> {
+    fn json_result(&self, results: &mut VecDeque<JsonValue>) -> Result<JsonValue, Error> {
         if let Some(json) = results.pop_front() {
-            try!(json.render(write));
+            Ok(json)
         } else {
             panic!("missing result!");
         }
-        Ok(())
     }
 }
 
@@ -1297,14 +1271,12 @@ impl Returnable for RetBind {
         }
     }
 
-    fn write_result(&self, results: &mut VecDeque<JsonValue>,
-                    write: &mut Write) -> Result<(), Error> {
+    fn json_result(&self, results: &mut VecDeque<JsonValue>) -> Result<JsonValue, Error> {
         if let Some(json) = results.pop_front() {
-            try!(json.render(write));
+            Ok(json)
         } else {
-            panic!("missing result!");
+            panic!("missing bind result!");
         }
-        Ok(())
     }
 }
 
@@ -1336,14 +1308,12 @@ impl Returnable for RetScore {
         }
     }
 
-    fn write_result(&self, results: &mut VecDeque<JsonValue>,
-                    write: &mut Write) -> Result<(), Error> {
+    fn json_result(&self, results: &mut VecDeque<JsonValue>) -> Result<JsonValue, Error> {
         if let Some(json) = results.pop_front() {
-            try!(json.render(write));
+            Ok(json)
         } else {
-            panic!("missing result!");
+            panic!("missing score result!");
         }
-        Ok(())
     }
 }
 
@@ -1355,8 +1325,6 @@ mod tests {
 
     use index::{Index, OpenOptions};
 
-    
-
     #[test]
     fn test_query_hello_world() {
         let dbname = "target/tests/querytestdbhelloworld";
@@ -1367,859 +1335,9 @@ mod tests {
         let _ = index.add(r#"{"_id": "foo", "hello": "world"}"#);
         index.flush().unwrap();
 
-        let mut query_results = Query::get_matches(r#"find {hello:=="world"}"#.to_string(), &index).unwrap();
+        let mut query_results = Query::get_matches(r#"find {hello:=="world"}"#, &index).unwrap();
         //let mut query_results = Query::get_matches(r#"a.b[foo="bar"]"#.to_string(), &index).unwrap();
         println!("query results: {:?}", query_results.get_next_id());
-    }
-
-    #[test]
-    fn test_query_basic() {
-        let dbname = "target/tests/querytestdbbasic";
-        let _ = Index::delete(dbname);
-
-        let mut index = Index::new();
-        index.open(dbname, Some(OpenOptions::Create)).unwrap();
-        let _ = index.add(r#"{"_id":"1", "A":[{"B":"B2","C":"C2"},{"B": "b1","C":"C2"}]}"#);
-        let _ = index.add(r#"{"_id":"2", "A":[{"B":"B2","C":[{"D":"D"}]},{"B": "b1","C":"C2"}]}"#);
-        let _ = index.add(r#"{"_id":"3", "A":"Multi word sentence"}"#);
-        let _ = index.add(r#"{"_id":"4", "A":"%&%}{}@);€"}"#);
-        let _ = index.add(r#"{"_id":"5", "A":"{}€52 deeply \\n\\v "}"#);
-        let _ = index.add(r#"{"_id":"6", "A":[{"B":"B3"},{"B": "B3"}]}"#);
-        let _ = index.add(r#"{"_id":"7", "A":[{"B":"B3"},{"B": "B4"}]}"#);
-        let _ = index.add(r#"{"_id":"8", "A":["A1", "A1"]}"#);
-        let _ = index.add(r#"{"_id":"9", "A":["A1", "A2"]}"#);
-        let _ = index.add(r#"{"_id":"10", "A":"a bunch of words in this sentence"}"#);
-        let _ = index.add(r#"{"_id":"11", "A":""}"#);
-        let _ = index.add(r#"{"_id":"12", "A":["1","2","3","4","5","6","7","8","9","10","11","12"]}"#);
-        let _ = index.add(r#"{"_id":"13", "A":["foo",1,true,false,null,{},[]]}"#);
-
-        index.flush().unwrap();
-
-        let mut query_results = Query::get_matches(r#"find {A:[{B: =="B2", C: [{D: =="D"} ]}]}"#.to_string(), &index).unwrap();
-        assert_eq!(query_results.get_next_id().unwrap(), Some("2".to_string()));
-        assert_eq!(query_results.get_next_id().unwrap(), None);
-
-        query_results = Query::get_matches(r#"find {A:[{B: == "B2", C: == "C2"}]}"#.to_string(), &index).unwrap();
-        assert_eq!(query_results.get_next_id().unwrap(), Some("1".to_string()));
-        assert_eq!(query_results.get_next_id().unwrap(), None);
-
-        query_results = Query::get_matches(r#"find {A:[{B: == "B2", C: == "C8"}]}"#.to_string(), &index).unwrap();
-        assert_eq!(query_results.get_next_id().unwrap(), None);
-
-        query_results = Query::get_matches(r#"find {A:[{B: == "b1", C: == "C2"}]}"#.to_string(), &index).unwrap();
-        assert_eq!(query_results.get_next_id().unwrap(), Some("1".to_string()));
-        assert_eq!(query_results.get_next_id().unwrap(), Some("2".to_string()));
-        assert_eq!(query_results.get_next_id().unwrap(), None);
-
-        query_results = Query::get_matches(r#"find {A: == "Multi word sentence"}"#.to_string(), &index).unwrap();
-        assert_eq!(query_results.get_next_id().unwrap(), Some("3".to_string()));
-        assert_eq!(query_results.get_next_id().unwrap(), None);
-
-        query_results = Query::get_matches(r#"find {A: == "%&%}{}@);€"}"#.to_string(), &index).unwrap();
-        assert_eq!(query_results.get_next_id().unwrap(), Some("4".to_string()));
-        assert_eq!(query_results.get_next_id().unwrap(), None);
-
-        query_results = Query::get_matches(r#"find {A: == "{}€52 deeply \\n\\v "}"#.to_string(), &index).unwrap();
-        assert_eq!(query_results.get_next_id().unwrap(), Some("5".to_string()));
-        assert_eq!(query_results.get_next_id().unwrap(), None);
-
-        query_results = Query::get_matches(r#"find {A:[{C: == "C2"}]}"#.to_string(), &index).unwrap();
-        assert_eq!(query_results.get_next_id().unwrap(), Some("1".to_string()));
-        assert_eq!(query_results.get_next_id().unwrap(), Some("2".to_string()));
-        assert_eq!(query_results.get_next_id().unwrap(), None);
-
-        query_results = Query::get_matches(r#"find {A:[{B: == "B3" || B: == "B4"}]}"#.to_string(), &index).unwrap();
-        assert_eq!(query_results.get_next_id().unwrap(), Some("6".to_string()));
-        assert_eq!(query_results.get_next_id().unwrap(), Some("7".to_string()));
-        assert_eq!(query_results.get_next_id().unwrap(), None);
-
-        query_results = Query::get_matches(r#"find {A:[ == "A1" || == "A2"]}"#.to_string(), &index).unwrap();
-        assert_eq!(query_results.get_next_id().unwrap(), Some("8".to_string()));
-        assert_eq!(query_results.get_next_id().unwrap(), Some("9".to_string()));
-        assert_eq!(query_results.get_next_id().unwrap(), None);
-
-        query_results = Query::get_matches(r#"find {A:[ == "A1" && == "A" || == "A1"]}"#.to_string(), &index).unwrap();
-        assert_eq!(query_results.get_next_id().unwrap(), Some("8".to_string()));
-        assert_eq!(query_results.get_next_id().unwrap(), Some("9".to_string()));
-        assert_eq!(query_results.get_next_id().unwrap(), None);
-
-        query_results = Query::get_matches(r#"find {A:[=="A" || == "A1" && == "A"]}"#.to_string(), &index).unwrap();
-        assert_eq!(query_results.get_next_id().unwrap(), None);
-
-        query_results = Query::get_matches(r#"find {A: ~= "Multi"}"#.to_string(), &index).unwrap();
-        assert_eq!(query_results.get_next_id().unwrap(), Some("3".to_string()));
-        assert_eq!(query_results.get_next_id().unwrap(), None);
-
-        query_results = Query::get_matches(r#"find {A: ~= "multi word"}"#.to_string(), &index).unwrap();
-        assert_eq!(query_results.get_next_id().unwrap(), Some("3".to_string()));
-        assert_eq!(query_results.get_next_id().unwrap(), None);
-
-        query_results = Query::get_matches(r#"find {A: ~= "word sentence"}"#.to_string(), &index).unwrap();
-        assert_eq!(query_results.get_next_id().unwrap(), Some("3".to_string()));
-        assert_eq!(query_results.get_next_id().unwrap(), None);
-
-        query_results = Query::get_matches(r#"find {A: ~= "sentence word"}"#.to_string(), &index).unwrap();
-        assert_eq!(query_results.get_next_id().unwrap(), None);
-
-        query_results = Query::get_matches(r#"find {A: ~1= "multi sentence"}"#.to_string(), &index).unwrap();
-        assert_eq!(query_results.get_next_id().unwrap(), Some("3".to_string()));
-        assert_eq!(query_results.get_next_id().unwrap(), None);
-
-        query_results = Query::get_matches(r#"find {A: ~4= "a sentence"}"#.to_string(), &index).unwrap();
-        assert_eq!(query_results.get_next_id().unwrap(), None);
-
-        query_results = Query::get_matches(r#"find {A: ~5= "a sentence"}"#.to_string(), &index).unwrap();
-        assert_eq!(query_results.get_next_id().unwrap(), Some("10".to_string()));
-        assert_eq!(query_results.get_next_id().unwrap(), None);
-
-        query_results = Query::get_matches(r#"find {A: ~4= "a bunch of words sentence"}"#.to_string(), &index).unwrap();
-        assert_eq!(query_results.get_next_id().unwrap(), None);
-
-        query_results = Query::get_matches(r#"find {A: ~5= "a bunch of words sentence"}"#.to_string(), &index).unwrap();
-        assert_eq!(query_results.get_next_id().unwrap(), Some("10".to_string()));
-        assert_eq!(query_results.get_next_id().unwrap(), None);
-
-        query_results = Query::get_matches(r#"find {A: ~10= "a bunch of words sentence"}"#.to_string(), &index).unwrap();
-        assert_eq!(query_results.get_next_id().unwrap(), Some("10".to_string()));
-        assert_eq!(query_results.get_next_id().unwrap(), None);
-
-        query_results = Query::get_matches(r#"find {A: == ""}"#.to_string(), &index).unwrap();
-        assert_eq!(query_results.get_next_id().unwrap(), Some("11".to_string()));
-        assert_eq!(query_results.get_next_id().unwrap(), None);
-
-        query_results = Query::get_matches(r#"find {A:[ == "1"]}
-                                              return .A "#.to_string(), &index).unwrap();
-        assert_eq!(query_results.next_result().unwrap(),
-                Some(r#"["1","2","3","4","5","6","7","8","9","10","11","12"]"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(), None);
-
-        query_results = Query::get_matches(r#"find {A:[ == "2"]}
-                                              return .A[0] "#.to_string(), &index).unwrap();
-        assert_eq!(query_results.next_result().unwrap(),Some(r#""1""#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(), None);
-
-        query_results = Query::get_matches(r#"find {A:[ == "2"]}
-                                              return [.A[0], ._id] "#.to_string(), &index).unwrap();
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"["1","12"]"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(), None);
-
-        query_results = Query::get_matches(r#"find {A:[ == "2"]}
-                                              return {foo:.A[0], bar: ._id} "#.to_string(), &index).unwrap();
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"{"foo":"1","bar":"12"}"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(), None);
-
-        query_results = Query::get_matches(r#"find {A:[ == "foo"]}
-                                              return .A "#.to_string(), &index).unwrap();
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"["foo",1,true,false,null,{},[]]"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(), None);
-
-
-        query_results = Query::get_matches(r#"find {A:[ == "foo"]}
-                                              return .B "#.to_string(), &index).unwrap();
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"null"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(), None);
-
-
-        query_results = Query::get_matches(r#"find {A:[ == "foo"]}
-                                              return .B default={foo:"foo"}"#.to_string(), &index).unwrap();
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"{"foo":"foo"}"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(), None);
-
-
-        query_results = Query::get_matches(r#"find {A:[ == "foo"]}
-                                              return .B default={}"#.to_string(), &index).unwrap();
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"{}"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(), None);
-
-
-        query_results = Query::get_matches(r#"find {A:[ == "foo"]}
-                                              return {foo: .B default={bar:"bar"}}"#.to_string(), &index).unwrap();
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"{"foo":{"bar":"bar"}}"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(), None);
-
-        query_results = Query::get_matches(r#"find {A:[ == "foo"]}
-            return {"a":"a","b":1.123,"true":true,"false":false,"null":null,array:[],object:{}}"#.to_string(), &index).unwrap();
-        assert_eq!(query_results.next_result().unwrap(),
-            Some(r#"{"a":"a","b":1.123,"true":true,"false":false,"null":null,"array":[],"object":{}}"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(), None);
-
-        
-    }
-
-    #[test]
-    fn test_query_group() {
-        let dbname = "target/tests/querytestgroup";
-        let _ = Index::delete(dbname);
-
-        let mut index = Index::new();
-        index.open(dbname, Some(OpenOptions::Create)).unwrap();
-
-
-        let _ = index.add(r#"{"_id":"1", "foo":"group", "baz": "a", "bar": 1}"#);
-        let _ = index.add(r#"{"_id":"2", "foo":"group", "baz": "b", "bar": 2}"#);
-        let _ = index.add(r#"{"_id":"3", "foo":"group", "baz": "c", "bar": 3}"#);
-        let _ = index.add(r#"{"_id":"4", "foo":"group", "baz": "a", "bar": 1}"#);
-        let _ = index.add(r#"{"_id":"5", "foo":"group", "baz": "b", "bar": 2}"#);
-        let _ = index.add(r#"{"_id":"6", "foo":"group", "baz": "c", "bar": 3}"#);
-        let _ = index.add(r#"{"_id":"7", "foo":"group", "baz": "a", "bar": 1}"#);
-        let _ = index.add(r#"{"_id":"8", "foo":"group", "baz": "b", "bar": 2}"#);
-        let _ = index.add(r#"{"_id":"9", "foo":"group", "baz": "c", "bar": 3}"#);
-        let _ = index.add(r#"{"_id":"10", "foo":"group", "baz": "a", "bar": 1}"#);
-        let _ = index.add(r#"{"_id":"11", "foo":"group", "baz": "b", "bar": 2}"#);
-        let _ = index.add(r#"{"_id":"12", "foo":"group", "baz": "c", "bar": 3}"#);
-        
-        index.flush().unwrap();
-
-        {
-        let mut query_results = Query::get_matches(r#"find {foo: =="group"}
-                                    return {baz: group(.baz), bar: sum(.bar)}"#.to_string(), &index).unwrap();
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"{"baz":"a","bar":4}"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"{"baz":"b","bar":8}"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"{"baz":"c","bar":12}"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(), None);
-
-        let mut query_results = Query::get_matches(r#"find {foo: =="group"}
-                                    return {bar: sum(.bar)}"#.to_string(), &index).unwrap();
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"{"bar":24}"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(), None);
-
-        let mut query_results = Query::get_matches(r#"find {foo: =="group"}
-                                    return {bar: avg(.bar)}"#.to_string(), &index).unwrap();
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"{"bar":2}"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(), None);
-
-        let mut query_results = Query::get_matches(r#"find {foo: =="group"}
-                            return {baz: group(.baz), concat: concat(.baz sep="|")}"#.to_string(), &index).unwrap();
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"{"baz":"a","concat":"a|a|a|a"}"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"{"baz":"b","concat":"b|b|b|b"}"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"{"baz":"c","concat":"c|c|c|c"}"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(), None);
-
-
-        let mut query_results = Query::get_matches(r#"find {foo: =="group"}
-                            return {baz: group(.baz), list: list(.baz)}"#.to_string(), &index).unwrap();
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"{"baz":"a","list":["a","a","a","a"]}"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"{"baz":"b","list":["b","b","b","b"]}"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"{"baz":"c","list":["c","c","c","c"]}"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(), None);
-
-
-        let mut query_results = Query::get_matches(r#"find {foo: =="group"}
-                            return {baz: group(.baz), count: count()}"#.to_string(), &index).unwrap();
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"{"baz":"a","count":4}"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"{"baz":"b","count":4}"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"{"baz":"c","count":4}"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(), None);
-
-
-        let mut query_results = Query::get_matches(r#"find {foo: =="group"}
-                            return {max: max(.bar)}"#.to_string(), &index).unwrap();
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"{"max":3}"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(), None);
-
-
-        let mut query_results = Query::get_matches(r#"find {foo: =="group"}
-                            return {min: min(.bar)}"#.to_string(), &index).unwrap();
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"{"min":1}"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(), None);
-
-
-        let mut query_results = Query::get_matches(r#"find {foo: =="group"}
-                            return {max: max(.baz)}"#.to_string(), &index).unwrap();
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"{"max":"c"}"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(), None);
-        }
-
-
-        let _ = index.add(r#"{"_id":"1", "foo":"group2", "baz": "a", "bar": "a"}"#);
-        let _ = index.add(r#"{"_id":"2", "foo":"group2", "baz": "a", "bar": "b"}"#);
-        let _ = index.add(r#"{"_id":"3", "foo":"group2", "baz": "b", "bar": "a"}"#);
-        let _ = index.add(r#"{"_id":"4", "foo":"group2", "baz": "b", "bar": "b"}"#);
-        let _ = index.add(r#"{"_id":"5", "foo":"group2", "baz": "a", "bar": "a"}"#);
-        let _ = index.add(r#"{"_id":"6", "foo":"group2", "baz": "a", "bar": "c"}"#);
-        let _ = index.add(r#"{"_id":"7", "foo":"group2", "baz": "b", "bar": "d"}"#);
-        let _ = index.add(r#"{"_id":"8", "foo":"group2", "baz": "b", "bar": "e"}"#);
-        let _ = index.add(r#"{"_id":"9", "foo":"group2", "baz": "a", "bar": "f"}"#);
-        
-        index.flush().unwrap();
-
-        {
-        let mut query_results = Query::get_matches(r#"find {foo: =="group2"}
-                            return [group(.baz order=asc), group(.bar order=desc), count()]"#.to_string(), &index).unwrap();
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"["a","f",1]"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"["a","c",1]"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"["a","b",1]"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"["a","a",2]"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"["b","e",1]"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"["b","d",1]"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"["b","b",1]"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"["b","a",1]"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(), None);
-        }
-
-        {
-        let mut query_results = Query::get_matches(r#"find {foo: =="group2"}
-                            return [group(.baz order=asc), group(.bar order=desc), count()]
-                            limit 2"#.to_string(), &index).unwrap();
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"["a","f",1]"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"["a","c",1]"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(), None);
-        }
-
-        let _ = index.add(r#"{"_id":"1", "foo":"group3", "baz": "a", "bar": "a"}"#);
-        let _ = index.add(r#"{"_id":"2", "foo":"group3",             "bar": "b"}"#);
-        let _ = index.add(r#"{"_id":"3", "foo":"group3", "baz": "b", "bar": "a"}"#);
-        let _ = index.add(r#"{"_id":"4", "foo":"group3", "baz": "b", "bar": "b"}"#);
-        let _ = index.add(r#"{"_id":"5", "foo":"group3", "baz": "a", "bar": "a"}"#);
-        let _ = index.add(r#"{"_id":"6", "foo":"group3", "baz": "a",           }"#);
-        let _ = index.add(r#"{"_id":"7", "foo":"group3", "baz": "b", "bar": "d"}"#);
-        let _ = index.add(r#"{"_id":"8", "foo":"group3", "baz": "b", "bar": "e"}"#);
-        let _ = index.add(r#"{"_id":"9", "foo":"group3", "baz": "a", "bar": "f"}"#);
-        
-        index.flush().unwrap();
-
-
-        let mut query_results = Query::get_matches(r#"find {foo: =="group2"}
-                            return [group(.baz order=asc) default="a", group(.bar order=desc) default="c", count()]"#.to_string(), &index).unwrap();
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"["a","f",1]"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"["a","c",1]"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"["a","b",1]"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"["a","a",2]"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"["b","e",1]"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"["b","d",1]"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"["b","b",1]"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"["b","a",1]"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(), None);
-
-    }
-
-
-    #[test]
-    fn test_query_json_collation() {
-        let dbname = "target/tests/querytestjsoncollation";
-
-        let _ = Index::delete(dbname);
-
-        let mut index = Index::new();
-        index.open(dbname, Some(OpenOptions::Create)).unwrap();
-
-
-        assert_eq!(Ok(()), index.add(r#"{"_id":"1", "foo":"coll", "bar": {}}"#));
-        assert_eq!(Ok(()), index.add(r#"{"_id":"2", "foo":"coll", "bar": {"foo":"bar"}}"#));
-        assert_eq!(Ok(()), index.add(r#"{"_id":"3", "foo":"coll", "bar": {"foo":"baz"}}"#));
-        assert_eq!(Ok(()), index.add(r#"{"_id":"4", "foo":"coll", "bar": {"foo":"baz","bar":"baz"}}"#));
-        assert_eq!(Ok(()), index.add(r#"{"_id":"5", "foo":"coll", "bar": {"foo":"baz","bar":"bar"}}"#));
-        assert_eq!(Ok(()), index.add(r#"{"_id":"6", "foo":"coll", "bar": 1}"#));
-        assert_eq!(Ok(()), index.add(r#"{"_id":"7", "foo":"coll", "bar": 1.00001}"#));
-        assert_eq!(Ok(()), index.add(r#"{"_id":"8", "foo":"coll", "bar": 2.00001}"#));
-        assert_eq!(Ok(()), index.add(r#"{"_id":"9", "foo":"coll", "bar": true}"#));
-        assert_eq!(Ok(()), index.add(r#"{"_id":"10", "foo":"coll", "bar": false}"#));
-        assert_eq!(Ok(()), index.add(r#"{"_id":"11", "foo":"coll", "bar": null}"#));
-        assert_eq!(Ok(()), index.add(r#"{"_id":"12", "foo":"coll", "bar": []}"#));
-        assert_eq!(Ok(()), index.add(r#"{"_id":"13", "foo":"coll", "bar": [true]}"#));
-        assert_eq!(Ok(()), index.add(r#"{"_id":"14", "foo":"coll", "bar": [null]}"#));
-        assert_eq!(Ok(()), index.add(r#"{"_id":"15", "foo":"coll", "bar": "string"}"#));
-        assert_eq!(Ok(()), index.add(r#"{"_id":"16", "foo":"coll", "bar": "string2"}"#));
-        assert_eq!(Ok(()), index.add(r#"{"_id":"17", "foo":"coll", "bar": "string3"}"#));
-        
-        index.flush().unwrap();
-
-        
-        {
-        let mut query_results = Query::get_matches(r#"find {foo: =="coll"}
-                                                      sort .bar asc
-                                                      return .bar "#.to_string(), &index).unwrap();
-
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"null"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"false"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"true"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"1"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"1.00001"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"2.00001"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#""string""#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#""string2""#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#""string3""#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"[]"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"[null]"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"[true]"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"{}"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"{"bar":"bar","foo":"baz"}"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"{"bar":"baz","foo":"baz"}"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"{"foo":"bar"}"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"{"foo":"baz"}"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(), None);
-        }
-
-        {
-        let mut query_results = Query::get_matches(r#"find {foo: =="coll"}
-                                                      sort .bar asc
-                                                      return .bar
-                                                      limit 5"#.to_string(), &index).unwrap();
-
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"null"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"false"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"true"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"1"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"1.00001"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(), None);
-        }
-
-        {
-        let mut query_results = Query::get_matches(r#"find {foo: =="coll"}
-                                                      sort .bar asc
-                                                      return .bar
-                                                      limit 1"#.to_string(), &index).unwrap();
-
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"null"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(), None);
-        }
-
-
-        assert_eq!(Ok(()), index.add(r#"{"_id":"20", "foo":"coll2", "bar":[1,1,1]}"#));
-        assert_eq!(Ok(()), index.add(r#"{"_id":"21", "foo":"coll2", "bar":[1,1,2]}"#));
-        assert_eq!(Ok(()), index.add(r#"{"_id":"22", "foo":"coll2", "bar":[1,2,2]}"#));
-        assert_eq!(Ok(()), index.add(r#"{"_id":"23", "foo":"coll2", "bar":[2,2,2]}"#));
-        assert_eq!(Ok(()), index.add(r#"{"_id":"24", "foo":"coll2", "bar":[2,1,1]}"#));
-        assert_eq!(Ok(()), index.add(r#"{"_id":"25", "foo":"coll2", "bar":[2,1,2]}"#));
-        assert_eq!(Ok(()), index.add(r#"{"_id":"26", "foo":"coll2", "bar":[2,3,2]}"#));
-        assert_eq!(Ok(()), index.add(r#"{"_id":"27", "foo":"coll2", "bar":[3,4,3]}"#));
-        assert_eq!(Ok(()), index.add(r#"{"_id":"28", "foo":"coll2", "bar":[5,4,3]}"#));
-        assert_eq!(Ok(()), index.add(r#"{"_id":"29", "foo":"coll2", "bar":[5,5,5]}"#));
-        
-        index.flush().unwrap();
-
-        {
-        let mut query_results = Query::get_matches(r#"find {foo: =="coll2"}
-                                                      sort .bar[0] asc, .bar[1] desc, .bar[2] desc
-                                                      return [.bar[0], .bar[1], .bar[2]] "#.to_string(), &index).unwrap();
-
-        
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"[1,2,2]"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"[1,1,2]"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"[1,1,1]"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"[2,3,2]"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"[2,2,2]"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"[2,1,2]"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"[2,1,1]"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"[3,4,3]"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"[5,5,5]"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"[5,4,3]"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(), None);
-        }
-
-
-
-        let _ = index.add(r#"{"_id":"1", "foo":"group2", "baz": "a", "bar": "a"}"#);
-        let _ = index.add(r#"{"_id":"2", "foo":"group2", "baz": "a", "bar": "b"}"#);
-        let _ = index.add(r#"{"_id":"3", "foo":"group2", "baz": "b", "bar": "a"}"#);
-        let _ = index.add(r#"{"_id":"4", "foo":"group2", "baz": "b", "bar": "b"}"#);
-        let _ = index.add(r#"{"_id":"5", "foo":"group2", "baz": "a", "bar": "a"}"#);
-        let _ = index.add(r#"{"_id":"6", "foo":"group2", "baz": "a", "bar": "c"}"#);
-        let _ = index.add(r#"{"_id":"7", "foo":"group2", "baz": "b", "bar": "d"}"#);
-        let _ = index.add(r#"{"_id":"8", "foo":"group2", "baz": "b", "bar": "e"}"#);
-        let _ = index.add(r#"{"_id":"9", "foo":"group2", "baz": "a", "bar": "f"}"#);
-        
-        index.flush().unwrap();
-
-        {
-        let mut query_results = Query::get_matches(r#"find {foo: =="group2"}
-                            sort .baz asc, .bar desc
-                            return [.baz, .bar]
-                            limit 2"#.to_string(), &index).unwrap();
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"["a","f"]"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"["a","c"]"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(), None);
-        }
-    }
-
-
-    #[test]
-    fn test_query_bind_var() {
-        let dbname = "target/tests/querytestbindvar";
-
-        let _ = Index::delete(dbname);
-
-        let mut index = Index::new();
-        index.open(dbname, Some(OpenOptions::Create)).unwrap();
-
-
-        assert_eq!(Ok(()), index.add(r#"{"_id":"1", "bar": [{"a":"foo","v":1},{"a":"bar","v":2}]}"#));
-        
-        index.flush().unwrap();
-
-        {
-        let mut query_results = Query::get_matches(r#"find {bar: x::[{a: =="foo"}]}
-                                                      return x "#.to_string(), &index).unwrap();
-
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"[{"a":"foo","v":1}]"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(), None);
-        }
-        
-        {
-        let mut query_results = Query::get_matches(r#"find {bar: x::[{a: =="foo"}]}
-                                                      return x.v "#.to_string(), &index).unwrap();
-
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"[1]"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(), None);
-        }
-
-
-        {
-        let mut query_results = Query::get_matches(r#"find {bar: x::[{a: =="foo" || a: =="bar"}]}
-                                                      return x.v "#.to_string(), &index).unwrap();
-
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"[1,2]"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(), None);
-        }
-
-
-        {
-        let mut query_results = Query::get_matches(r#"find {bar: x::[{a: =="foo" || a: =="baz"}]}
-                                                      return x.v "#.to_string(), &index).unwrap();
-
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"[1]"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(), None);
-        }
-
-
-        {
-        let mut query_results = Query::get_matches(r#"find {bar: x::[{a: =="foof" || a: =="bar"}]}
-                                                      return x.v "#.to_string(), &index).unwrap();
-
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"[2]"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(), None);
-        }
-
-
-        {
-        let mut query_results = Query::get_matches(r#"find {bar: x::[{a: =="foo"}] || bar: x::[{a: =="bar"}]}
-                                                      return x.v "#.to_string(), &index).unwrap();
-
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"[1,2]"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(), None);
-        }
-
-        {
-        let mut query_results = Query::get_matches(r#"find {bar: x::[{a: =="foo"}] || bar: y::[{a: =="bar"}]}
-                                                      return [x.v, y.v] "#.to_string(), &index).unwrap();
-
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"[[1],[2]]"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(), None);
-        }
-
-
-        {
-        let mut query_results = Query::get_matches(r#"find {bar: x::[{a: =="foo"}] || bar: y::[{a: =="baz"}]}
-                                                      return [x.v, y.v default=0] "#.to_string(), &index).unwrap();
-
-        assert_eq!(query_results.next_result().unwrap(),Some(r#"[[1],[0]]"#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(), None);
-        }
-
-
-        {
-        let mut query_results = Query::get_matches(r#"find {bar: x::[{a: =="foo"}] && bar: y::[{a: =="baz"}]}
-                                                      return [x.v, y.v] "#.to_string(), &index).unwrap();
-
-        assert_eq!(query_results.next_result().unwrap(), None);
-        }
-    }
-
-    #[test]
-    fn test_query_score() {
-        let dbname = "target/tests/querytestscore";
-
-        let _ = Index::delete(dbname);
-
-        let mut index = Index::new();
-        index.open(dbname, Some(OpenOptions::Create)).unwrap();
-
-        assert_eq!(Ok(()), index.add(r#"{"_id":"1", "bar": "fox"}"#));
-        assert_eq!(Ok(()), index.add(r#"{"_id":"2", "bar": "quick fox"}"#));
-        assert_eq!(Ok(()), index.add(r#"{"_id":"3", "bar": "quick brown fox"}"#));
-        
-        index.flush().unwrap();
-
-        {
-        let mut query_results = Query::get_matches(r#"find {bar: ~="fox" || bar: ~="brown" || bar: ~="quick"}
-                                                      sort score() desc
-                                                      return ._id "#.to_string(), &index).unwrap();
-
-        assert_eq!(query_results.next_result().unwrap(),Some(r#""3""#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#""2""#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#""1""#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(), None);
-        }
-
-
-
-        {
-        let mut query_results = Query::get_matches(r#"find {bar: ~="quick brown fox"}
-                                                      sort score() desc
-                                                      return ._id "#.to_string(), &index).unwrap();
-
-        assert_eq!(query_results.next_result().unwrap(),Some(r#""3""#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(), None);
-        }
-
-
-
-        {
-        //score boosting
-        let mut query_results = Query::get_matches(r#"find {bar: ~="quick brown fox"}
-                                                      return score() "#.to_string(), &index).unwrap();
-
-        
-        let mut query_results2 = Query::get_matches(r#"find {bar: ~="quick brown fox"^2}
-                                                      return score() "#.to_string(), &index).unwrap();
-
-
-        assert_eq!(query_results.next_result().unwrap().unwrap().parse::<f32>().unwrap()*2.0,
-                   query_results2.next_result().unwrap().unwrap().parse::<f32>().unwrap());
-        }
-
-
-        {
-        let mut query_results = Query::get_matches(r#"find {bar: =="quick brown fox"}
-                                                      return score() "#.to_string(), &index).unwrap();
-
-        
-        let mut query_results2 = Query::get_matches(r#"find {bar: =="quick brown fox"^2}
-                                                      return score() "#.to_string(), &index).unwrap();
-
-
-        assert_eq!(query_results.next_result().unwrap().unwrap().parse::<f32>().unwrap()*2.0,
-                   query_results2.next_result().unwrap().unwrap().parse::<f32>().unwrap());
-        }
-
-        {
-        let mut query_results = Query::get_matches(r#"find {bar: ~2="quick brown fox"}
-                                                      return score() "#.to_string(), &index).unwrap();
-
-        
-        let mut query_results2 = Query::get_matches(r#"find {bar: ~2="quick brown fox"^2}
-                                                      return score() "#.to_string(), &index).unwrap();
-
-
-        assert_eq!(query_results.next_result().unwrap().unwrap().parse::<f32>().unwrap()*2.0,
-                   query_results2.next_result().unwrap().unwrap().parse::<f32>().unwrap());
-        }
-
-        {
-        let mut query_results = Query::get_matches(r#"find {bar: ~="fox" || bar: ~="brown" || bar: ~="quick"}
-                                                      sort score() desc
-                                                      return score() "#.to_string(), &index).unwrap();
-        let mut query_results2 = Query::get_matches(r#"find ({bar: ~="fox" || bar: ~="brown" || bar: ~="quick"})^2
-                                                      sort score() desc
-                                                      return score() "#.to_string(), &index).unwrap();
-        assert_eq!(query_results.next_result().unwrap().unwrap().parse::<f32>().unwrap()*2.0,
-                   query_results2.next_result().unwrap().unwrap().parse::<f32>().unwrap());
-        }
-
-
-        {
-        let mut query_results = Query::get_matches(r#"find {bar: ~="fox" || bar: ~="brown" || bar: ~="quick"}
-                                                      sort score() desc
-                                                      return score() "#.to_string(), &index).unwrap();
-        let mut query_results2 = Query::get_matches(r#"find {bar: ~="fox" || bar: ~="brown" || bar: ~="quick"}^2
-                                                      sort score() desc
-                                                      return score() "#.to_string(), &index).unwrap();
-        assert_eq!(query_results.next_result().unwrap().unwrap().parse::<f32>().unwrap()*2.0,
-                   query_results2.next_result().unwrap().unwrap().parse::<f32>().unwrap());
-        }
-
-        {
-        let mut query_results = Query::get_matches(r#"find {bar: ~="fox" || bar: ~="brown" || bar: ~="quick"}
-                                                      sort score() desc
-                                                      return score() "#.to_string(), &index).unwrap();
-        let mut query_results2 = Query::get_matches(r#"find {bar: ~="fox"^2 || (bar: ~="brown" || bar: ~="quick")^2 }
-                                                      sort score() desc
-                                                      return score() "#.to_string(), &index).unwrap();
-        assert_eq!(query_results.next_result().unwrap().unwrap().parse::<f32>().unwrap()*2.0,
-                   query_results2.next_result().unwrap().unwrap().parse::<f32>().unwrap());
-        }
-
-        {
-        let mut query_results = Query::get_matches(r#"find {bar: ~="fox" || bar: ~="brown" || bar: ~="quick"}
-                                                      sort score() desc
-                                                      return score() "#.to_string(), &index).unwrap();
-        let mut query_results2 = Query::get_matches(r#"find {bar: ~="fox"}^2 || {bar: ~="brown" || bar: ~="quick"}^2
-                                                      sort score() desc
-                                                      return score() "#.to_string(), &index).unwrap();
-        assert_eq!(query_results.next_result().unwrap().unwrap().parse::<f32>().unwrap()*2.0,
-                   query_results2.next_result().unwrap().unwrap().parse::<f32>().unwrap());
-        }
-
-        assert_eq!(Ok(()), index.add(r#"{"_id":"4", "bar": ["fox"]}"#));
-        assert_eq!(Ok(()), index.add(r#"{"_id":"5", "bar": ["quick fox"]}"#));
-        assert_eq!(Ok(()), index.add(r#"{"_id":"6", "bar": ["quick brown fox"]}"#));
-        
-        index.flush().unwrap();
-
-        {
-        let mut query_results = Query::get_matches(r#"find {bar:[ ~="fox" || ~="brown" || ~="quick"]}
-                                                      sort score() desc
-                                                      return score() "#.to_string(), &index).unwrap();
-        let mut query_results2 = Query::get_matches(r#"find {bar:[~="fox" || ~="brown" || ~="quick"]^2}
-                                                      sort score() desc
-                                                      return score() "#.to_string(), &index).unwrap();
-        assert_eq!(query_results.next_result().unwrap().unwrap().parse::<f32>().unwrap()*2.0,
-                   query_results2.next_result().unwrap().unwrap().parse::<f32>().unwrap());
-        }
-
-        {
-        let mut query_results = Query::get_matches(r#"find {bar:[ ~="fox" || ~="brown" || ~="quick"]}
-                                                      sort score() desc
-                                                      return score() "#.to_string(), &index).unwrap();
-        let mut query_results2 = Query::get_matches(r#"find {bar:[~="fox"]^2 || bar:[~="brown" || ~="quick"]^2}
-                                                      sort score() desc
-                                                      return score() "#.to_string(), &index).unwrap();
-        assert_eq!(query_results.next_result().unwrap().unwrap().parse::<f32>().unwrap()*2.0,
-                   query_results2.next_result().unwrap().unwrap().parse::<f32>().unwrap());
-        }
-
-        {
-        let mut query_results = Query::get_matches(r#"find {bar:[ ~="fox" || ~="brown" || ~="quick"]}
-                                                      sort score() desc
-                                                      return score() "#.to_string(), &index).unwrap();
-        let mut query_results2 = Query::get_matches(r#"find {bar:[~="fox"]^2 || (bar:[~="brown"] || bar:[~="quick"])^2}
-                                                      sort score() desc
-                                                      return score() "#.to_string(), &index).unwrap();
-        assert_eq!(query_results.next_result().unwrap().unwrap().parse::<f32>().unwrap()*2.0,
-                   query_results2.next_result().unwrap().unwrap().parse::<f32>().unwrap());
-        }
-
-    }
-
-    #[test]
-    fn test_query_not() {
-        let dbname = "target/tests/querytestnot";
-
-        let _ = Index::delete(dbname);
-
-        let mut index = Index::new();
-        index.open(dbname, Some(OpenOptions::Create)).unwrap();
-
-        assert_eq!(Ok(()), index.add(r#"{"_id":"1", "bar": "fox"}"#));
-        assert_eq!(Ok(()), index.add(r#"{"_id":"2", "bar": "quick fox"}"#));
-        assert_eq!(Ok(()), index.add(r#"{"_id":"3", "bar": "quick brown fox"}"#));
-        assert_eq!(Ok(()), index.add(r#"{"_id":"4", "bar": ["fox"]}"#));
-        assert_eq!(Ok(()), index.add(r#"{"_id":"5", "bar": ["quick fox"]}"#));
-        assert_eq!(Ok(()), index.add(r#"{"_id":"6", "bar": ["quick brown fox"]}"#));
-        assert_eq!(Ok(()), index.add(r#"{"_id":"7", "baz": ["fox"]}"#));
-        assert_eq!(Ok(()), index.add(r#"{"_id":"8", "baz": ["quick","fox"]}"#));
-        assert_eq!(Ok(()), index.add(r#"{"_id":"9", "baz": ["quick","brown","fox"]}"#));
-        
-        index.flush().unwrap();
-
-        {
-        let mut query_results = Query::get_matches(r#"find {(bar: ~="fox" || bar: ~="brown") && (bar: !~="quick")}
-                                                      return ._id "#.to_string(), &index).unwrap();
-
-        assert_eq!(query_results.next_result().unwrap(),Some(r#""1""#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(), None);
-        }
-
-        {
-        let mut query_results = Query::get_matches(r#"find {(bar: ~="fox" || bar: ~="brown") && !(bar: ~="quick")}
-                                                      return ._id "#.to_string(), &index).unwrap();
-
-        assert_eq!(query_results.next_result().unwrap(),Some(r#""1""#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(), None);
-        }
-
-        {
-        let mut query_results = Query::get_matches(r#"find {bar: ~="fox" || bar: ~="brown"} && !{bar: ~="quick"}
-                                                      return ._id "#.to_string(), &index).unwrap();
-
-        assert_eq!(query_results.next_result().unwrap(),Some(r#""1""#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(), None);
-        }
-
-
-        {
-        let mut query_results = Query::get_matches(r#"find {bar: [(~="fox" || ~="brown") && !~="quick"]}
-                                                      return ._id "#.to_string(), &index).unwrap();
-
-        assert_eq!(query_results.next_result().unwrap(),Some(r#""4""#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(), None);
-        }
-
-        {
-        let mut query_results = Query::get_matches(r#"find {bar: [(~="fox" || ~="brown") && !(~="quick")]}
-                                                      return ._id "#.to_string(), &index).unwrap();
-
-        assert_eq!(query_results.next_result().unwrap(),Some(r#""4""#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(), None);
-        }
-
-
-        {
-        let mut query_results = Query::get_matches(r#"find {bar: [~="fox" || ~="brown"] && bar: ![~="quick"]}
-                                                      return ._id "#.to_string(), &index).unwrap();
-
-        assert_eq!(query_results.next_result().unwrap(),Some(r#""4""#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(), None);
-        }
-
-        {
-        let mut query_results = Query::get_matches(r#"find {baz: [(~="fox" || ~="brown") && !~="quick"]}
-                                                      return ._id "#.to_string(), &index).unwrap();
-
-        assert_eq!(query_results.next_result().unwrap(),Some(r#""7""#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#""8""#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#""9""#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(), None);
-        }
-
-        {
-        let mut query_results = Query::get_matches(r#"find {baz: [(~="fox" || ~="brown") && !(~="quick")]}
-                                                      return ._id "#.to_string(), &index).unwrap();
-
-        assert_eq!(query_results.next_result().unwrap(),Some(r#""7""#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#""8""#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(),Some(r#""9""#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(), None);
-        }
-
-
-        {
-        let mut query_results = Query::get_matches(r#"find {baz: [~="fox" || ~="brown"] && baz: ![~="quick"]}
-                                                      return ._id "#.to_string(), &index).unwrap();
-
-        assert_eq!(query_results.next_result().unwrap(),Some(r#""7""#.to_string()));
-        assert_eq!(query_results.next_result().unwrap(), None);
-        }
-        
-        {
-        let result = Query::get_matches(r#"find !{baz: [~="fox"]}
-                                    return ._id "#.to_string(), &index);
-        match result {
-            Ok(_foo) => panic!("Didn't detect all logical nots."),
-            Err(_foo) => (),
-        }
-        }
-
-
-        {
-        let result = Query::get_matches(r#"find !{baz: ~="fox"} && !{baz: =="foo"}
-                                    return ._id "#.to_string(), &index);
-        match result {
-            Ok(_foo) => panic!("Didn't detect all logical nots."),
-            Err(_foo) => (),
-        }
-        }
-
-
-        {
-        let result = Query::get_matches(r#"find {foo: =="bar"} && !{baz: !~="fox"}}
-                                    return ._id "#.to_string(), &index);
-        match result {
-            Ok(_foo) => panic!("Didn't detect nested logical nots."),
-            Err(_foo) => (),
-        }
-        }
-        
     }
 
     #[test]
@@ -2236,7 +1354,7 @@ mod tests {
         }
         index.flush().unwrap();
 
-        let mut query_results = Query::get_matches(r#"find {data: == "u"}"#.to_string(), &index).unwrap();
+        let mut query_results = Query::get_matches(r#"find {data: == "u"}"#, &index).unwrap();
         loop {
             match query_results.get_next_id() {
                 Ok(Some(result)) => println!("result: {}", result),

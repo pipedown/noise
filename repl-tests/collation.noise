@@ -1,0 +1,125 @@
+# Sort expressions.
+
+drop target/tests/querytestjsoncollation;
+create target/tests/querytestjsoncollation;
+
+add {"_id":"1", "foo":"coll", "bar": {}};
+"1"
+add {"_id":"2", "foo":"coll", "bar": {"foo":"bar"}};
+"2"
+add {"_id":"3", "foo":"coll", "bar": {"foo":"baz"}};
+"3"
+add {"_id":"4", "foo":"coll", "bar": {"foo":"baz","bar":"baz"}};
+"4"
+add {"_id":"5", "foo":"coll", "bar": {"foo":"baz","bar":"bar"}};
+"5"
+add {"_id":"6", "foo":"coll", "bar": 1};
+"6"
+add {"_id":"7", "foo":"coll", "bar": 1.00001};
+"7"
+add {"_id":"8", "foo":"coll", "bar": 2.00001};
+"8"
+add {"_id":"9", "foo":"coll", "bar": true};
+"9"
+add {"_id":"10", "foo":"coll", "bar": false};
+"10"
+add {"_id":"11", "foo":"coll", "bar": null};
+"11"
+add {"_id":"12", "foo":"coll", "bar": []};
+"12"
+add {"_id":"13", "foo":"coll", "bar": [true]};
+"13"
+add {"_id":"14", "foo":"coll", "bar": [null]};
+"14"
+add {"_id":"15", "foo":"coll", "bar": "string"};
+"15"
+add {"_id":"16", "foo":"coll", "bar": "string2"};
+"16"
+add {"_id":"17", "foo":"coll", "bar": "string3"};
+"17"
+
+find {foo: =="coll"}
+sort .bar asc
+return .bar ;
+[
+null,
+false,
+true,
+1,
+1.00001,
+2.00001,
+"string",
+"string2",
+"string3",
+[],
+[null],
+[true],
+{},
+{"bar":"bar","foo":"baz"},
+{"bar":"baz","foo":"baz"},
+{"foo":"bar"},
+{"foo":"baz"}
+]
+
+find {foo: =="coll"}
+sort .bar asc
+return .bar
+limit 5;
+[
+null,
+false,
+true,
+1,
+1.00001
+]
+
+find {foo: =="coll"}
+sort .bar asc
+return .bar
+limit 1;
+[
+null
+]
+
+add {"_id":"20", "foo":"coll2", "bar":[1,1,1]};
+"20"
+add {"_id":"21", "foo":"coll2", "bar":[1,1,2]};
+"21"
+add {"_id":"22", "foo":"coll2", "bar":[1,2,2]};
+"22"
+add {"_id":"23", "foo":"coll2", "bar":[2,2,2]};
+"23"
+add {"_id":"24", "foo":"coll2", "bar":[2,1,1]};
+"24"
+add {"_id":"25", "foo":"coll2", "bar":[2,1,2]};
+"25"
+add {"_id":"26", "foo":"coll2", "bar":[2,3,2]};
+"26"
+add {"_id":"27", "foo":"coll2", "bar":[3,4,3]};
+"27"
+add {"_id":"28", "foo":"coll2", "bar":[5,4,3]};
+"28"
+add {"_id":"29", "foo":"coll2", "bar":[5,5,5]};
+"29"
+
+find {foo: =="coll2"}
+sort .bar[0] asc, .bar[1] desc, .bar[2] desc
+return [.bar[0], .bar[1], .bar[2]] ;
+[
+[1,2,2],
+[1,1,2],
+[1,1,1],
+[2,3,2],
+[2,2,2],
+[2,1,2],
+[2,1,1],
+[3,4,3],
+[5,5,5],
+[5,4,3]
+]
+
+find {foo: =="group2"}
+sort .baz asc, .bar desc
+return [.baz, .bar]
+limit 2;
+[]

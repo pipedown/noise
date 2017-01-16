@@ -1,0 +1,60 @@
+# Bind Variables testing. Feature is not complete
+
+drop target/tests/querytestbindvar;
+create target/tests/querytestbindvar;
+
+add {"_id":"1", "bar": [{"a":"foo","v":1},{"a":"bar","v":2}]};
+"1"
+
+
+find {bar: x::[{a: =="foo"}]}
+return x ;
+[
+[{"a":"foo","v":1}]
+]
+
+find {bar: x::[{a: =="foo"}]}
+return x.v ;
+[
+[1]
+]
+
+find {bar: x::[{a: =="foo" || a: =="bar"}]}
+return x.v ;
+[
+[1,2]
+]
+
+find {bar: x::[{a: =="foo" || a: =="baz"}]}
+return x.v ;
+[
+[1]
+]
+
+find {bar: x::[{a: =="foof" || a: =="bar"}]}
+return x.v ;
+[
+[2]
+]
+
+find {bar: x::[{a: =="foo"}] || bar: x::[{a: =="bar"}]}
+return x.v ;
+[
+[1,2]
+]
+
+find {bar: x::[{a: =="foo"}] || bar: y::[{a: =="bar"}]}
+return [x.v, y.v] ;
+[
+[[1],[2]]
+]
+
+find {bar: x::[{a: =="foo"}] || bar: y::[{a: =="baz"}]}
+return [x.v, y.v default=0] ;
+[
+[[1],[0]]
+]
+
+find {bar: x::[{a: =="foo"}] && bar: y::[{a: =="baz"}]}
+return [x.v, y.v] ;
+[]

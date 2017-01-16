@@ -1,0 +1,197 @@
+# Relevancy Scoring tests
+
+drop target/tests/querytestscore;
+create target/tests/querytestscore;
+
+
+add {"_id":"1", "bar": "fox"};
+"1"
+add {"_id":"2", "bar": "quick fox"};
+"2"
+add {"_id":"3", "bar": "quick brown fox"};
+"3"
+
+find {bar: ~="fox" || bar: ~="brown" || bar: ~="quick"}
+sort score() desc
+return ._id ;
+[
+"3",
+"2",
+"1"
+]
+
+find {bar: ~="quick brown fox"}
+sort score() desc
+return ._id ;
+[
+"3"
+]
+
+find {bar: ~="quick brown fox"}
+return score() ;
+[
+0.05966803431510925
+]
+
+find {bar: ~="quick brown fox"^2}
+return score() ;
+[
+0.1193360686302185
+]
+
+find {bar: =="quick brown fox"}
+return score() ;
+[
+0.05966803431510925
+]
+
+find {bar: =="quick brown fox"^2}
+return score() ;
+[
+0.1193360686302185
+]
+
+find {bar: ~2="quick brown fox"}
+return score() ;
+[
+0.0916677787899971
+]
+
+find {bar: ~2="quick brown fox"^2}
+return score() ;
+[
+0.1833355575799942
+]
+
+find {bar: ~="fox" || bar: ~="brown" || bar: ~="quick"}
+sort score() desc
+return score() ;
+[
+0.5773501992225647,
+0.2468651682138443,
+0.07121198624372482
+]
+
+find ({bar: ~="fox" || bar: ~="brown" || bar: ~="quick"})^2
+sort score() desc
+return score() ;
+[
+1.1547003984451294,
+0.4937303364276886,
+0.14242397248744965
+]
+
+find {bar: ~="fox" || bar: ~="brown" || bar: ~="quick"}
+sort score() desc
+return score() ;
+[
+0.5773501992225647,
+0.2468651682138443,
+0.07121198624372482
+]
+
+find {bar: ~="fox" || bar: ~="brown" || bar: ~="quick"}^2
+sort score() desc
+return score() ;
+[
+1.1547003984451294,
+0.4937303364276886,
+0.14242397248744965
+]
+
+find {bar: ~="fox" || bar: ~="brown" || bar: ~="quick"}
+sort score() desc
+return score() ;
+[
+0.5773501992225647,
+0.2468651682138443,
+0.07121198624372482
+]
+
+find {bar: ~="fox"^2 || (bar: ~="brown" || bar: ~="quick")^2 }
+sort score() desc
+return score() ;
+[
+1.1547003984451294,
+0.4937303364276886,
+0.14242397248744965
+]
+
+find {bar: ~="fox" || bar: ~="brown" || bar: ~="quick"}
+sort score() desc
+return score() ;
+[
+0.5773501992225647,
+0.2468651682138443,
+0.07121198624372482
+]
+
+find {bar: ~="fox"}^2 || {bar: ~="brown" || bar: ~="quick"}^2
+sort score() desc
+return score() ;
+[
+1.1547003984451294,
+0.4937303364276886,
+0.14242397248744965
+]
+
+add {"_id":"4", "bar": ["fox"]};
+"4"
+add {"_id":"5", "bar": ["quick fox"]};
+"5"
+add {"_id":"6", "bar": ["quick brown fox"]};
+"6"
+
+find {bar:[ ~="fox" || ~="brown" || ~="quick"]}
+sort score() desc
+return score() ;
+[
+0.5773501992225647,
+0.2468651682138443,
+0.07121198624372482
+]
+
+find {bar:[~="fox" || ~="brown" || ~="quick"]^2}
+sort score() desc
+return score() ;
+[
+1.1547003984451294,
+0.4937303364276886,
+0.14242397248744965
+]
+
+find {bar:[ ~="fox" || ~="brown" || ~="quick"]}
+sort score() desc
+return score() ;
+[
+0.5773501992225647,
+0.2468651682138443,
+0.07121198624372482
+]
+
+find {bar:[~="fox"]^2 || bar:[~="brown" || ~="quick"]^2}
+sort score() desc
+return score() ;
+[
+1.1547003984451294,
+0.4937303364276886,
+0.14242397248744965
+]
+
+find {bar:[ ~="fox" || ~="brown" || ~="quick"]}
+sort score() desc
+return score() ;
+[
+0.5773501992225647,
+0.2468651682138443,
+0.07121198624372482
+]
+
+find {bar:[~="fox"]^2 || (bar:[~="brown"] || bar:[~="quick"])^2}
+sort score() desc
+return score() ;
+[
+1.1547003984451294,
+0.4937303364276886,
+0.14242397248744965
+]

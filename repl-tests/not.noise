@@ -1,0 +1,96 @@
+# Logical not tests
+
+drop target/tests/querytestnot;
+create target/tests/querytestnot;
+
+
+add {"_id":"1", "bar": "fox"};
+"1"
+add {"_id":"2", "bar": "quick fox"};
+"2"
+add {"_id":"3", "bar": "quick brown fox"};
+"3"
+add {"_id":"4", "bar": ["fox"]};
+"4"
+add {"_id":"5", "bar": ["quick fox"]};
+"5"
+add {"_id":"6", "bar": ["quick brown fox"]};
+"6"
+add {"_id":"7", "baz": ["fox"]};
+"7"
+add {"_id":"8", "baz": ["quick","fox"]};
+"8"
+add {"_id":"9", "baz": ["quick","brown","fox"]};
+"9"
+
+find {(bar: ~="fox" || bar: ~="brown") && (bar: !~="quick")}
+return ._id ;
+[
+"1"
+]
+
+find {(bar: ~="fox" || bar: ~="brown") && !(bar: ~="quick")}
+return ._id ;
+[
+"1"
+]
+
+find {bar: ~="fox" || bar: ~="brown"} && !{bar: ~="quick"}
+return ._id ;
+[
+"1"
+]
+
+find {bar: [(~="fox" || ~="brown") && !~="quick"]}
+return ._id ;
+[
+"4"
+]
+
+find {bar: [(~="fox" || ~="brown") && !(~="quick")]}
+return ._id ;
+[
+"4"
+]
+
+find {bar: [~="fox" || ~="brown"] && bar: ![~="quick"]}
+return ._id ;
+[
+"4"
+]
+
+find {baz: [(~="fox" || ~="brown") && !~="quick"]}
+return ._id ;
+[
+"7",
+"8",
+"9"
+]
+
+find {baz: [(~="fox" || ~="brown") && !(~="quick")]}
+return ._id ;
+[
+"7",
+"8",
+"9"
+]
+
+find {baz: [~="fox" || ~="brown"] && baz: ![~="quick"]}
+return ._id ;
+[
+"7"
+]
+
+# Test for unallowable expressions
+
+find !{baz: [~="fox"]}
+return ._id ;
+Parse error: query cannot be made up of only logical not. Must have at least match clause not negated.
+
+find !{baz: ~="fox"} && !{baz: =="foo"}
+return ._id ;
+Parse error: Logical not ("!") is nested inside of another logical not. This is not allowed.
+
+find {foo: =="bar"} && !{baz: !~="fox"}
+return ._id ;
+Parse error: Logical not ("!") is nested inside of another logical not. This is not allowed.

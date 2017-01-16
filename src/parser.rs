@@ -20,16 +20,16 @@ use filters::{QueryRuntimeFilter, ExactMatchFilter, StemmedWordFilter, StemmedWo
 use rocksdb::Snapshot;
 
 
-pub struct Parser<'a> {
-    query: String,
+pub struct Parser<'a, 'c> {
+    query: &'c str,
     offset: usize,
     kb: KeyBuilder,
     pub snapshot: Snapshot<'a>,
     pub needs_scoring: bool,
 }
 
-impl<'a> Parser<'a> {
-    pub fn new(query: String, snapshot: Snapshot<'a>) -> Parser<'a> {
+impl<'a, 'c> Parser<'a, 'c> {
+    pub fn new(query: &'c str, snapshot: Snapshot<'a>) -> Parser<'a, 'c> {
         Parser {
             query: query,
             offset: 0,
@@ -1084,14 +1084,14 @@ mod tests {
         let rocks = &index.rocks.unwrap();
         let mut snapshot = Snapshot::new(rocks);
 
-        let mut query = " \n \t test".to_string();
+        let query = " \n \t test";
         let mut parser = Parser::new(query, snapshot);
         parser.ws();
         assert_eq!(parser.offset, 5);
 
         snapshot = Snapshot::new(rocks);
-        query = "test".to_string();
-        parser = Parser::new(query, snapshot);
+        let query = "test".to_string();
+        let mut parser = Parser::new(&query, snapshot);
         parser.ws();
         assert_eq!(parser.offset, 0);
     }
@@ -1107,7 +1107,7 @@ mod tests {
         let snapshot = Snapshot::new(rocks);
 
         let query = r#"" \n \t test""#.to_string();
-        let mut parser = Parser::new(query, snapshot);
+        let mut parser = Parser::new(&query, snapshot);
         assert_eq!(parser.must_consume_string_literal().unwrap(),  " \n \t test".to_string());
     }
 }
