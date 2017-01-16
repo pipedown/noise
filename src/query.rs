@@ -198,15 +198,16 @@ impl Query {
             if !sorts.is_empty() {
                 let mut vec: Vec<Box<Returnable>> = Vec::new();
                 for (_key, sort_info) in sorts.into_iter() {
+                    let sort = sort_info.clone();
                     match sort_info.field {
                         SortField::FetchValue(kb) => {
                             vec.push(Box::new(RetValue{ kb: kb, 
                                                         ag: None,
                                                         default: sort_info.default,
-                                                        sort: Some(sort_info.sort)}));
+                                                        sort_info: Some(sort)}));
                         },
                         SortField::Score => {
-                            vec.push(Box::new(RetScore{ sort: Some(sort_info.sort)}));
+                            vec.push(Box::new(RetScore{ sort_info: Some(sort)}));
                         },
                     }
                 }
@@ -236,20 +237,23 @@ impl Query {
         // this way we don't needlesss loop over the actions where most are noops
 
 
-        let mut sorts = Vec::new();
-        if has_sorting {
+        let mut sorts = if has_sorting {
+            let mut sorts = Vec::new();
             let mut sorting = Vec::new();
             returnable.get_sorting(&mut sorting);
             let mut n = sorting.len();
             while let Some(option) = sorting.pop() {
                 n -= 1;
-                if let Some(sort_dir) = option {
-                    sorts.push((sort_dir, n));
+                if let Some(sort_info) = option {
+                    sorts.push((sort_info, n));
                 }
             }
             // order we process sorts is important
-            sorts.reverse();
-        }
+            sorts.sort_by_key(|&(ref sort_info, ref _n)| sort_info.order_to_apply);
+            sorts.into_iter().map(|(sort_info, n)| (sort_info.sort, n)).collect()
+        } else {
+            Vec::new()
+        };
         
         
         let mut does_group_or_aggr = false;
@@ -832,13 +836,16 @@ pub enum Sort {
     Desc,
 }
 
+#[derive(Clone)]
 pub enum SortField {
     FetchValue(KeyBuilder),
     Score,
 }
 
+#[derive(Clone)]
 pub struct SortInfo {
     pub field: SortField,
+    pub order_to_apply: usize,
     pub sort: Sort,
     pub default: JsonValue,
 }

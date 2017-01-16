@@ -118,6 +118,22 @@ return [.bar[0], .bar[1], .bar[2]] ;
 [5,4,3]
 ]
 
+find {foo: =="coll2"}
+sort .bar[0] asc, .bar[1] desc, .bar[2] desc
+return [.bar[2], .bar[1], .bar[0]] ;
+[
+[2,2,1],
+[2,1,1],
+[1,1,1],
+[2,3,2],
+[2,2,2],
+[2,1,2],
+[1,1,2],
+[3,4,3],
+[5,5,5],
+[3,4,5]
+]
+
 find {foo: =="group2"}
 sort .baz asc, .bar desc
 return [.baz, .bar]

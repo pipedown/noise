@@ -774,6 +774,7 @@ impl<'a, 'c> Parser<'a, 'c> {
     pub fn sort_clause(&mut self) -> Result<HashMap<String, SortInfo>, Error> {
         let mut sort_infos = HashMap::new();
         if self.consume("sort") {
+            let mut n = 0;
             loop {
                 if let Some(kb) = try!(self.consume_keypath()) {
                     // doing the search for source 2x so user can order
@@ -806,7 +807,7 @@ impl<'a, 'c> Parser<'a, 'c> {
                     };
 
                     sort_infos.insert(kb.value_key(0), SortInfo{field: SortField::FetchValue(kb),
-                                                                sort: sort,
+                                                                sort: sort, order_to_apply: n,
                                                                 default: default});
                 } else {
                     try!(self.must_consume("score"));
@@ -824,13 +825,14 @@ impl<'a, 'c> Parser<'a, 'c> {
                     };
 
                     sort_infos.insert("score()".to_string(),
-                                      SortInfo{field: SortField::Score,
+                                      SortInfo{field: SortField::Score, order_to_apply: n,
                                                sort: sort, default: JsonValue::Null});
                 }
 
                 if !self.consume(",") {
                     break;
                 }
+                n += 1;
             }
             if sort_infos.is_empty() {
                 return Err(Error::Parse("Expected field path in sort expression.".to_string()));
@@ -849,7 +851,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         } else {
             let mut kb = KeyBuilder::new();
             kb.push_object_key("_id");
-            Ok(Box::new(RetValue{kb: kb, ag:None, default: JsonValue::Null, sort: None}))
+            Ok(Box::new(RetValue{kb: kb, ag:None, default: JsonValue::Null, sort_info: None}))
         }
     }
 
@@ -907,7 +909,7 @@ impl<'a, 'c> Parser<'a, 'c> {
             if self.consume("(") {
                 try!(self.must_consume(")"));
                 self.needs_scoring = true;
-                return Ok(Some(Box::new(RetScore{sort: None})));
+                return Ok(Some(Box::new(RetScore{sort_info: None})));
             } else {
                 //wasn't the score, maybe it's a bind variable
                 self.offset = offset;
@@ -923,10 +925,10 @@ impl<'a, 'c> Parser<'a, 'c> {
             if let Some(bind_name) = bind_name_option {
                 let extra_key = kb.value_key_path_only();
                 Ok(Some(Box::new(RetBind{bind_name: bind_name, extra_key: extra_key,
-                                         ag: Some((ag, json)), default: default, sort:None})))
+                                         ag: Some((ag, json)), default: default, sort_info:None})))
             } else {
                 Ok(Some(Box::new(RetValue{kb: kb, ag: Some((ag, json)),
-                                          default: default, sort:None})))
+                                          default: default, sort_info:None})))
             }
         } else if let Some(bind_name) = self.consume_field() {
             let extra_key = if let Some(kb) = try!(self.consume_keypath()) {
@@ -942,7 +944,7 @@ impl<'a, 'c> Parser<'a, 'c> {
             };
 
             Ok(Some(Box::new(RetBind{bind_name: bind_name, extra_key: extra_key,
-                                        ag: None, default: default, sort:None})))
+                                        ag: None, default: default, sort_info:None})))
         } else if let Some(kb) = try!(self.consume_keypath()) {
             let default = if let Some(default) = try!(self.consume_default()) {
                 default
@@ -950,7 +952,7 @@ impl<'a, 'c> Parser<'a, 'c> {
                 JsonValue::Null
             };
     
-            Ok(Some(Box::new(RetValue{kb: kb, ag: None, default: default, sort: None})))
+            Ok(Some(Box::new(RetValue{kb: kb, ag: None, default: default, sort_info: None})))
         } else if self.could_consume("{") {
             Ok(Some(try!(self.ret_object())))
         } else if self.could_consume("[") {
