@@ -1079,7 +1079,7 @@ mod tests {
     #[test]
     fn test_whitespace() {
         let dbname = "target/tests/test_whitespace";
-        let _ = Index::delete(dbname);
+        let _ = Index::drop(dbname);
 
         let mut index = Index::new();
         index.open(dbname, Some(OpenOptions::Create)).unwrap();
@@ -1101,7 +1101,7 @@ mod tests {
     #[test]
     fn test_must_consume_string_literal() {
         let dbname = "target/tests/test_must_consume_string_literal";
-        let _ = Index::delete(dbname);
+        let _ = Index::drop(dbname);
 
         let mut index = Index::new();
         index.open(dbname, Some(OpenOptions::Create)).unwrap();

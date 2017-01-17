@@ -863,7 +863,7 @@ mod tests {
     #[test]
     fn test_query_hello_world() {
         let dbname = "target/tests/querytestdbhelloworld";
-        let _ = Index::delete(dbname);
+        let _ = Index::drop(dbname);
 
         let mut index = Index::new();
         index.open(dbname, Some(OpenOptions::Create)).unwrap();
@@ -878,7 +878,7 @@ mod tests {
     #[test]
     fn test_query_more_docs() {
         let dbname = "target/tests/querytestdbmoredocs";
-        let _ = Index::delete(dbname);
+        let _ = Index::drop(dbname);
 
         let mut index = Index::new();
         index.open(dbname, Some(OpenOptions::Create)).unwrap();

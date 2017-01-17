@@ -26,18 +26,18 @@ fn test_repl() {
             continue;
         }
         total += 1;
+        let test_name = path.file_name().unwrap().to_str().unwrap().to_string();
+        println!("About to run test {} ", test_name);
         let mut file = File::open(path.clone()).unwrap();
         let mut file_buffer = Vec::new();
         file.read_to_end(&mut file_buffer).unwrap();
 
         let mut test_result_buffer = Vec::new();
         let file = File::open(path.clone()).unwrap();
-
         repl(&mut BufReader::new(file), &mut test_result_buffer, true);
         
         if file_buffer != test_result_buffer {
             failures += 1;
-            let test_name = path.file_name().unwrap().to_str().unwrap().to_string();
             path.set_extension("reject");
             let reject = path.file_name().unwrap().to_str().unwrap().to_string();
 
