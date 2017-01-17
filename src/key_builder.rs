@@ -2,6 +2,7 @@ extern crate unicode_normalization;
 
 use query::DocResult;
 use std::str;
+use std::cmp::Ordering;
 
 use self::unicode_normalization::UnicodeNormalization;
 
@@ -23,6 +24,11 @@ impl KeyBuilder {
             keypath: Vec::with_capacity(10),
             arraypath: Vec::with_capacity(10),
         }
+    }
+
+    pub fn clear(&mut self) {
+        self.keypath.clear();
+        self.arraypath.clear();
     }
 
     pub fn get_keypathword_only(&self, word: &str) -> String {
@@ -55,6 +61,13 @@ impl KeyBuilder {
             string.push_str(&segment);
         }
         string
+    }
+
+    pub fn id_to_seq_key(&self, id: &str) -> String {
+        let mut str = String::with_capacity(id.len() + 1);
+        str.push('I');
+        str.push_str(&id);
+        str
     }
 
     /// Builds a stemmed word key for the input word and seq, using the key_path and arraypath
@@ -139,6 +152,28 @@ impl KeyBuilder {
             }
         }
         string
+    }
+    
+    /// Returns a value key without the doc seq prepended.
+    pub fn value_key_path_only_from_str(str: &str) -> &str {
+        &str[str.find('#').unwrap() + 1..]
+    }
+
+    /// parses a value_key_path_only and sets the internally elements appropriately
+    pub fn parse_value_key_path_only(&mut self, mut str: &str) {
+        while let Some(tuple) = KeyBuilder::parse_first_key_value_segment(str) {
+            match tuple {
+                (Segment::ObjectKey(_key), unescaped) => {
+                    str = &str[unescaped.len()..];
+                    self.keypath.push(unescaped);
+                },
+                (Segment::Array(i), unescaped) => {
+                    str = &str[unescaped.len()..];
+                    self.keypath.push("$".to_string());
+                    self.arraypath.push(i);
+                },
+            }
+        }
     }
 
     pub fn value_key_from_doc_result(&self, dr: &DocResult) -> String {
@@ -309,8 +344,7 @@ impl KeyBuilder {
         dr
     }
 
-    pub fn compare_keys(akey: &str, bkey: &str) -> i32 {
-        use std::cmp::Ordering;
+    pub fn compare_keys(akey: &str, bkey: &str) -> Ordering {
         debug_assert!(akey.starts_with('W'));
         debug_assert!(bkey.starts_with('W'));
         let (apath_str, aseq_str, aarraypath_str) =
@@ -319,22 +353,18 @@ impl KeyBuilder {
                 KeyBuilder::split_keypath_seq_arraypath_from_key(&bkey);
 
         match apath_str[1..].cmp(&bpath_str[1..]) {
-            Ordering::Less => -1,
-            Ordering::Greater => 1,
+            Ordering::Less => Ordering::Less,
+            Ordering::Greater => Ordering::Greater,
             Ordering::Equal => {
                 let aseq: u64 = aseq_str.parse().unwrap();
                 let bseq: u64 = bseq_str.parse().unwrap();;
                 if aseq < bseq {
-                    -1
+                    Ordering::Less
                 } else if aseq > bseq {
-                    1
+                    Ordering::Greater
                 } else {
                     if aarraypath_str.is_empty() || barraypath_str.is_empty() {
-                        match aarraypath_str.len().cmp(&barraypath_str.len()) {
-                            Ordering::Less => -1,
-                            Ordering::Greater => 1,
-                            Ordering::Equal => 0,
-                        }
+                        aarraypath_str.len().cmp(&barraypath_str.len())
                     } else {
                         let mut a_nums = aarraypath_str.split(",");
                         let mut b_nums = barraypath_str.split(",");
@@ -344,21 +374,22 @@ impl KeyBuilder {
                                     let a_num: u64 = a_num_str.parse().unwrap();
                                     let b_num: u64 = b_num_str.parse().unwrap();
                                     match a_num.cmp(&b_num) {
-                                        Ordering::Less => return -1,
-                                        Ordering::Greater => return 1,
+                                        Ordering::Less => return Ordering::Less,
+                                        Ordering::Greater => return Ordering::Greater,
                                         Ordering::Equal => (),
                                     }
                                 } else {
                                     //b is shorter than a, so greater
-                                    return 1;
+                                    return Ordering::Greater;
                                 }
                             } else {
                                 if b_nums.next().is_some() {
                                     //a is shorter than b so less
-                                    return -1;
+                                    return Ordering::Less;
                                 } else {
-                                    // same length and must have hit all equal before this, so equal
-                                    return 0;
+                                    // same length and must have hit all equal before this,
+                                    // so equal
+                                    return Ordering::Equal;
                                 }
                             }
                         }

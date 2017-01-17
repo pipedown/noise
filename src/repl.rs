@@ -6,7 +6,8 @@ use std::io::{Write, BufRead};
 
 
 fn is_command(str: &str) -> bool {
-    let commands = ["find", "add", "create", "drop", "open", "pretty"];
+    let commands = ["find", "add", "create", "drop", "open",
+                    "pretty", "commit", "del", "load"];
     for command in commands.iter() {
         if str.starts_with(command) {
             return true;
@@ -75,7 +76,7 @@ pub fn repl(r: &mut BufRead, w: &mut Write, test_mode: bool) {
             }
         } else if lines.starts_with("drop") {
             let dbname = lines[4..].trim_left();
-            match Index::delete(dbname) {
+            match Index::drop(dbname) {
                 Ok(()) => (),
                 Err(reason) => write!(w, "{}\n", reason).unwrap(),
             }
@@ -89,6 +90,16 @@ pub fn repl(r: &mut BufRead, w: &mut Write, test_mode: bool) {
             match index.add(&lines[3..]) {
                 Ok(id) => write!(w, "{}\n", JsonValue::str_to_literal(&id)).unwrap(),
                 Err(reason) => write!(w, "{}\n", reason).unwrap(),
+            }
+        } else if lines.starts_with("del") {
+            match index.delete(&lines[3..].trim_left()) {
+                Ok(true) => write!(w, "ok\n").unwrap(),
+                Ok(false) => write!(w, "not found\n").unwrap(),
+                Err(reason) => write!(w, "{}\n", reason).unwrap(),
+            }
+        } else if lines.starts_with("commit") {
+            if let Err(reason) = index.flush() {
+                write!(w, "{}\n", reason).unwrap();
             }
         } else if lines.starts_with("find") {
             if let Err(reason) = index.flush() {

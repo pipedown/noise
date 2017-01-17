@@ -90,24 +90,24 @@ return {max: max(.baz)};
 {"max":"c"}
 ]
 
-add {"_id":"1", "foo":"group2", "baz": "a", "bar": "a"};
-"1"
-add {"_id":"2", "foo":"group2", "baz": "a", "bar": "b"};
-"2"
-add {"_id":"3", "foo":"group2", "baz": "b", "bar": "a"};
-"3"
-add {"_id":"4", "foo":"group2", "baz": "b", "bar": "b"};
-"4"
-add {"_id":"5", "foo":"group2", "baz": "a", "bar": "a"};
-"5"
-add {"_id":"6", "foo":"group2", "baz": "a", "bar": "c"};
-"6"
-add {"_id":"7", "foo":"group2", "baz": "b", "bar": "d"};
-"7"
-add {"_id":"8", "foo":"group2", "baz": "b", "bar": "e"};
-"8"
-add {"_id":"9", "foo":"group2", "baz": "a", "bar": "f"};
-"9"
+add {"_id":"10", "foo":"group2", "baz": "a", "bar": "a"};
+"10"
+add {"_id":"11", "foo":"group2", "baz": "a", "bar": "b"};
+"11"
+add {"_id":"12", "foo":"group2", "baz": "b", "bar": "a"};
+"12"
+add {"_id":"13", "foo":"group2", "baz": "b", "bar": "b"};
+"13"
+add {"_id":"14", "foo":"group2", "baz": "a", "bar": "a"};
+"14"
+add {"_id":"15", "foo":"group2", "baz": "a", "bar": "c"};
+"15"
+add {"_id":"16", "foo":"group2", "baz": "b", "bar": "d"};
+"16"
+add {"_id":"17", "foo":"group2", "baz": "b", "bar": "e"};
+"17"
+add {"_id":"18", "foo":"group2", "baz": "a", "bar": "f"};
+"18"
 
 find {foo: =="group2"}
 return [group(.baz order=asc), group(.bar order=desc), count()];

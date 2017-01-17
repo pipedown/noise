@@ -3,6 +3,6 @@ Cargo.lock
 
 **/*.iml
 .idea/
-
+*.reject
 .DS_Store
 

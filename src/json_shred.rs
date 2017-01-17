@@ -2,11 +2,13 @@ extern crate rocksdb;
 extern crate rustc_serialize;
 extern crate varint;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, BTreeMap};
 use std::mem::transmute;
 use std::io::Write;
 use std::str::Chars;
 use std::io::Cursor;
+use std::str;
+use std::mem;
 
 use self::varint::VarintWrite;
 use self::rustc_serialize::json::{JsonEvent, Parser, StackElement};
@@ -20,8 +22,6 @@ use index::Index;
 // Callback based JSON streaming parser: https://github.com/gyscos/json-streamer.rs
 // Another parser pased on rustc_serializ: https://github.com/isagalaev/ijson-rust/blob/master/src/test.rs#L11
 
-type ArrayOffsets = Vec<u64>;
-
 enum ObjectKeyTypes {
     /// _id field
     Id,
@@ -34,78 +34,113 @@ enum ObjectKeyTypes {
 #[derive(Debug)]
 pub struct Shredder {
     kb: KeyBuilder,
-    doc_id: String,
-    object_keys_indexed: Vec<bool>
+    doc_id: Option<String>,
+    object_keys_indexed: Vec<bool>,
+    shredded_key_values: BTreeMap<String, Vec<u8>>,
+    existing_key_value_to_delete: BTreeMap<String, Vec<u8>>,
 }
-
 
 impl Shredder {
     pub fn new() -> Shredder {
-        Shredder{
+        Shredder {
             kb: KeyBuilder::new(),
-            doc_id: String::new(),
+            doc_id: None,
             object_keys_indexed: Vec::new(),
+            shredded_key_values: BTreeMap::new(),
+            existing_key_value_to_delete: BTreeMap::new(),
         }
     }
 
-    fn add_entries(&mut self, text: &String, docseq: u64, batch: &mut rocksdb::WriteBatch) ->
-            Result<(), Error> {
-        let stems = Stems::new(text.as_str());
+    fn add_entries(&mut self, text: &str, docseq: u64,
+            batch: &mut rocksdb::WriteBatch, delete: bool) -> Result<(), Error> {
+        let stems = Stems::new(text);
         let mut word_to_word_positions = HashMap::new();
-        let mut total_words: u32 = 0;
+        let mut total_words: i32 = 0;
 
         let mut one_enc_bytes = Cursor::new(Vec::new());
-        assert!(one_enc_bytes.write_unsigned_varint_32(1).is_ok());
+        let num = if delete {-1} else {1};
+        assert!(one_enc_bytes.write_signed_varint_32(num).is_ok());
+
         for stem in stems {
             total_words += 1;
-            let &mut (ref mut word_positions, ref mut count) = word_to_word_positions.entry(stem.stemmed)
-                                                           .or_insert((Cursor::new(Vec::new()), 0));
-            assert!(word_positions.write_unsigned_varint_32(stem.word_pos).is_ok());
+            let &mut (ref mut word_positions, ref mut count) =
+                    word_to_word_positions.entry(stem.stemmed)
+                                            .or_insert((Cursor::new(Vec::new()), 0));
+            if !delete {
+                assert!(word_positions.write_unsigned_varint_32(stem.word_pos).is_ok());
+            }
             *count += 1;
         }
 
         for (stemmed, (word_positions, count)) in word_to_word_positions {
             let key = self.kb.stemmed_word_key(&stemmed, docseq);
-            try!(batch.put(&key.into_bytes(), &word_positions.into_inner()));
+            if delete {
+                try!(batch.delete(&key.into_bytes()));
+            } else {
+                try!(batch.put(&key.into_bytes(), &word_positions.into_inner()));
+            } 
 
             let key = self.kb.field_length_key(docseq);
-            try!(batch.put(&key.into_bytes(), &Index::convert_u32_to_bytes(total_words)));
+            if delete {
+                try!(batch.delete(&key.into_bytes()));
+            } else {
+                try!(batch.put(&key.into_bytes(), &Index::convert_i32_to_bytes(total_words)));
+            }
             
             let key = self.kb.keypathword_count_key(&stemmed);
-            try!(batch.merge(&key.into_bytes(), &Index::convert_u32_to_bytes(count)));
+            if delete {
+                try!(batch.merge(&key.into_bytes(), &Index::convert_i32_to_bytes(-count)));
+            } else {
+                try!(batch.merge(&key.into_bytes(), &Index::convert_i32_to_bytes(count)));
+            }
 
             let key = self.kb.keypath_count_key();
             try!(batch.merge(&key.into_bytes(), one_enc_bytes.get_ref()));
         }
 
         let key = self.kb.value_key(docseq);
-        let mut buffer = String::with_capacity(text.len() + 1);
-        buffer.push('s');
-        buffer.push_str(&text);
+        if delete {
+            try!(batch.delete(&key.into_bytes()));
+        } else {
+            let mut buffer = String::with_capacity(text.len() + 1);
+            buffer.push('s');
+            buffer.push_str(&text);
 
-        try!(batch.put(&key.into_bytes(), &buffer.as_bytes()));
+            try!(batch.put(&key.into_bytes(), &buffer.as_bytes()));
+        }
+
+        let key = self.kb.id_to_seq_key(self.doc_id.as_ref().unwrap());
+        if delete {
+            try!(batch.delete(&key.into_bytes()));
+        } else {
+            try!(batch.put(&key.into_bytes(), &docseq.to_string().as_bytes()));
+        }
 
         Ok(())
     }
     
-    fn add_value(&mut self, code: char, value: &[u8],
-                 docseq: u64, batch: &mut rocksdb::WriteBatch) -> Result<(), Error> {
-        let key = self.kb.value_key(docseq);
+    fn add_value(&mut self, code: char, value: &[u8]) -> Result<(), Error> {
+        let key = self.kb.value_key_path_only();
         let mut buffer = Vec::with_capacity(value.len() + 1);
         buffer.push(code as u8);
-        try!((&mut buffer as &mut Write).write_all(&value));
-
-        try!(batch.put(&key.into_bytes(), &buffer.as_ref()));
-
+        try!((&mut buffer as &mut Write).write_all(value));
+        self.shredded_key_values.insert(key, buffer);
         Ok(())
     }
 
-    fn maybe_add_value(&mut self, parser: &Parser<Chars>, code: char, value: &[u8],
-                       docseq: u64, batch: &mut rocksdb::WriteBatch) -> Result<(), Error> {
+    fn maybe_add_value(&mut self, parser: &Parser<Chars>, code: char, value: &[u8]) -> Result<(), Error> {
         match self.extract_key(parser.stack().top()) {
             ObjectKeyTypes::Id => {
-                return Err(Error::Shred(
-                        "Expected string for `_id` field, got another type".to_string()));
+                if code != 's' && self.kb.keypath_segments_len() == 1 {
+                    //nested fields can be _id, not root fields
+                    return Err(Error::Shred(
+                            "Expected string for `_id` field, got another type".to_string()));
+                }
+                self.doc_id = Some(unsafe{ str::from_utf8_unchecked(value) }.to_string());
+                self.kb.pop_object_key();
+                self.kb.push_object_key("_id");
+                *self.object_keys_indexed.last_mut().unwrap() = true;
+                try!(self.add_value(code, &value));
             },
             ObjectKeyTypes::Key(key) => {
                 // Pop the dummy object that makes ObjectEnd happy
@@ -113,15 +148,16 @@ impl Shredder {
                 self.kb.pop_object_key();
                 self.kb.push_object_key(&key);
                 *self.object_keys_indexed.last_mut().unwrap() = true;
-                try!(self.add_value(code, &value, docseq, batch));
+                try!(self.add_value(code, &value));
             },
             ObjectKeyTypes::NoKey => {
-                try!(self.add_value(code, &value, docseq, batch));
+                try!(self.add_value(code, &value));
                 self.kb.inc_top_array_offset();
             },
         }
         Ok(())
     }
+
     // Extract key if it exists and indicates if it's a special type of key
     fn extract_key(&mut self, stack_element: Option<StackElement>) -> ObjectKeyTypes {
         match stack_element {
@@ -153,8 +189,88 @@ impl Shredder {
         Ok(())
     }
 
-    pub fn shred(&mut self, json: &str, docseq: u64, batch: &mut rocksdb::WriteBatch) ->
-            Result<String, Error> {
+    pub fn add_all_to_batch(&mut self, seq: u64,
+            batch: &mut rocksdb::WriteBatch) -> Result<(), Error> {
+        let mut key_values = BTreeMap::new();
+        mem::swap(&mut key_values, &mut self.existing_key_value_to_delete);
+        for (key, value) in key_values.into_iter() {
+            self.kb.clear();
+            self.kb.parse_value_key_path_only(KeyBuilder::value_key_path_only_from_str(&key));
+            if value[0] as char == 's' {
+                let text = unsafe{ str::from_utf8_unchecked(&value[1..]) };
+                try!(self.add_entries(text, seq, batch, true));
+            } else {
+                try!(batch.delete(&key.into_bytes()));
+            }
+        }
+        let mut key_values = BTreeMap::new();
+        mem::swap(&mut key_values, &mut self.shredded_key_values);
+        for (key, value) in key_values.into_iter() {
+            self.kb.clear();
+            self.kb.parse_value_key_path_only(&key);
+            if value[0] as char == 's' {
+                let text = unsafe{ str::from_utf8_unchecked(&value[1..]) };
+                try!(self.add_entries(text, seq, batch, false));
+            } else {
+                let key = self.kb.value_key(seq);
+                try!(batch.put(&key.into_bytes(), &value.as_ref()));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn delete_existing_doc(&mut self,
+                               docid: &str,
+                               seq: u64, 
+                               existing: BTreeMap<String, Vec<u8>>,
+                               batch: &mut rocksdb::WriteBatch) -> Result<(), Error> {
+        self.doc_id = Some(docid.to_string());
+        for (key, value) in existing.into_iter() {
+            self.kb.clear();
+            self.kb.parse_value_key_path_only(KeyBuilder::value_key_path_only_from_str(&key));
+            if value[0] as char == 's' {
+                let text = unsafe{ str::from_utf8_unchecked(&value[1..]) };
+                try!(self.add_entries(text, seq, batch, true));
+            } else {
+                try!(batch.delete(&key.into_bytes()));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn merge_existing_doc(&mut self, existing: BTreeMap<String, Vec<u8>>) {
+        // we found doc with the same id already stored on disk. We need to delete
+        // the doc. But any fields that are the same we can just keep around
+        // and don't even need to reindex.
+        for (existing_key, existing_value) in existing {
+            let matches = {
+                let key = KeyBuilder::value_key_path_only_from_str(&existing_key);
+                if let Some(new_value) = self.shredded_key_values.get(key) {
+                    *new_value == existing_value
+                } else {
+                    false
+                }
+            };
+            if matches {
+                // we don't need to write or index these values, they already exist!
+                let key = KeyBuilder::value_key_path_only_from_str(&existing_key);
+                self.shredded_key_values.remove(key).unwrap();
+            } else {
+                // we need to delete these keys and the index keys assocaited with the valuess
+                self.existing_key_value_to_delete.insert(existing_key, existing_value);
+            }
+        }
+    }
+
+    pub fn add_id(&mut self, id: &str) -> Result<(), Error> {
+        self.doc_id = Some(id.to_string());
+        self.kb.clear();
+        self.kb.push_object_key("_id");
+        try!(self.add_value('s', &id.as_bytes()));
+        Ok(())
+    }
+
+    pub fn shred(&mut self, json: &str) -> Result<Option<String>, Error> {
         let mut parser = Parser::new(json.chars());
         loop {
             // Get the next token, so that in case of an `ObjectStart` the key is already
@@ -171,7 +287,7 @@ impl Shredder {
                     if !self.object_keys_indexed.pop().unwrap() {
                         // this means we never wrote a key because the object was empty.
                         // So preserve the empty object by writing a special value.
-                        try!(self.maybe_add_value(&parser, 'o', &[], docseq, batch));
+                        try!(self.maybe_add_value(&parser, 'o', &[]));
                     }
                     self.kb.inc_top_array_offset();
                 },
@@ -184,57 +300,35 @@ impl Shredder {
                         // this means we never wrote a value because the object was empty.
                         // So preserve the empty array by writing a special value.
                         self.kb.pop_array();
-                        try!(self.maybe_add_value(&parser, 'a', &[], docseq, batch));
+                        try!(self.maybe_add_value(&parser, 'a', &[]));
                     } else {
                         self.kb.pop_array();
                     }
                     self.kb.inc_top_array_offset();
                 },
                 Some(JsonEvent::StringValue(value)) => {
-                    match self.extract_key(parser.stack().top()) {
-                        ObjectKeyTypes::Id => {
-                            self.doc_id = value.clone();
-                            self.kb.pop_object_key();
-                            self.kb.push_object_key("_id");
-                            *self.object_keys_indexed.last_mut().unwrap() = true;
-
-                            try!(self.add_entries(&value, docseq, batch));
-                        },
-                        ObjectKeyTypes::Key(key) => {
-                            // Pop the dummy object that makes ObjectEnd happy
-                            // or the previous object key
-                            self.kb.pop_object_key();
-                            self.kb.push_object_key(&key);
-                            *self.object_keys_indexed.last_mut().unwrap() = true;
-
-                            try!(self.add_entries(&value, docseq, batch));
-                        },
-                        ObjectKeyTypes::NoKey => {
-                            try!(self.add_entries(&value, docseq, batch));
-                            self.kb.inc_top_array_offset();
-                        },
-                    }
+                    try!(self.maybe_add_value(&parser, 's', &value.as_bytes()));
                 },
                 Some(JsonEvent::BooleanValue(tf)) => {
                     let code = if tf {'T'} else {'F'};
-                    try!(self.maybe_add_value(&parser, code, &[], docseq, batch));
+                    try!(self.maybe_add_value(&parser, code, &[]));
                 },
                 Some(JsonEvent::I64Value(i)) => {
                     let f = i as f64;
                     let bytes = unsafe{ transmute::<f64, [u8; 8]>(f) };
-                    try!(self.maybe_add_value(&parser, 'f', &bytes[..], docseq, batch));
+                    try!(self.maybe_add_value(&parser, 'f', &bytes[..]));
                 },
                 Some(JsonEvent::U64Value(u)) => {
                     let f = u as f64;
                     let bytes = unsafe{ transmute::<f64, [u8; 8]>(f) };
-                    try!(self.maybe_add_value(&parser, 'f', &bytes[..], docseq, batch));
+                    try!(self.maybe_add_value(&parser, 'f', &bytes[..]));
                 },
                 Some(JsonEvent::F64Value(f)) => {
                     let bytes = unsafe{ transmute::<f64, [u8; 8]>(f) };
-                    try!(self.maybe_add_value(&parser, 'f', &bytes[..], docseq, batch));
+                    try!(self.maybe_add_value(&parser, 'f', &bytes[..]));
                 },
                 Some(JsonEvent::NullValue) => {
-                    try!(self.maybe_add_value(&parser, 'N', &[], docseq, batch));
+                    try!(self.maybe_add_value(&parser, 'N', &[]));
                 },
                 Some(JsonEvent::Error(error)) => {
                     return Err(Error::Shred(error.to_string()));
@@ -245,9 +339,8 @@ impl Shredder {
             };
         }
         Ok(self.doc_id.clone())
-   }
+    }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -280,16 +373,18 @@ mod tests {
     }
 
 
-    #[test]
+    #[test]    
     fn test_shred_nested() {
         let mut shredder = super::Shredder::new();
         let json = r#"{"some": ["array", "data", ["also", "nested"]]}"#;
         let docseq = 123;
         let mut batch = rocksdb::WriteBatch::default();
-        shredder.shred(json, docseq, &mut batch).unwrap();
+        shredder.shred(json).unwrap();
+        shredder.add_id("foo").unwrap();
+        shredder.add_all_to_batch(docseq, &mut batch).unwrap();
 
         let dbname = "target/tests/test_shred_netsted";
-        let _ = Index::delete(dbname);
+        let _ = Index::drop(dbname);
 
         let mut index = Index::new();
         index.open(dbname, Some(OpenOptions::Create)).unwrap();
@@ -299,6 +394,7 @@ mod tests {
         let result = positions_from_rocks(&rocks);
 
         let expected = vec![
+            ("W._id!foo#123,".to_string(), vec![0]),
             ("W.some$!array#123,0".to_string(), vec![0]),
             ("W.some$!data#123,1".to_string(), vec![0]),
             ("W.some$$!also#123,2,0".to_string(), vec![0]),
@@ -317,10 +413,11 @@ mod tests {
         let json = r#"{"A":[{"B":"B2VMX two three","C":"..C2"},{"B": "b1","C":"..C2"}]}"#;
         let docseq = 1234;
         let mut batch = rocksdb::WriteBatch::default();
-        shredder.shred(json, docseq, &mut batch).unwrap();
+        shredder.shred(json).unwrap();
+        shredder.add_all_to_batch(docseq, &mut batch).unwrap();
 
         let dbname = "target/tests/test_shred_objects";
-        let _ = Index::delete(dbname);
+        let _ = Index::drop(dbname);
 
         let mut index = Index::new();
         index.open(dbname, Some(OpenOptions::Create)).unwrap();
@@ -348,10 +445,11 @@ mod tests {
         let json = r#"{}"#;
         let docseq = 123;
         let mut batch = rocksdb::WriteBatch::default();
-        shredder.shred(json, docseq, &mut batch).unwrap();
+        shredder.shred(json).unwrap();
+        shredder.add_all_to_batch(docseq, &mut batch).unwrap();
 
         let dbname = "target/tests/test_shred_empty_object";
-        let _ = Index::delete(dbname);
+        let _ = Index::drop(dbname);
 
         let mut index = Index::new();
         index.open(dbname, Some(OpenOptions::Create)).unwrap();

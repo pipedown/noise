@@ -42,14 +42,14 @@ impl Scorer {
     fn init(&mut self, qsi: &mut QueryScoringInfo) {
         let key = self.kb.keypathword_count_key(&self.word);
         let doc_freq = if let Some(bytes) = self.get_value(&key) {
-            Index::convert_bytes_to_u32(bytes.as_ref()) as f32
+            Index::convert_bytes_to_i32(bytes.as_ref()) as f32
         } else {
             0.0
         };
 
         let key = self.kb.keypath_count_key();
         let num_docs = if let Some(bytes) = self.get_value(&key) {
-            Index::convert_bytes_to_u32(bytes.as_ref()) as f32
+            Index::convert_bytes_to_i32(bytes.as_ref()) as f32
         } else {
             0.0
         };
@@ -77,7 +77,7 @@ impl Scorer {
         if self.should_score() {
             let key = self.kb.field_length_key_from_doc_result(dr);
             let total_field_words = if let Some(bytes) = self.get_value(&key) {
-                Index::convert_bytes_to_u32(bytes.as_ref()) as f32
+                Index::convert_bytes_to_i32(bytes.as_ref()) as f32
             } else {
                 panic!("Couldn't find field length for a match!! WHAT!");
             };
