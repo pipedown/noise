@@ -51,6 +51,9 @@ fn test_repl() {
             println!("{} successful", path.file_name().unwrap().to_str().unwrap().to_string());
         }
     }
+    if total == 0 {
+        panic!("No tests were run!");
+    }
     if failures > 0 {
         panic!("Failed {} tests in repl-test out of {}", failures, total);
     }

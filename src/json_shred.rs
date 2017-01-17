@@ -27,23 +27,15 @@ enum ObjectKeyTypes {
     Id,
     /// Normal key
     Key(String),
-    /// Reserved key starting with underscore
-    Ignore,
     /// No key found
     NoKey,
 }
 
-pub trait Indexable {
-
-}
-
-
 #[derive(Debug)]
 pub struct Shredder {
     kb: KeyBuilder,
-    // Top-level fields prefixed with an underscore are ignored
-    ignore_children: usize,
     doc_id: String,
+    object_keys_indexed: Vec<bool>
 }
 
 
@@ -51,8 +43,8 @@ impl Shredder {
     pub fn new() -> Shredder {
         Shredder{
             kb: KeyBuilder::new(),
-            ignore_children: 0,
             doc_id: String::new(),
+            object_keys_indexed: Vec::new(),
         }
     }
 
@@ -110,28 +102,23 @@ impl Shredder {
 
     fn maybe_add_value(&mut self, parser: &Parser<Chars>, code: char, value: &[u8],
                        docseq: u64, batch: &mut rocksdb::WriteBatch) -> Result<(), Error> {
-        if self.ignore_children == 0 {
-            match self.extract_key(parser.stack().top()) {
-                ObjectKeyTypes::Id => {
-                    return Err(Error::Shred(
-                            "Expected string for `_id` field, got another type".to_string()));
-                },
-                ObjectKeyTypes::Key(key) => {
-                    // Pop the dummy object that makes ObjectEnd happy
-                    // or the previous object key
-                    self.kb.pop_object_key();
-                    self.kb.push_object_key(&key);
-
-                    try!(self.add_value(code, &value, docseq, batch));
-                },
-                ObjectKeyTypes::NoKey => {
-                    try!(self.add_value(code, &value, docseq, batch));
-                    self.kb.inc_top_array_offset();
-                },
-                ObjectKeyTypes::Ignore => {
-                    self.ignore_children = 1;
-                },
-            }
+        match self.extract_key(parser.stack().top()) {
+            ObjectKeyTypes::Id => {
+                return Err(Error::Shred(
+                        "Expected string for `_id` field, got another type".to_string()));
+            },
+            ObjectKeyTypes::Key(key) => {
+                // Pop the dummy object that makes ObjectEnd happy
+                // or the previous object key
+                self.kb.pop_object_key();
+                self.kb.push_object_key(&key);
+                *self.object_keys_indexed.last_mut().unwrap() = true;
+                try!(self.add_value(code, &value, docseq, batch));
+            },
+            ObjectKeyTypes::NoKey => {
+                try!(self.add_value(code, &value, docseq, batch));
+                self.kb.inc_top_array_offset();
+            },
         }
         Ok(())
     }
@@ -139,12 +126,8 @@ impl Shredder {
     fn extract_key(&mut self, stack_element: Option<StackElement>) -> ObjectKeyTypes {
         match stack_element {
             Some(StackElement::Key(key)) => {
-                if self.kb.keypath_segments_len() == 1 && key.starts_with("_") {
-                    if key == "_id" {
-                        ObjectKeyTypes::Id
-                    } else {
-                        ObjectKeyTypes::Ignore
-                    }
+                if self.kb.keypath_segments_len() == 1 && key == "_id" {
+                    ObjectKeyTypes::Id
                 } else {
                     ObjectKeyTypes::Key(key.to_string())
                 }
@@ -157,13 +140,9 @@ impl Shredder {
     // Don't push them if they are reserved fields (starting with underscore)
     fn maybe_push_key(&mut self, stack_element: Option<StackElement>) -> Result<(), Error> {
         if let Some(StackElement::Key(key)) = stack_element {
-            if self.kb.keypath_segments_len() == 1 && key.starts_with("_") {
-                if key == "_id" {
-                    return Err(Error::Shred(
+            if self.kb.keypath_segments_len() == 1 && key == "_id" {
+                return Err(Error::Shred(
                         "Expected string for `_id` field, got another type".to_string()));
-                } else {
-                    self.ignore_children = 1;
-                }
             } else {
                 // Pop the dummy object that makes ObjectEnd happy
                 // or the previous object key
@@ -177,91 +156,63 @@ impl Shredder {
     pub fn shred(&mut self, json: &str, docseq: u64, batch: &mut rocksdb::WriteBatch) ->
             Result<String, Error> {
         let mut parser = Parser::new(json.chars());
-        let mut token = parser.next();
-
-        // this will keep track of objects where encountered keys.
-        // if we didn't encounter keys then the top most element will be false.
-        let mut object_keys_indexed = Vec::new();
         loop {
             // Get the next token, so that in case of an `ObjectStart` the key is already
             // on the stack.
-            match token.take() {
+            match parser.next().take() {
                 Some(JsonEvent::ObjectStart) => {
-                    if self.ignore_children > 0 {
-                        self.ignore_children += 1;
-                    }
-                    else {
-                        try!(self.maybe_push_key(parser.stack().top()));
-                        // Just push something to make `ObjectEnd` happy
-                        self.kb.push_object_key("");
-                        object_keys_indexed.push(false);
-                    }
+                    try!(self.maybe_push_key(parser.stack().top()));
+                    // Just push something to make `ObjectEnd` happy
+                    self.kb.push_object_key("");
+                    self.object_keys_indexed.push(false);
                 },
                 Some(JsonEvent::ObjectEnd) => {
-                    if self.ignore_children > 0 {
-                        self.ignore_children -= 1;
-                    } else {
-                        self.kb.pop_object_key();
-                        if !object_keys_indexed.pop().unwrap() {
-                            // this means we never wrote a key because the object was empty.
-                            // So preserve the empty object by writing a special value.
-                            try!(self.maybe_add_value(&parser, 'o', &[], docseq, batch));
-                        }
-                        self.kb.inc_top_array_offset();
+                    self.kb.pop_object_key();
+                    if !self.object_keys_indexed.pop().unwrap() {
+                        // this means we never wrote a key because the object was empty.
+                        // So preserve the empty object by writing a special value.
+                        try!(self.maybe_add_value(&parser, 'o', &[], docseq, batch));
                     }
+                    self.kb.inc_top_array_offset();
                 },
                 Some(JsonEvent::ArrayStart) => {
-                    if self.ignore_children > 0 {
-                        self.ignore_children += 1;
-                    } else {
-                        try!(self.maybe_push_key(parser.stack().top()));
-                        self.kb.push_array();
-                    }
+                    try!(self.maybe_push_key(parser.stack().top()));
+                    self.kb.push_array();
                 },
                 Some(JsonEvent::ArrayEnd) => {
-                    if self.ignore_children > 0 {
-                        self.ignore_children -= 1;
+                    if self.kb.peek_array_offset() == 0 {
+                        // this means we never wrote a value because the object was empty.
+                        // So preserve the empty array by writing a special value.
+                        self.kb.pop_array();
+                        try!(self.maybe_add_value(&parser, 'a', &[], docseq, batch));
                     } else {
-                        if self.kb.peek_array_offset() == 0 {
-                            // this means we never wrote a value because the object was empty.
-                            // So preserve the empty array by writing a special value.
-                            self.kb.pop_array();
-                            try!(self.maybe_add_value(&parser, 'a', &[], docseq, batch));
-                        } else {
-                            self.kb.pop_array();
-                        }
-                        self.kb.inc_top_array_offset();
+                        self.kb.pop_array();
                     }
+                    self.kb.inc_top_array_offset();
                 },
                 Some(JsonEvent::StringValue(value)) => {
-                    // No children to ignore
-                    if self.ignore_children == 0 {
-                        match self.extract_key(parser.stack().top()) {
-                            ObjectKeyTypes::Id => {
-                                self.doc_id = value.clone();
-                                self.kb.pop_object_key();
-                                self.kb.push_object_key("_id");
-                                *object_keys_indexed.last_mut().unwrap() = true;
+                    match self.extract_key(parser.stack().top()) {
+                        ObjectKeyTypes::Id => {
+                            self.doc_id = value.clone();
+                            self.kb.pop_object_key();
+                            self.kb.push_object_key("_id");
+                            *self.object_keys_indexed.last_mut().unwrap() = true;
 
-                                try!(self.add_entries(&value, docseq, batch));
-                            },
-                            ObjectKeyTypes::Key(key) => {
-                                // Pop the dummy object that makes ObjectEnd happy
-                                // or the previous object key
-                                self.kb.pop_object_key();
-                                self.kb.push_object_key(&key);
-                                *object_keys_indexed.last_mut().unwrap() = true;
+                            try!(self.add_entries(&value, docseq, batch));
+                        },
+                        ObjectKeyTypes::Key(key) => {
+                            // Pop the dummy object that makes ObjectEnd happy
+                            // or the previous object key
+                            self.kb.pop_object_key();
+                            self.kb.push_object_key(&key);
+                            *self.object_keys_indexed.last_mut().unwrap() = true;
 
-                                try!(self.add_entries(&value, docseq, batch));
-                            },
-                            ObjectKeyTypes::NoKey => {
-                                try!(self.add_entries(&value, docseq, batch));
-                                self.kb.inc_top_array_offset();
-                            },
-                            ObjectKeyTypes::Ignore => {
-                                self.ignore_children = 1;
-                            },
-                        }
+                            try!(self.add_entries(&value, docseq, batch));
+                        },
+                        ObjectKeyTypes::NoKey => {
+                            try!(self.add_entries(&value, docseq, batch));
+                            self.kb.inc_top_array_offset();
+                        },
                     }
                 },
                 Some(JsonEvent::BooleanValue(tf)) => {
@@ -292,8 +243,6 @@ impl Shredder {
                     break;
                 }
             };
-
-            token = parser.next();
         }
         Ok(self.doc_id.clone())
    }
@@ -411,6 +360,7 @@ mod tests {
 
         rocks.write(batch).unwrap();
         let result = positions_from_rocks(&rocks);
+
         assert!(result.is_empty());
     }
 }
