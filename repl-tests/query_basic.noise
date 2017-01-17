@@ -30,6 +30,8 @@ add {"_id":"12", "A":["1","2","3","4","5","6","7","8","9","10","11","12"]};
 "12"
 add {"_id":"13", "A":["foo",1,true,false,null,{},[]]};
 "13"
+add {"_id":"14", "A":{"B":true}};
+"14"
 
 
 # Exact match object fields in arrays
@@ -225,3 +227,9 @@ return {"a":"a","b":1.123,"true":true,"false":false,"null":null,array:[],object:
 [
 {"a":"a","b":1.123,"true":true,"false":false,"null":null,"array":[],"object":{}}
 ]
+
+find {_id: =="14"} return .;
+[
+{"A":{"B":true},"_id":"14"}
+]
+
