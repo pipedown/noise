@@ -48,6 +48,12 @@ pub fn repl(r: &mut BufRead, w: &mut Write, test_mode: bool) {
                 }
             }
         } else {
+            // commit anything written
+            if index.is_open() {
+                if let Err(reason) = index.flush() {
+                    write!(w, "{}\n", reason).unwrap();
+                }
+            }
             return;
         }
         if test_mode {

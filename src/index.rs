@@ -87,6 +87,10 @@ impl Index {
         Ok(())
     }
 
+    pub fn is_open(&self) -> bool {
+        self.rocks.is_some()
+    }
+
     //This deletes the Rockdbs instance from disk
     pub fn drop(name: &str) -> Result<(), Error> {
         let ret = try!(rocksdb::DB::destroy(&rocksdb::Options::default(), name));
@@ -94,7 +98,7 @@ impl Index {
     }
 
     pub fn add(&mut self, json: &str) -> Result<String, Error> {
-        if self.rocks.is_none() {
+        if !self.is_open() {
             return Err(Error::Write("Index isn't open.".to_string()));
         }
         let mut shredder = Shredder::new();
@@ -129,7 +133,7 @@ impl Index {
 
     /// Returns Ok(true) if the document was found and deleted, Ok(false) if it could not be found
     pub fn delete(&mut self, docid: &str) -> Result<bool, Error> {
-        if self.rocks.is_none() {
+        if !self.is_open() {
             return Err(Error::Write("Index isn't open.".to_string()));
         }
         if self.id_str_in_batch.contains(docid) {
@@ -181,7 +185,7 @@ impl Index {
     // Store the current batch
     pub fn flush(&mut self) -> Result<(), Error> {
         // Flush can only be called if the index is open
-        if self.rocks.is_none() {
+        if !self.is_open() {
             return Err(Error::Write("Index isn't open.".to_string()));
         }
         let rocks = self.rocks.as_ref().unwrap();
