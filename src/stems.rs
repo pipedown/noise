@@ -38,13 +38,16 @@ impl<'a> Iterator for Stems<'a> {
     type Item = StemmedWord;
 
     fn next(&mut self) -> Option<StemmedWord> {
-        let mut word_to_stem = String::new();
-        let mut normalized = String::new();
+        // first we loop though until we find alphabetic chars. That becomes our stem word.
+        let mut word_to_stem = String::new(); // will contain any leading non-alphabetic chars
+                                              // iff no other alphabetic chars
+
+        let mut normalized = String::new(); // will contain the first alphabetic chars
         loop {
             match self.words.peek() {
                 Some(&(_pos, word)) => {
                     normalized = word.nfkc().collect::<String>();
-                    if word.chars().next().unwrap().is_alphabetic() {
+                    if normalized.chars().next().unwrap().is_alphabetic() {
                         break;
                     } else {
                         word_to_stem.push_str(&normalized);
@@ -58,7 +61,7 @@ impl<'a> Iterator for Stems<'a> {
                             // in this case we were passed an empty string
                             // so we don't just return None, but we return 
                             // an empty string Stemmed word.
-                            // otherwise searching fields with empty strings
+                            // otherwise searching fields for empty strings
                             // wouldn't be possible.
                             return Some(StemmedWord {
                                 word_pos: 0,
@@ -75,9 +78,10 @@ impl<'a> Iterator for Stems<'a> {
         }
 
         if !word_to_stem.is_empty() {
-            // we found the begining of the string is not a stemmable word.
+            // we found the string is not a stemmable word.
             // Return the accumulated string as the stemmed word
             debug_assert!(self.word_position == 0);
+
             self.word_position += 1;
             return Some(StemmedWord {
                             word_pos: 0,
@@ -88,14 +92,14 @@ impl<'a> Iterator for Stems<'a> {
         self.words.next();
         word_to_stem = normalized;
         loop {
-            // loop through all non-alphabetic chars and add to suffix 
-            match self.words.peek() {
+            // loop through all non-alphabetic chars discarding them.
+            match self.words.peek() { // peek to avoid advancing iter
                 Some(&(_pos, word)) => {
                     normalized = word.nfkc().collect::<String>();
                     if normalized.chars().next().unwrap().is_alphabetic() {
-                        break;
+                        break; // now we'll get these on the next() call
                     } else {
-                        self.words.next();
+                        self.words.next(); //advance the iter
                     }
                 },
                 None => break,
@@ -165,6 +169,20 @@ mod tests {
         let expected = vec![
             StemmedWord { word_pos: 0, stemmed: String::from("ünicöd")},
             StemmedWord { word_pos: 1, stemmed: String::from("stem")},
+            ];
+        assert_eq!(result.len(), expected.len());
+        for (stem, expected_stem) in result.iter().zip(expected.iter()) {
+            assert_eq!(stem, expected_stem);
+        }
+    }
+
+    #[test]
+    fn test_stems_trailing_needs_normalized() {
+        let input = r#"Didgeridoos™"#;
+        let result = Stems::new(input).collect::<Vec<StemmedWord>>();
+        let expected = vec![
+            StemmedWord { word_pos: 0, stemmed: String::from("didgeridoo")},
+            StemmedWord { word_pos: 1, stemmed: String::from("tm")},
             ];
         assert_eq!(result.len(), expected.len());
         for (stem, expected_stem) in result.iter().zip(expected.iter()) {
