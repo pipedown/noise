@@ -48,6 +48,7 @@ impl<'a> Iterator for Stems<'a> {
                 Some(&(_pos, word)) => {
                     normalized = word.nfkc().collect::<String>();
                     if normalized.chars().next().unwrap().is_alphabetic() {
+                        word_to_stem.clear();
                         break;
                     } else {
                         word_to_stem.push_str(&normalized);
@@ -152,9 +153,8 @@ mod tests {
         let input = "@!?   Let's seeing...";
         let result = Stems::new(input).collect::<Vec<StemmedWord>>();
         let expected = vec![
-            StemmedWord { word_pos: 0, stemmed: String::from("@!?   ")},
-            StemmedWord { word_pos: 1, stemmed: String::from("let")},
-            StemmedWord { word_pos: 2, stemmed: String::from("see")},
+            StemmedWord { word_pos: 0, stemmed: String::from("let")},
+            StemmedWord { word_pos: 1, stemmed: String::from("see")},
             ];
         assert_eq!(result.len(), expected.len());
         for (stem, expected_stem) in result.iter().zip(expected.iter()) {
