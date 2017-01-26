@@ -45,11 +45,13 @@ impl<'a> Iterator for Stems<'a> {
                 let pos = self.word_position;
                 self.word_position += 1;
                 return Some(StemmedWord {
-                        word_pos: pos as u32,
-                        stemmed: self.stemmer.stem(&normalized.to_lowercase()),
-                    });
+                    word_pos: pos as u32,
+                    stemmed: self.stemmer.stem(&normalized.to_lowercase()),
+                });
             } else {
-                non_alpha.push_str(&normalized);
+                if self.word_position == 0 {
+                    non_alpha.push_str(&normalized);
+                }
             }
         } 
         if non_alpha.is_empty() {
@@ -71,9 +73,9 @@ impl<'a> Iterator for Stems<'a> {
             if self.word_position == 0 {
                 self.word_position = 1;
                 return Some(StemmedWord {
-                                word_pos: 0,
-                                stemmed: non_alpha,
-                    });
+                    word_pos: 0,
+                    stemmed: non_alpha,
+                });
             } else {
                 return None;
             }
