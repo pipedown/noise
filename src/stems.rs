@@ -2,15 +2,13 @@ extern crate stemmer;
 extern crate unicode_normalization;
 extern crate unicode_segmentation;
 
-use std::iter::Peekable;
-
 use self::stemmer::Stemmer;
 use self::unicode_normalization::UnicodeNormalization;
 use self::unicode_segmentation::UnicodeSegmentation;
 
 
 pub struct Stems<'a> {
-    words: Peekable<unicode_segmentation::UWordBoundIndices<'a>>,
+    words: unicode_segmentation::UWordBoundIndices<'a>,
     stemmer: Stemmer,
     word_position: usize,
 }
@@ -27,7 +25,7 @@ pub struct StemmedWord {
 impl<'a> Stems<'a> {
     pub fn new(text: &str) -> Stems {
         Stems{
-            words: text.split_word_bound_indices().peekable(),
+            words: text.split_word_bound_indices(),
             stemmer: Stemmer::new("english").unwrap(),
             word_position: 0,
         }
@@ -38,81 +36,48 @@ impl<'a> Iterator for Stems<'a> {
     type Item = StemmedWord;
 
     fn next(&mut self) -> Option<StemmedWord> {
-        // first we loop though until we find alphabetic chars. That becomes our stem word.
-        let mut word_to_stem = String::new(); // will contain any leading non-alphabetic chars
-                                              // iff no other alphabetic chars
-
-        let mut normalized = String::new(); // will contain the first alphabetic chars
-        loop {
-            match self.words.peek() {
-                Some(&(_pos, word)) => {
-                    normalized = word.nfkc().collect::<String>();
-                    if normalized.chars().next().unwrap().is_alphabetic() {
-                        word_to_stem.clear();
-                        break;
-                    } else {
-                        word_to_stem.push_str(&normalized);
-                        self.words.next();
-                    }
-                },
-                None => {
-                    if word_to_stem.is_empty() {
-                        if self.word_position == 0 {
-                            self.word_position = 1;
-                            // in this case we were passed an empty string
-                            // so we don't just return None, but we return 
-                            // an empty string Stemmed word.
-                            // otherwise searching fields for empty strings
-                            // wouldn't be possible.
-                            return Some(StemmedWord {
-                                word_pos: 0,
-                                stemmed: String::new(),
-                            });
-                        } else {
-                            return None;
-                        }
-                    } else {
-                        break;
-                    }
-                },
+        // we loop though until we find alphabetic chars. That becomes our stem word.
+        let mut non_alpha = String::new(); // will contain any non-alphabetic chars
+                                           // returned iff no other alphabetic chars
+        while let Some((_pos, word)) = self.words.next() {
+            let normalized = word.nfkc().collect::<String>();
+            if normalized.chars().next().unwrap().is_alphabetic() {
+                let pos = self.word_position;
+                self.word_position += 1;
+                return Some(StemmedWord {
+                        word_pos: pos as u32,
+                        stemmed: self.stemmer.stem(&normalized.to_lowercase()),
+                    });
+            } else {
+                non_alpha.push_str(&normalized);
             }
-        }
-
-        if !word_to_stem.is_empty() {
-            // we found the string is not a stemmable word.
-            // Return the accumulated string as the stemmed word
-            debug_assert!(self.word_position == 0);
-
-            self.word_position += 1;
-            return Some(StemmedWord {
-                            word_pos: 0,
-                            stemmed: word_to_stem,
+        } 
+        if non_alpha.is_empty() {
+            if self.word_position == 0 {
+                self.word_position = 1;
+                // in this case we were passed an empty string
+                // so we don't just return None, but we return 
+                // an empty string Stemmed word.
+                // otherwise searching fields for empty strings
+                // wouldn't be possible.
+                return Some(StemmedWord {
+                    word_pos: 0,
+                    stemmed: String::new(),
                 });
-        }
-        // normalized contains our stemmable word. advance the iter since we only peeked.
-        self.words.next();
-        word_to_stem = normalized;
-        loop {
-            // loop through all non-alphabetic chars discarding them.
-            match self.words.peek() { // peek to avoid advancing iter
-                Some(&(_pos, word)) => {
-                    normalized = word.nfkc().collect::<String>();
-                    if normalized.chars().next().unwrap().is_alphabetic() {
-                        break; // now we'll get these on the next() call
-                    } else {
-                        self.words.next(); //advance the iter
-                    }
-                },
-                None => break,
+            } else {
+                return None;
+            }
+        } else {
+            if self.word_position == 0 {
+                self.word_position = 1;
+                return Some(StemmedWord {
+                                word_pos: 0,
+                                stemmed: non_alpha,
+                    });
+            } else {
+                return None;
             }
         }
-        let stemmed = self.stemmer.stem(&word_to_stem.to_lowercase());
-        let ret = StemmedWord {
-                    word_pos: self.word_position as u32,
-                    stemmed: stemmed,
-                 };
-        self.word_position += 1;
-        Some(ret)
     }
 }
 
