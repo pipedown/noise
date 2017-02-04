@@ -184,6 +184,7 @@ impl Shredder {
                 // or the previous object key
                 self.kb.pop_object_key();
                 self.kb.push_object_key(key);
+                *self.object_keys_indexed.last_mut().unwrap() = true;
             }
         }
         Ok(())
@@ -353,6 +354,8 @@ mod tests {
     use std::str;
 
     use index::{Index, OpenOptions};
+    use returnable::RetValue;
+    use json_value::JsonValue;
 
     fn positions_from_rocks(rocks: &rocksdb::DB) -> Vec<(String, Vec<u32>)> {
         let mut result = Vec::new();
@@ -372,6 +375,17 @@ mod tests {
         result
     }
 
+    fn values_from_rocks(rocks: &rocksdb::DB) -> Vec<(String, JsonValue)> {
+        let mut result = Vec::new();
+        for (key, value) in rocks.iterator(rocksdb::IteratorMode::Start) {
+            if key[0] as char == 'V' {
+                let key_string = unsafe { str::from_utf8_unchecked((&key)) }.to_string();
+                result.push((key_string, RetValue::bytes_to_json_value(&*value)));
+            }
+        }
+        result
+    }
+
 
     #[test]    
     fn test_shred_nested() {
@@ -383,7 +397,7 @@ mod tests {
         shredder.add_id("foo").unwrap();
         shredder.add_all_to_batch(docseq, &mut batch).unwrap();
 
-        let dbname = "target/tests/test_shred_netsted";
+        let dbname = "target/tests/test_shred_nested";
         let _ = Index::drop(dbname);
 
         let mut index = Index::new();
@@ -402,6 +416,34 @@ mod tests {
             ];
         assert_eq!(result, expected);
     }
+
+    #[test]    
+    fn test_shred_double_nested() {
+        let mut shredder = super::Shredder::new();
+        let json = r#"{"a":{"a":"b"}}"#;
+        let docseq = 123;
+        let mut batch = rocksdb::WriteBatch::default();
+        shredder.shred(json).unwrap();
+        shredder.add_id("foo").unwrap();
+        shredder.add_all_to_batch(docseq, &mut batch).unwrap();
+
+        let dbname = "target/tests/test_shred_double_nested";
+        let _ = Index::drop(dbname);
+
+        let mut index = Index::new();
+        index.open(dbname, Some(OpenOptions::Create)).unwrap();
+        let rocks = &index.rocks.unwrap();
+
+        rocks.write(batch).unwrap();
+        let result = values_from_rocks(&rocks);
+
+        let expected = vec![
+            ("V123#._id".to_string(), JsonValue::String("foo".to_string())),
+            ("V123#.a.a".to_string(), JsonValue::String("b".to_string()))
+            ];
+        assert_eq!(result, expected);
+    }
+
 
     #[test]
     // NOTE vmx 2016-12-06: This test is intentionally made to fail (hence ignored) as the current

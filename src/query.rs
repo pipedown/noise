@@ -9,11 +9,10 @@ use std::usize;
 
 use error::Error;
 use index::Index;
-use key_builder::KeyBuilder;
 use parser::Parser;
 use json_value::{JsonValue};
 use filters::QueryRuntimeFilter;
-use returnable::{Returnable, RetValue, RetScore, RetHidden};
+use returnable::{Returnable, RetValue, RetScore, RetHidden, ReturnPath};
 
 // TODO vmx 2016-11-02: Make it import "rocksdb" properly instead of needing to import the individual tihngs
 use rocksdb::{DBIterator, IteratorMode, Snapshot};
@@ -175,7 +174,7 @@ impl Query {
 
         if filter.is_all_not() {
             return Err(Error::Parse("query cannot be made up of only logical not. Must have at least \
-                                    match clause not negated.".to_string()));
+                                    one match clause not negated.".to_string()));
         }
         
         let mut ags = Vec::new(); 
@@ -200,8 +199,8 @@ impl Query {
                 for (_key, sort_info) in sorts.into_iter() {
                     let sort = sort_info.clone();
                     match sort_info.field {
-                        SortField::FetchValue(kb) => {
-                            vec.push(Box::new(RetValue{ kb: kb, 
+                        SortField::FetchValue(rp) => {
+                            vec.push(Box::new(RetValue{ rp: rp, 
                                                         ag: None,
                                                         default: sort_info.default,
                                                         sort_info: Some(sort)}));
@@ -838,7 +837,7 @@ pub enum Sort {
 
 #[derive(Clone)]
 pub enum SortField {
-    FetchValue(KeyBuilder),
+    FetchValue(ReturnPath),
     Score,
 }
 
