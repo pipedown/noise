@@ -85,7 +85,7 @@ return ._id ;
 
 find !{baz: [~="fox"]}
 return ._id ;
-Parse error: query cannot be made up of only logical not. Must have at least match clause not negated.
+Parse error: query cannot be made up of only logical not. Must have at least one match clause not negated.
 
 find !{baz: ~="fox"} && !{baz: =="foo"}
 return ._id ;

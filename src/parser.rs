@@ -10,7 +10,8 @@ use key_builder::KeyBuilder;
 use stems::Stems;
 use json_value::JsonValue;
 use query::{Sort, AggregateFun, SortInfo, SortField};
-use returnable::{Returnable, RetValue, RetObject, RetArray, RetLiteral, RetBind, RetScore};
+use returnable::{Returnable, RetValue, RetObject, RetArray, RetLiteral, RetBind, RetScore,
+                 ReturnPath};
 use filters::{QueryRuntimeFilter, ExactMatchFilter, StemmedWordFilter, StemmedWordPosFilter,
               StemmedPhraseFilter, DistanceFilter, AndFilter, OrFilter, BindFilter, BoostFilter,
               NotFilter};
@@ -145,7 +146,7 @@ impl<'a, 'c> Parser<'a, 'c> {
     
     fn consume_aggregate(&mut self) -> Result<Option<(AggregateFun, 
                                                       Option<String>,
-                                                      KeyBuilder,
+                                                      ReturnPath,
                                                       JsonValue)>, Error> {
         let offset = self.offset;
         let mut aggregate_fun = if self.consume("group") {
@@ -171,11 +172,11 @@ impl<'a, 'c> Parser<'a, 'c> {
         if self.consume("(") {
             if aggregate_fun == AggregateFun::Count {
                 try!(self.must_consume(")"));
-                Ok(Some((aggregate_fun, None, KeyBuilder::new(), JsonValue::Null)))
+                Ok(Some((aggregate_fun, None, ReturnPath::new(), JsonValue::Null)))
             } else if aggregate_fun == AggregateFun::Concat {
                 let bind_name_option = self.consume_field();
 
-                if let Some(kb) = try!(self.consume_keypath()) {
+                if let Some(rp) = try!(self.consume_keypath()) {
                     let json = if self.consume("sep") {
                         try!(self.must_consume("="));
                         JsonValue::String(try!(self.must_consume_string_literal()))
@@ -183,14 +184,14 @@ impl<'a, 'c> Parser<'a, 'c> {
                         JsonValue::String(",".to_string())
                     };
                     try!(self.must_consume(")"));
-                    Ok(Some((aggregate_fun, bind_name_option, kb, json)))
+                    Ok(Some((aggregate_fun, bind_name_option, rp, json)))
                 } else {
                     Err(Error::Parse("Expected keypath or bind variable".to_string()))
                 }
             } else {
                 let bind_name_option = self.consume_field();
 
-                if let Some(kb) = try!(self.consume_keypath()) {
+                if let Some(rp) = try!(self.consume_keypath()) {
                     if self.consume("order") {
                         try!(self.must_consume("="));
                         if self.consume("asc") {
@@ -203,7 +204,7 @@ impl<'a, 'c> Parser<'a, 'c> {
                     }
                     try!(self.must_consume(")"));
 
-                    Ok(Some((aggregate_fun, bind_name_option, kb, JsonValue::Null)))
+                    Ok(Some((aggregate_fun, bind_name_option, rp, JsonValue::Null)))
                 } else {
                     Err(Error::Parse("Expected keypath or bind variable".to_string()))
                 }
@@ -215,7 +216,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         }
     }
 
-    fn consume_keypath(&mut self) -> Result<Option<KeyBuilder>, Error> {
+    fn consume_keypath(&mut self) -> Result<Option<ReturnPath>, Error> {
         let key: String = if self.consume(".") {
             if self.consume("[") {
                 let key = try!(self.must_consume_string_literal());
@@ -227,26 +228,30 @@ impl<'a, 'c> Parser<'a, 'c> {
                 } else {
                     self.ws();
                     // this means return the whole document
-                    return Ok(Some(KeyBuilder::new()));
+                    return Ok(Some(ReturnPath::new()));
                 }
             }
         } else {
             return Ok(None);
         };
 
-        let mut kb = KeyBuilder::new();
-        kb.push_object_key(&key);
+        let mut ret_path = ReturnPath::new();
+        ret_path.push_object_key(key);
         loop {
             if self.consume("[") {
                 if let Some(index) = try!(self.consume_integer()) {
-                    kb.push_array_index(index as u64);
+                    ret_path.push_array(index as u64);
                 } else {
-                    return Err(Error::Parse("Expected array index integer.".to_string()));
+                    if self.consume("*") {
+                        ret_path.push_array_all();
+                    } else {
+                        return Err(Error::Parse("Expected array index integer or *.".to_string()));
+                    }
                 }
                 try!(self.must_consume("]"));
             } else if self.consume(".") {
                 if let Some(key) = self.consume_field() {
-                    kb.push_object_key(&key);
+                    ret_path.push_object_key(key);
                 } else {
                     return Err(Error::Parse("Expected object key.".to_string()));
                 }
@@ -255,7 +260,7 @@ impl<'a, 'c> Parser<'a, 'c> {
             }
         }
         self.ws();
-        Ok(Some(kb))
+        Ok(Some(ret_path))
     }
 
     // if no boost is specified returns 1.0
@@ -776,7 +781,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         if self.consume("sort") {
             let mut n = 0;
             loop {
-                if let Some(kb) = try!(self.consume_keypath()) {
+                if let Some(rp) = try!(self.consume_keypath()) {
                     // doing the search for source 2x so user can order
                     // anyway they like. Yes it's a hack, but it simple.
                     let mut sort = if self.consume("asc") {
@@ -806,9 +811,8 @@ impl<'a, 'c> Parser<'a, 'c> {
                         sort
                     };
 
-                    sort_infos.insert(kb.value_key(0), SortInfo{field: SortField::FetchValue(kb),
-                                                                sort: sort, order_to_apply: n,
-                                                                default: default});
+                    sort_infos.insert(rp.to_key(), SortInfo{field: SortField::FetchValue(rp),
+                        sort: sort, order_to_apply: n, default: default});
                 } else {
                     try!(self.must_consume("score"));
                     try!(self.must_consume("("));
@@ -849,9 +853,9 @@ impl<'a, 'c> Parser<'a, 'c> {
                 Err(Error::Parse("Expected key, object or array to return.".to_string()))
             }
         } else {
-            let mut kb = KeyBuilder::new();
-            kb.push_object_key("_id");
-            Ok(Box::new(RetValue{kb: kb, ag:None, default: JsonValue::Null, sort_info: None}))
+            let mut rp = ReturnPath::new();
+            rp.push_object_key("_id".to_string());
+            Ok(Box::new(RetValue{rp: rp, ag:None, default: JsonValue::Null, sort_info: None}))
         }
     }
 
@@ -916,25 +920,24 @@ impl<'a, 'c> Parser<'a, 'c> {
             }
         }
 
-        if let Some((ag, bind_name_option, kb, json)) = try!(self.consume_aggregate()) {
+        if let Some((ag, bind_name_option, rp, json)) = try!(self.consume_aggregate()) {
             let default = if let Some(default) = try!(self.consume_default()) {
                 default
             } else {
                 JsonValue::Null
             };
             if let Some(bind_name) = bind_name_option {
-                let extra_key = kb.value_key_path_only();
-                Ok(Some(Box::new(RetBind{bind_name: bind_name, extra_key: extra_key,
+                Ok(Some(Box::new(RetBind{bind_name: bind_name, extra_rp: rp,
                                          ag: Some((ag, json)), default: default, sort_info:None})))
             } else {
-                Ok(Some(Box::new(RetValue{kb: kb, ag: Some((ag, json)),
+                Ok(Some(Box::new(RetValue{rp: rp, ag: Some((ag, json)),
                                           default: default, sort_info:None})))
             }
         } else if let Some(bind_name) = self.consume_field() {
-            let extra_key = if let Some(kb) = try!(self.consume_keypath()) {
-                kb.value_key_path_only()
+            let rp = if let Some(rp) = try!(self.consume_keypath()) {
+                rp
             } else {
-                "".to_string()
+                ReturnPath::new()
             };
 
             let default = if let Some(default) = try!(self.consume_default()) {
@@ -943,16 +946,16 @@ impl<'a, 'c> Parser<'a, 'c> {
                 JsonValue::Null
             };
 
-            Ok(Some(Box::new(RetBind{bind_name: bind_name, extra_key: extra_key,
+            Ok(Some(Box::new(RetBind{bind_name: bind_name, extra_rp: rp,
                                         ag: None, default: default, sort_info:None})))
-        } else if let Some(kb) = try!(self.consume_keypath()) {
+        } else if let Some(rp) = try!(self.consume_keypath()) {
             let default = if let Some(default) = try!(self.consume_default()) {
                 default
             } else {
                 JsonValue::Null
             };
     
-            Ok(Some(Box::new(RetValue{kb: kb, ag: None, default: default, sort_info: None})))
+            Ok(Some(Box::new(RetValue{rp: rp, ag: None, default: default, sort_info: None})))
         } else if self.could_consume("{") {
             Ok(Some(try!(self.ret_object())))
         } else if self.could_consume("[") {

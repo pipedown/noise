@@ -13,6 +13,71 @@ use query::{AggregateFun, SortInfo};
 
 use rocksdb::{self, DBIterator, IteratorMode};
 
+#[derive(Clone)]
+pub enum PathSegment {
+    ObjectKey(String),
+    Array(u64),
+    ArrayAll,
+}
+
+#[derive(Clone)]
+pub struct ReturnPath {
+    path: Vec<PathSegment>,
+}
+
+impl ReturnPath {
+    pub fn new() -> ReturnPath {
+        ReturnPath{path: Vec::new()}
+    }
+
+    pub fn push_object_key(&mut self, key: String) {
+        self.path.push(PathSegment::ObjectKey(key));
+    }
+
+    pub fn push_array(&mut self, index: u64) {
+        self.path.push(PathSegment::Array(index));
+    }
+
+    pub fn push_array_all(&mut self) {
+        self.path.push(PathSegment::ArrayAll);
+    }
+
+    pub fn to_key(&self) -> String {
+        let mut key = String::new();
+        for seg in self.path.iter() {
+            match seg {
+                &PathSegment::ObjectKey(ref str) => {
+                    key.push('.');
+                    for cc in str.chars() {
+                        // Escape chars that conflict with delimiters
+                        if "\\$.".contains(cc) {
+                            key.push('\\');
+                        }
+                        key.push(cc);
+                    }
+                },
+                &PathSegment::Array(ref i) => {
+                    key.push('$');
+                    key.push_str(&i.to_string());
+                },
+                &PathSegment::ArrayAll => {
+                    key.push_str("$*");
+                },
+            }
+        }
+        key
+    }
+
+    fn nth(&self, i: usize) -> Option<&PathSegment> {
+        if self.path.len() <= i {
+            None
+        } else {
+            Some(&self.path[i])
+        }
+    }
+}
+
+
 
 /// Returnables are created from parsing the return statement in queries.
 /// They nest inside of each other, with the outermost typically being a RetObject or RetArray.
@@ -207,7 +272,7 @@ impl Returnable for RetLiteral {
 /// A value from a document. It knows the path it wants to fetch and loads the value from the
 /// stored original document.
 pub struct RetValue {
-    pub kb: KeyBuilder,
+    pub rp: ReturnPath,
     pub ag: Option<(AggregateFun, JsonValue)>,
     pub default: JsonValue,
     pub sort_info: Option<SortInfo>,
@@ -243,6 +308,79 @@ impl RetValue {
         Ok(JsonValue::Array(array.into_iter()
                                  .map(|(_i, json)| json)
                                  .collect()))
+    }
+
+    fn descend_return_path(iter: &mut DBIterator, seq: u64, kb: &mut KeyBuilder,
+            rp: &ReturnPath, mut rp_index: usize) -> Result<Option<JsonValue>, Error> {
+        
+        while let Some(segment) = rp.nth(rp_index) {
+            rp_index += 1;
+            match segment {
+                &PathSegment::ObjectKey(ref string) => {
+                    kb.push_object_key(string);
+                },
+                &PathSegment::ArrayAll => {
+                    let mut i = 0;
+                    let mut vec = Vec::new();
+                    loop {
+                        kb.push_array_index(i);
+                        i += 1;
+                        if let Some(json) = try!(RetValue::descend_return_path(iter, seq,
+                                &mut kb.clone(), rp, rp_index)) {
+                            vec.push(json);
+                            kb.pop_array();
+                        } else {
+                            // we didn't get a value, is it because the array ends or the
+                            // full path isn't there? check as there might be more array elements
+                            // with a full path that does match.
+                            let value_key = kb.value_key(seq);
+                            kb.pop_array();
+
+                            // Seek in index to >= entry
+                            iter.set_mode(IteratorMode::From(value_key.as_bytes(),
+                                                            rocksdb::Direction::Forward));
+                            
+                            if let Some((key, _value)) = iter.next() {
+                                if key.starts_with(value_key.as_bytes()) {
+                                    // yes it exists. loop again.
+                                    continue; 
+                                }
+                            }
+                            
+                            if vec.is_empty() {
+                                return Ok(None);
+                            } else {
+                                return Ok(Some(JsonValue::Array(vec)));
+                            }
+                        }
+                    }
+                },
+                &PathSegment::Array(ref index) => {
+                    kb.push_array_index(*index);
+                }
+            }
+        }
+
+        let value_key = kb.value_key(seq);
+
+        // Seek in index to >= entry
+        iter.set_mode(IteratorMode::From(value_key.as_bytes(),
+                                        rocksdb::Direction::Forward));
+        
+        let (key, value) = match iter.next() {
+            Some((key, value)) => (key, value),
+            None => {
+                return Ok(None)
+            },
+        };
+
+        if !key.starts_with(value_key.as_bytes()) {
+            return Ok(None)
+        }
+
+        let json_value = try!(RetValue::fetch(&mut iter.peekable(), &value_key,
+                                            key, value));
+        Ok(Some(json_value))
     }
 
     fn fetch(iter: &mut Peekable<&mut DBIterator>, value_key: &str,
@@ -358,28 +496,13 @@ impl Returnable for RetValue {
             return Ok(());
         }
 
-        let value_key = self.kb.value_key(seq);
+        let mut kb = KeyBuilder::new();
 
-        // Seek in index to >= entry
-        iter.set_mode(IteratorMode::From(value_key.as_bytes(),
-                                         rocksdb::Direction::Forward));
-        
-        let (key, value) = match iter.next() {
-            Some((key, value)) => (key, value),
-            None => {
-                result.push_back(self.default.clone());
-                return Ok(())
-            },
-        };
-
-        if !key.starts_with(value_key.as_bytes()) {
+        if let Some(json) = try!(RetValue::descend_return_path(iter, seq, &mut kb, &self.rp, 0)) {
+            result.push_back(json);
+        } else {
             result.push_back(self.default.clone());
-            return Ok(());
         }
-
-        let json_value = try!(RetValue::fetch(&mut iter.peekable(), &value_key,
-                                              key, value));
-        result.push_back(json_value);
         Ok(())
     }
 
@@ -388,7 +511,7 @@ impl Returnable for RetValue {
     }
     
     fn take_sort_for_matching_fields(&mut self, map: &mut HashMap<String,SortInfo>) {
-        self.sort_info = map.remove(&self.kb.value_key(0));
+        self.sort_info = map.remove(&self.rp.to_key());
     }
 
     fn get_sorting(&mut self, sorts: &mut Vec<Option<SortInfo>>) {
@@ -409,38 +532,29 @@ impl Returnable for RetValue {
 /// original document and return it.
 pub struct RetBind {
     pub bind_name: String,
-    pub extra_key: String,
+    pub extra_rp: ReturnPath,
     pub ag: Option<(AggregateFun, JsonValue)>,
     pub default: JsonValue,
     pub sort_info: Option<SortInfo>,
 }
 
 impl Returnable for RetBind {
-    fn fetch_result(&self, iter: &mut DBIterator, _seq: u64, _score: f32,
+    fn fetch_result(&self, iter: &mut DBIterator, seq: u64, _score: f32,
                     bind_var_keys: &HashMap<String, Vec<String>>,
                     result: &mut VecDeque<JsonValue>) -> Result<(), Error> {
 
         if let Some(value_keys) = bind_var_keys.get(&self.bind_name) {
             let mut array = Vec::with_capacity(value_keys.len());
             for base_key in value_keys {
-                // Seek in index to >= entry
-                let value_key = base_key.to_string() + &self.extra_key;
-                iter.set_mode(IteratorMode::From(value_key.as_bytes(),
-                                                rocksdb::Direction::Forward));
-                
-                let (key, value) = match iter.next() {
-                    Some((key, value)) => (key, value),
-                    None => {
-                        result.push_back(self.default.clone());
-                        return Ok(())
-                    },
-                };
+                let mut kb = KeyBuilder::new();
 
-                if !key.starts_with(value_key.as_bytes()) {
-                    array.push(self.default.clone());
+                kb.parse_value_key_path_only(KeyBuilder::value_key_path_only_from_str(&base_key));
+
+                if let Some(json) = try!(RetValue::descend_return_path(iter, seq, &mut kb,
+                        &self.extra_rp, 0)) {
+                    array.push(json);
                 } else {
-                    array.push(try!(RetValue::fetch(&mut iter.peekable(), &value_key,
-                                                    key, value)));
+                    array.push(self.default.clone());
                 }
             }
             result.push_back(JsonValue::Array(array));
@@ -456,7 +570,7 @@ impl Returnable for RetBind {
     }
     
     fn take_sort_for_matching_fields(&mut self, map: &mut HashMap<String,SortInfo>) {
-        self.sort_info = map.remove(&(self.bind_name.to_string() + &self.extra_key));
+        self.sort_info = map.remove(&(self.bind_name.to_string() + &self.extra_rp.to_key()));
     }
 
     fn get_sorting(&mut self, sorts: &mut Vec<Option<SortInfo>>) {
