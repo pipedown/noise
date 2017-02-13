@@ -57,11 +57,11 @@ return {baz: group(.baz), concat: concat(.baz sep="|")};
 ]
 
 find {foo: =="group"}
-return {baz: group(.baz), list: list(.baz)};
+return {baz: group(.baz), array: array(.baz)};
 [
-{"baz":"a","list":["a","a","a","a"]},
-{"baz":"b","list":["b","b","b","b"]},
-{"baz":"c","list":["c","c","c","c"]}
+{"baz":"a","array":["a","a","a","a"]},
+{"baz":"b","array":["b","b","b","b"]},
+{"baz":"c","array":["c","c","c","c"]}
 ]
 
 find {foo: =="group"}
@@ -161,3 +161,88 @@ return [group(.baz order=asc) default="a", group(.bar order=desc) default="c", c
 ["b","b",1],
 ["b","a",1]
 ]
+
+add {"_id":"1", "foo":"array", "baz": ["a","b",["c","d",["e"]]]};
+"1"
+add {"_id":"2", "foo":"array", "baz": ["f","g",["h","i"],"j"]};
+"2"
+
+find {foo: =="array"}
+return array(.baz);
+[
+[["f","g",["h","i"],"j"],["a","b",["c","d",["e"]]]]
+]
+
+find {foo: =="array"}
+return array_flat(.baz);
+[
+["f","g","h","i","j","a","b","c","d","e"]
+]
+
+find {foo: =="array"}
+return max(.baz);
+[
+["f","g",["h","i"],"j"]
+]
+
+find {foo: =="array"}
+return max_array(.baz);
+[
+"j"
+]
+
+find {foo: =="array"}
+return min_array(.baz);
+[
+"a"
+]
+
+add {"_id":"1", "foo":"array", "baz": [1,2,[3,4,[5]]]};
+"1"
+add {"_id":"2", "foo":"array", "baz": [6,7,[8,9],10]};
+"2"
+
+
+find {foo: =="array"}
+return avg(.baz);
+[
+5.5
+]
+
+find {foo: =="array"}
+return sum(.baz);
+[
+55
+]
+
+add {"_id":"1", "foo":"array", "baz": []};
+"1"
+add {"_id":"2", "foo":"array", "baz": []};
+"2"
+
+commit;
+
+find {foo: =="array"}
+return avg(.baz);
+[
+null
+]
+
+find {foo: =="array"}
+return sum(.baz);
+[
+0
+]
+
+find {foo: =="array"}
+return min_array(.baz);
+[
+[]
+]
+
+find {foo: =="array"}
+return max_array(.baz);
+[
+[]
+]
+

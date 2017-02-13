@@ -109,13 +109,6 @@ impl Shredder {
             try!(batch.put(&key.into_bytes(), &buffer.as_bytes()));
         }
 
-        let key = self.kb.id_to_seq_key(self.doc_id.as_ref().unwrap());
-        if delete {
-            try!(batch.delete(&key.into_bytes()));
-        } else {
-            try!(batch.put(&key.into_bytes(), &docseq.to_string().as_bytes()));
-        }
-
         Ok(())
     }
     
@@ -217,6 +210,9 @@ impl Shredder {
                 try!(batch.put(&key.into_bytes(), &value.as_ref()));
             }
         }
+        let key = self.kb.id_to_seq_key(self.doc_id.as_ref().unwrap());
+        try!(batch.put(&key.into_bytes(), &seq.to_string().as_bytes()));
+
         Ok(())
     }
 
@@ -236,6 +232,8 @@ impl Shredder {
                 try!(batch.delete(&key.into_bytes()));
             }
         }
+        let key = self.kb.id_to_seq_key(self.doc_id.as_ref().unwrap());
+        try!(batch.delete(&key.into_bytes()));
         Ok(())
     }
 
@@ -467,7 +465,6 @@ mod tests {
 
         rocks.write(batch).unwrap();
         let result = positions_from_rocks(&rocks);
-        println!("result: {:?}", result);
         let expected = vec![
             ("W.A$.B!b1#1234,1".to_string(), vec![0]),
             ("W.A$.B!b2vmx#1234,0".to_string(), vec![0]),
@@ -488,6 +485,7 @@ mod tests {
         let docseq = 123;
         let mut batch = rocksdb::WriteBatch::default();
         shredder.shred(json).unwrap();
+        shredder.add_id("foo").unwrap();
         shredder.add_all_to_batch(docseq, &mut batch).unwrap();
 
         let dbname = "target/tests/test_shred_empty_object";
@@ -500,7 +498,7 @@ mod tests {
 
         rocks.write(batch).unwrap();
         let result = positions_from_rocks(&rocks);
-
-        assert!(result.is_empty());
+        let expected = vec![("W._id!foo#123,".to_string(), vec![0])];
+        assert_eq!(result, expected);
     }
 }
