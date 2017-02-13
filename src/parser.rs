@@ -153,12 +153,18 @@ impl<'a, 'c> Parser<'a, 'c> {
             AggregateFun::GroupAsc
         } else if self.consume("sum") {
             AggregateFun::Sum
+        } else if self.consume("max_array") {
+            AggregateFun::MaxArray
         } else if self.consume("max") {
             AggregateFun::Max
+        } else if self.consume("min_array") {
+            AggregateFun::MinArray
         } else if self.consume("min") {
             AggregateFun::Min
-        } else if self.consume("list") {
-            AggregateFun::List
+        } else if self.consume("array_flat") {
+            AggregateFun::ArrayFlat
+        } else if self.consume("array") {
+            AggregateFun::Array
         } else if self.consume("concat") {
             AggregateFun::Concat
         } else if self.consume("avg") {

@@ -7,7 +7,7 @@ use std::io::{Write, BufRead};
 
 fn is_command(str: &str) -> bool {
     let commands = ["find", "add", "create", "drop", "open",
-                    "pretty", "commit", "del", "load"];
+                    "pretty", "commit", "del", "load", "dumpkeys"];
     for command in commands.iter() {
         if str.starts_with(command) {
             return true;
@@ -91,6 +91,17 @@ pub fn repl(r: &mut BufRead, w: &mut Write, test_mode: bool) {
             match index.open(dbname, None) {
                 Ok(()) => (),
                 Err(reason) => write!(w, "{}\n", reason).unwrap(),
+            }
+        } else if lines.starts_with("dumpkeys") {
+            match index.all_keys() {
+                Ok(keys) => {
+                    for key in keys {
+                        write!(w, "{}\n", key).unwrap();
+                    }
+                },
+                Err(reason) => {
+                    write!(w, "{}\n", reason).unwrap();
+                },
             }
         } else if lines.starts_with("add") {
             match index.add(&lines[3..]) {

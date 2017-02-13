@@ -328,7 +328,7 @@ pub struct QueryResults<'a> {
     done_with_sorting_and_ags: bool,
     does_group_or_aggr: bool,
     sorts: Option<Vec<(Sort, usize)>>,
-    aggr_inits: Vec<(fn (&mut JsonValue), usize)>,
+    aggr_inits: Vec<(fn (JsonValue) -> JsonValue, usize)>,
     aggr_actions: Vec<(fn (&mut JsonValue, JsonValue, &JsonValue), JsonValue, usize)>,
     aggr_finals: Vec<(fn (&mut JsonValue), usize)>,
     in_buffer: Vec<VecDeque<JsonValue>>,
@@ -564,7 +564,12 @@ impl<'a> QueryResults<'a> {
                     match QueryResults::cmp_results(&sorts, &old, &new) {
                         Ordering::Less => {
                             for &(ref init, n) in self.aggr_inits.iter() {
-                                (init)(&mut new[n]);
+                                // we can't swap out a value of new directly, so this lets us
+                                // without shifting or cloning values, both of which can be
+                                // expensive
+                                let mut new_n = JsonValue::Null;
+                                swap(&mut new_n, &mut new[n]);
+                                new[n] = (init)(new_n);
                             }
                             //push back old value into sorted_buffer,
                             //then use new value as old value.
@@ -611,7 +616,12 @@ impl<'a> QueryResults<'a> {
                 },
                 (None, Some(mut new)) => {
                     for &(ref init, n) in self.aggr_inits.iter() {
-                        (init)(&mut new[n]);
+                        // we can't swap out a value of new directly, so this lets us
+                        // without shifting or cloning values, both of which can be
+                        // expensive
+                        let mut new_n = JsonValue::Null;
+                        swap(&mut new_n, &mut new[n]);
+                        new[n] = (init)(new_n);
                     }
                     option_old = Some(new);
                     option_new = self.in_buffer.pop();
@@ -646,15 +656,18 @@ pub enum AggregateFun {
     GroupDesc,
     Sum,
     Max,
+    MaxArray,
     Min,
-    List,
+    MinArray,
+    Array,
+    ArrayFlat,
     Concat,
     Avg,
     Count,
 }
 
 struct AggregateFunImpls {
-    init: Option<fn (&mut JsonValue)>,
+    init: Option<fn (JsonValue) -> JsonValue>,
     action: fn (&mut JsonValue, JsonValue, &JsonValue),
     extract: Option<fn (&mut JsonValue)>,
 }
@@ -679,9 +692,24 @@ impl AggregateFun {
                 action: AggregateFun::min,
                 extract: None,
              },
-            &AggregateFun::List => AggregateFunImpls{
-                init: Some(AggregateFun::list_init),
-                action: AggregateFun::list,
+            &AggregateFun::MaxArray => AggregateFunImpls{
+                init: Some(AggregateFun::max_array_init),
+                action: AggregateFun::max_array,
+                extract: None,
+             },
+            &AggregateFun::MinArray => AggregateFunImpls{
+                init: Some(AggregateFun::min_array_init),
+                action: AggregateFun::min_array,
+                extract: None,
+             },
+            &AggregateFun::Array => AggregateFunImpls{
+                init: Some(AggregateFun::array_init),
+                action: AggregateFun::array,
+                extract: None,
+             },
+            &AggregateFun::ArrayFlat => AggregateFunImpls{
+                init: Some(AggregateFun::array_flat_init),
+                action: AggregateFun::array_flat,
                 extract: None,
              },
             &AggregateFun::Concat => AggregateFunImpls{
@@ -702,18 +730,23 @@ impl AggregateFun {
         }
     }
 
-    fn sum_init(existing: &mut JsonValue) {
-        if let &mut JsonValue::Number(_) = existing {
-            //do nothing
-        } else {
-            *existing = JsonValue::Number(0.0)
-        }
+    fn sum_init(existing: JsonValue) -> JsonValue {
+        let mut base = JsonValue::Number(0.0);
+        AggregateFun::sum(&mut base, existing, &JsonValue::Null);
+        base
     }
 
-    fn sum(existing: &mut JsonValue, new: JsonValue, _user_arg: &JsonValue) {
-        match (existing, new) {
-            (&mut JsonValue::Number(ref mut existing), JsonValue::Number(new)) => {
-                *existing += new;
+    fn sum(mut existing: &mut JsonValue, new: JsonValue, _user_arg: &JsonValue) {
+        match new {
+            JsonValue::Number(new) => {
+                if let &mut JsonValue::Number(ref mut existing) = existing {
+                    *existing += new;
+                }
+            },
+            JsonValue::Array(vec) => {
+                for v in vec {
+                    AggregateFun::sum(existing, v, _user_arg);
+                }
             },
             _ => (),
         }
@@ -731,21 +764,85 @@ impl AggregateFun {
         }
     }
 
-    fn list_init(existing: &mut JsonValue) {
-        *existing = JsonValue::Array(vec![existing.clone()]);
+    fn max_array_init(existing: JsonValue) -> JsonValue {
+        // The default value is an array, which can never be a value because arrays are always
+        // traversed. It's possible we never encounter a value due to only encountering empty
+        // arrays, in which case the final value is an empty array meaning no values encountered.
+        let mut val = JsonValue::Array(vec![]);
+        AggregateFun::max_array(&mut val, existing, &JsonValue::Null);
+        val
     }
 
-    fn list(existing: &mut JsonValue, new: JsonValue, _user_arg: &JsonValue) {
+    fn max_array(mut existing: &mut JsonValue, new: JsonValue, _user_arg: &JsonValue) {
+        if let JsonValue::Array(vec) = new {
+            for v in vec {
+                AggregateFun::max_array(existing, v, _user_arg);
+            }
+        } else {
+            if let &mut JsonValue::Array(_) = existing {
+                *existing = new;
+            } else if (*existing).cmp(&new) == Ordering::Less {
+                *existing = new;
+            }
+        }
+    }
+
+    fn min_array_init(existing: JsonValue) -> JsonValue {
+        // The default value is an array, which can never be a value because arrays are always
+        // traversed. It's possible we never encounter a value due to only encountering empty
+        // arrays, in which case the final value is an empty array meaning no values encountered.
+        let mut val = JsonValue::Array(vec![]);
+        AggregateFun::min_array(&mut val, existing, &JsonValue::Null);
+        val
+    }
+
+    fn min_array(mut existing: &mut JsonValue, new: JsonValue, _user_arg: &JsonValue) {
+        if let JsonValue::Array(vec) = new {
+            for v in vec {
+                AggregateFun::min_array(existing, v, _user_arg);
+            }
+        } else {
+            if let &mut JsonValue::Array(_) = existing {
+                *existing = new;
+            } else if (*existing).cmp(&new) == Ordering::Greater {
+                *existing = new;
+            }
+        }
+    }
+
+    fn array_init(existing: JsonValue) -> JsonValue {
+        JsonValue::Array(vec![existing])
+    }
+
+    fn array(existing: &mut JsonValue, new: JsonValue, _user_arg: &JsonValue) {
         if let &mut JsonValue::Array(ref mut existing) = existing {
             existing.push(new);
         }
     }
 
-    fn concat_init(existing: &mut JsonValue) {
-        if let &mut JsonValue::String(ref _string) = existing {
-            // do nothing
+    fn array_flat_init(existing: JsonValue) -> JsonValue {
+        let mut new = JsonValue::Array(vec![]);
+        AggregateFun::array_flat(&mut new, existing, &JsonValue::Null);
+        new
+    }
+
+    fn array_flat(existing: &mut JsonValue, new: JsonValue, _user_arg: &JsonValue) {
+        if let JsonValue::Array(vec) = new {
+            for v in vec.into_iter() {
+                AggregateFun::array_flat(existing, v, _user_arg);
+            }
         } else {
-            JsonValue::String(String::new());
+            if let &mut JsonValue::Array(ref mut existing) = existing {
+                existing.push(new);
+            }
+        }
+    }
+
+    fn concat_init(existing: JsonValue) -> JsonValue {
+        if let JsonValue::String(_) = existing {
+            existing
+        } else {
+            JsonValue::String(String::new())
         }
     }
 
@@ -760,13 +857,16 @@ impl AggregateFun {
         }
     }
 
-    fn avg_init(existing: &mut JsonValue) {
-        let new = if let &mut JsonValue::Number(ref num) = existing {
-            JsonValue::Array(vec![JsonValue::Number(num.clone()), JsonValue::Number(1.0)])
+    fn avg_init(existing: JsonValue) -> JsonValue {
+        if let JsonValue::Number(_) = existing {
+            JsonValue::Array(vec![existing, JsonValue::Number(1.0)])
+        } else if let JsonValue::Array(_) = existing {
+            let mut avg = JsonValue::Array(vec![JsonValue::Number(0.0), JsonValue::Number(0.0)]);
+            AggregateFun::avg(&mut avg, existing, &JsonValue::Null);
+            avg
         } else {
             JsonValue::Array(vec![JsonValue::Number(0.0), JsonValue::Number(0.0)])
-        };
-        *existing = new;
+        }
     }
 
     fn avg(existing: &mut JsonValue, new: JsonValue, _user_arg: &JsonValue) {
@@ -790,6 +890,10 @@ impl AggregateFun {
                 count += 1.0;
                 array[0] = JsonValue::Number(avg);
                 array[1] = JsonValue::Number(count);
+            }
+        } else if let JsonValue::Array(vec) = new {
+            for v in vec.into_iter() {
+                AggregateFun::avg(existing, v, _user_arg);
             }
         }
     }
@@ -818,8 +922,8 @@ impl AggregateFun {
         *existing = json
     }
 
-    fn count_init(existing: &mut JsonValue) {
-        *existing = JsonValue::Number(1.0);
+    fn count_init(_existing: JsonValue) -> JsonValue {
+        JsonValue::Number(1.0)
     }
 
     fn count(existing: &mut JsonValue, _: JsonValue, _user_arg: &JsonValue) {

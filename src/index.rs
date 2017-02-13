@@ -203,6 +203,19 @@ impl Index {
         Ok(status)
     }
 
+    pub fn all_keys(&self) -> Result<Vec<String>, Error> {
+        if !self.is_open() {
+            return Err(Error::Write("Index isn't open.".to_string()));
+        }
+        let rocks = self.rocks.as_ref().unwrap();
+        let mut results = Vec::new();
+        for (key, _value) in rocks.iterator(rocksdb::IteratorMode::Start) {
+            let key_string = unsafe { str::from_utf8_unchecked((&key)) }.to_string();
+            results.push(key_string);
+        }
+        Ok(results)
+    }
+
     /// Should not be used generally since it not varint. Used for header fields
     /// since only one header is in the database it's not a problem with excess size.
     fn convert_bytes_to_u64(bytes: &[u8]) -> u64 {
@@ -296,6 +309,8 @@ mod tests {
     use super::{Index, OpenOptions};
     use query::Query;
     use std::str;
+    use returnable::RetValue;
+    use json_value::JsonValue;
 
     #[test]
     fn test_open() {
@@ -353,5 +368,62 @@ mod tests {
         let (key, _value) = iter.next().unwrap();
         assert!(key.starts_with(&b"HDB"[..]));
         assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn test_updates() {
+        let dbname = "target/tests/testupdates";
+        let _ = Index::drop(dbname);
+
+        let mut index = Index::new();
+        index.open(dbname, Some(OpenOptions::Create)).unwrap();
+
+        //let _ = index.add(r#"{"_id":"1", "foo":"array", "baz": ["a","b",["c","d",["e"]]]}"#).unwrap();
+        
+        //index.flush().unwrap();
+
+        let _ = index.add(r#"{"_id":"1", "foo":"array", "baz": [1,2,[3,4,[5]]]}"#).unwrap();
+        
+        index.flush().unwrap();
+        {
+        let rocks = index.rocks.as_mut().unwrap();
+
+        let mut results = Vec::new();
+        for (key, value) in rocks.iterator(rocksdb::IteratorMode::Start) {
+            if key[0] as char == 'V' {
+                let key_string = unsafe { str::from_utf8_unchecked((&key)) }.to_string();
+                results.push((key_string, RetValue::bytes_to_json_value(&*value)));
+            }
+        }
+
+        let expected = vec![
+            ("V1#._id".to_string(), JsonValue::String("1".to_string())),
+            ("V1#.baz$0".to_string(), JsonValue::Number(1.0)),
+            ("V1#.baz$1".to_string(), JsonValue::Number(2.0)),
+            ("V1#.baz$2$0".to_string(), JsonValue::Number(3.0)),
+            ("V1#.baz$2$1".to_string(), JsonValue::Number(4.0)),
+            ("V1#.baz$2$2$0".to_string(), JsonValue::Number(5.0)),
+            ("V1#.foo".to_string(), JsonValue::String("array".to_string()))];
+        assert_eq!(results, expected);
+        }
+
+        let _ = index.add(r#"{"_id":"1", "foo":"array", "baz": []}"#).unwrap();
+        index.flush().unwrap();
+
+        let rocks = index.rocks.as_mut().unwrap();
+
+        let mut results = Vec::new();
+        for (key, value) in rocks.iterator(rocksdb::IteratorMode::Start) {
+            if key[0] as char == 'V' {
+                let key_string = unsafe { str::from_utf8_unchecked((&key)) }.to_string();
+                results.push((key_string, RetValue::bytes_to_json_value(&*value)));
+            }
+        }
+       let expected = vec![
+            ("V1#._id".to_string(), JsonValue::String("1".to_string())),
+            ("V1#.baz".to_string(), JsonValue::Array(vec![])),
+            ("V1#.foo".to_string(), JsonValue::String("array".to_string()))
+            ];
+        assert_eq!(results, expected);
     }
 }
