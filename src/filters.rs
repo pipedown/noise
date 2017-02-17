@@ -1,22 +1,19 @@
-extern crate varint;
-
 use std::str;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::collections::HashSet;
 use index::Index;
 use std::f32;
-use std::io::Cursor;
 
 use error::Error;
 use key_builder::KeyBuilder;
 use query::{DocResult, QueryScoringInfo};
 use returnable::RetValue;
 use json_value::JsonValue;
+use term_index::{DocResultIterator};
 
 // TODO vmx 2016-11-02: Make it import "rocksdb" properly instead of needing to import the individual tihngs
 use rocksdb::{self, DBIterator, Snapshot, IteratorMode};
-use self::varint::VarintRead;
 
 struct Scorer {
     iter: DBIterator,
@@ -95,8 +92,8 @@ impl Scorer {
 }
 
 pub trait QueryRuntimeFilter {
-    fn first_result(&mut self, start: &DocResult) -> Result<Option<DocResult>, Error>;
-    fn next_result(&mut self) -> Result<Option<DocResult>, Error>;
+    fn first_result(&mut self, start: &DocResult) -> Option<DocResult>;
+    fn next_result(&mut self) -> Option<DocResult>;
     fn prepare_relevancy_scoring(&mut self, qsi: &mut QueryScoringInfo);
     
     /// returns error is a double negation is detected
@@ -108,8 +105,7 @@ pub trait QueryRuntimeFilter {
 
 
 pub struct StemmedWordFilter {
-    iter: DBIterator,
-    keypathword: String,
+    iter: DocResultIterator,
     scorer: Scorer,
 }
 
@@ -117,51 +113,28 @@ impl StemmedWordFilter {
     pub fn new(snapshot: &Snapshot, stemmed_word: &str,
                kb: &KeyBuilder, boost: f32) -> StemmedWordFilter {
         StemmedWordFilter {
-            iter: snapshot.iterator(IteratorMode::Start),
-            keypathword: kb.get_keypathword_only(&stemmed_word),
+            iter: DocResultIterator::new(snapshot, stemmed_word, kb),
             scorer: Scorer::new(snapshot.iterator(IteratorMode::Start), stemmed_word, kb, boost),
         }
     }
 }
 
 impl QueryRuntimeFilter for StemmedWordFilter {
-    fn first_result(&mut self, start: &DocResult) -> Result<Option<DocResult>, Error> {
-        KeyBuilder::add_doc_result_to_keypathword(&mut self.keypathword, &start);
-        // Seek in index to >= entry
-        self.iter.set_mode(IteratorMode::From(self.keypathword.as_bytes(),
-                           rocksdb::Direction::Forward));
-        
-        KeyBuilder::truncate_to_keypathword(&mut self.keypathword);
-
+    fn first_result(&mut self, start: &DocResult) -> Option<DocResult> {
+        self.iter.advance_gte(start);
         self.next_result()
     }
 
-    fn next_result(&mut self) -> Result<Option<DocResult>, Error> {
-        let (key, value) = match self.iter.next() {
-            Some((key, value)) => (key, value),
-            None => return Ok(None),
-        };
-        if !key.starts_with(self.keypathword.as_bytes()) {
-            // we passed the key path we are interested in. nothing left to do */
-            return Ok(None)
-        }
-
-        // We have a candidate document to return
-        let key_str = unsafe{str::from_utf8_unchecked(&key)};
-        let mut dr = KeyBuilder::parse_doc_result_from_key(&key_str);
-
-        if self.scorer.should_score() {
-            let mut vec = Vec::with_capacity(value.len());
-            vec.extend(value.into_iter());
-            let mut bytes = Cursor::new(vec);
-            let mut count = 0;
-            while let Ok(_pos) = bytes.read_unsigned_varint_32() {
-                count += 1;
+    fn next_result(&mut self) -> Option<DocResult> {
+        if let Some((mut dr, pos)) = self.iter.next() {
+            if self.scorer.should_score() {
+                let count = pos.positions().len();
+                self.scorer.add_match_score(count as u32, &mut dr);
             }
-            self.scorer.add_match_score(count, &mut dr);
+            Some(dr)
+        } else {
+            None
         }
-
-        Ok(Some(dr))
     }
 
     fn prepare_relevancy_scoring(&mut self, mut qsi: &mut QueryScoringInfo) {
@@ -180,8 +153,7 @@ impl QueryRuntimeFilter for StemmedWordFilter {
 /// This is not a QueryRuntimeFilter but it imitates one. Instead of returning just a DocResult
 /// it also return a vector of word positions, each being a instance of the word occurance
 pub struct StemmedWordPosFilter {
-    iter: DBIterator,
-    keypathword: String,
+    iter: DocResultIterator,
     scorer: Scorer,
 }
 
@@ -189,50 +161,28 @@ impl StemmedWordPosFilter {
     pub fn new(snapshot: &Snapshot, stemmed_word: &str,
                kb: &KeyBuilder, boost: f32) -> StemmedWordPosFilter {
         StemmedWordPosFilter{
-            iter: snapshot.iterator(IteratorMode::Start),
-            keypathword: kb.get_keypathword_only(&stemmed_word),
+            iter: DocResultIterator::new(snapshot, stemmed_word, kb),
             scorer: Scorer::new(snapshot.iterator(IteratorMode::Start),
                                 &stemmed_word, &kb, boost),
         }
     }
 
-    fn first_result(&mut self,
-                    start: &DocResult) -> Result<Option<(DocResult, Vec<u32>)>, Error> {
-
-        KeyBuilder::add_doc_result_to_keypathword(&mut self.keypathword, &start);
-        // Seek in index to >= entry
-        self.iter.set_mode(IteratorMode::From(self.keypathword.as_bytes(),
-                           rocksdb::Direction::Forward));
-        
-        KeyBuilder::truncate_to_keypathword(&mut self.keypathword);
-
+    fn first_result(&mut self, start: &DocResult) -> Option<(DocResult, Vec<u32>)> {
+        self.iter.advance_gte(start);
         self.next_result()
     }
 
-    fn next_result(&mut self) -> Result<Option<(DocResult, Vec<u32>)>, Error> {
-        let (key, value) = match self.iter.next() {
-            Some((key, value)) => (key, value),
-            None => return Ok(None),
-        };
-        if !key.starts_with(self.keypathword.as_bytes()) {
-            // we passed the key path we are interested in. nothing left to do */
-            return Ok(None)
+    fn next_result(&mut self) -> Option<(DocResult, Vec<u32>)> {
+        if let Some((mut dr, pos)) = self.iter.next() {
+            let positions = pos.positions();
+            if self.scorer.should_score() {
+                let count = positions.len();
+                self.scorer.add_match_score(count as u32, &mut dr);
+            }
+            Some((dr, positions))
+        } else {
+            None
         }
-
-        let key_str = unsafe{str::from_utf8_unchecked(&key)};
-        let mut dr = KeyBuilder::parse_doc_result_from_key(&key_str);
-
-        let mut vec = Vec::with_capacity(value.len());
-        vec.extend(value.into_iter());
-        let mut bytes = Cursor::new(vec);
-        let mut positions = Vec::new();
-        while let Ok(pos) = bytes.read_unsigned_varint_32() {
-            positions.push(pos);
-        }
-
-        self.scorer.add_match_score(positions.len() as u32, &mut dr);
-
-        Ok(Some((dr, positions)))
     }
 
     fn prepare_relevancy_scoring(&mut self, mut qsi: &mut QueryScoringInfo) {
@@ -252,16 +202,15 @@ impl StemmedPhraseFilter {
         }
     }
 
-    fn result(&mut self,
-              base: Option<(DocResult, Vec<u32>)>) -> Result<Option<DocResult>, Error> {
+    fn result(&mut self, base: Option<(DocResult, Vec<u32>)>) -> Option<DocResult> {
         // this is the number of matches left before all terms match and we can return a result 
         let mut matches_left = self.filters.len() - 1;
 
-        if base.is_none() { return Ok(None); }
+        if base.is_none() { return None; }
         let (mut base_result, mut base_positions) = base.unwrap();
 
         if matches_left == 0 {
-            return Ok(Some(base_result));
+            return Some(base_result);
         }
 
         let mut current_filter = 0;
@@ -271,9 +220,9 @@ impl StemmedPhraseFilter {
                 current_filter = 0;
             }
 
-            let next = try!(self.filters[current_filter].first_result(&base_result));
+            let next = self.filters[current_filter].first_result(&base_result);
             
-            if next.is_none() { return Ok(None); }
+            if next.is_none() { return None; }
             let (next_result, next_positions) = next.unwrap();
 
             if base_result == next_result {
@@ -289,13 +238,13 @@ impl StemmedPhraseFilter {
                     matches_left -= 1;
 
                     if matches_left == 0 {
-                        return Ok(Some(base_result));
+                        return Some(base_result);
                     }
                 } else {
                     // we didn't match on phrase, so get next_result from first filter
                     current_filter = 0;
-                    let next = try!(self.filters[current_filter].next_result());
-                    if next.is_none() { return Ok(None); }
+                    let next = self.filters[current_filter].next_result();
+                    if next.is_none() { return None; }
                     let (next_result, next_positions) = next.unwrap();
                     base_result = next_result;
                     base_positions = next_positions;
@@ -306,8 +255,8 @@ impl StemmedPhraseFilter {
                 // we didn't match on next_result, so get first_result at next_result on
                 // 1st filter.
                 current_filter = 0;
-                let next = try!(self.filters[current_filter].first_result(&next_result));
-                if next.is_none() { return Ok(None); }
+                let next = self.filters[current_filter].first_result(&next_result);
+                if next.is_none() { return None; }
                 let (next_result, next_positions) = next.unwrap();
                 base_result = next_result;
                 base_positions = next_positions;
@@ -320,13 +269,13 @@ impl StemmedPhraseFilter {
 
 
 impl QueryRuntimeFilter for StemmedPhraseFilter {
-    fn first_result(&mut self, start: &DocResult) -> Result<Option<DocResult>, Error> {
-        let base_result = try!(self.filters[0].first_result(start));
+    fn first_result(&mut self, start: &DocResult) -> Option<DocResult> {
+        let base_result = self.filters[0].first_result(start);
         self.result(base_result)
     }
 
-    fn next_result(&mut self) -> Result<Option<DocResult>, Error> {
-        let base_result = try!(self.filters[0].next_result());
+    fn next_result(&mut self) -> Option<DocResult> {
+        let base_result = self.filters[0].next_result();
         self.result(base_result)
     }
 
@@ -366,7 +315,7 @@ impl ExactMatchFilter {
         }
     }
 
-    fn check_exact(&mut self, mut dr: DocResult) -> Result<Option<DocResult>, Error> {
+    fn check_exact(&mut self, mut dr: DocResult) -> Option<DocResult> {
         loop {
             let value_key = self.kb.value_key_from_doc_result(&dr);
 
@@ -382,13 +331,13 @@ impl ExactMatchFilter {
                         self.phrase == string.to_lowercase()
                     };
                     if matches {
-                        return Ok(Some(dr));
+                        return Some(dr);
                     } else {
-                        if let Some(next) = try!(self.filter.next_result()) {
+                        if let Some(next) = self.filter.next_result() {
                             dr = next;
                             // continue looping
                         } else {
-                            return Ok(None);
+                            return None;
                         }
                     }
                 } else {
@@ -402,19 +351,19 @@ impl ExactMatchFilter {
 }
 
 impl QueryRuntimeFilter for ExactMatchFilter {
-    fn first_result(&mut self, start: &DocResult) -> Result<Option<DocResult>, Error> {
-        if let Some(dr) = try!(self.filter.first_result(start)) {
+    fn first_result(&mut self, start: &DocResult) -> Option<DocResult> {
+        if let Some(dr) = self.filter.first_result(start) {
             self.check_exact(dr)
         } else {
-            Ok(None)
+            None
         }
     }
 
-    fn next_result(&mut self) -> Result<Option<DocResult>, Error> {
-        if let Some(dr) = try!(self.filter.next_result()) {
+    fn next_result(&mut self) -> Option<DocResult> {
+        if let Some(dr) = self.filter.next_result() {
             self.check_exact(dr)
         } else {
-            Ok(None)
+            None
         }
     }
 
@@ -446,14 +395,13 @@ impl DistanceFilter {
         }
     }
 
-    fn result(&mut self,
-              base: Option<(DocResult, Vec<u32>)>) -> Result<Option<DocResult>, Error> {
+    fn result(&mut self, base: Option<(DocResult, Vec<u32>)>) -> Option<DocResult> {
         // yes this code complex. I tried to break it up, but it wants to be like this.
 
         // this is the number of matches left before all terms match and we can return a result 
         let mut matches_left = self.filters.len() - 1;
 
-        if base.is_none() { return Ok(None); }
+        if base.is_none() { return None; }
         let (mut base_result, positions) = base.unwrap();
 
         // This contains tuples of word postions and the filter they came from,
@@ -471,9 +419,9 @@ impl DistanceFilter {
                 self.current_filter = 0;
             }
 
-            let next = try!(self.filters[self.current_filter].first_result(&base_result));
+            let next = self.filters[self.current_filter].first_result(&base_result);
             
-            if next.is_none() { return Ok(None); }
+            if next.is_none() { return None; }
             let (next_result, next_positions) = next.unwrap();
 
             if base_result != next_result {
@@ -530,15 +478,15 @@ impl DistanceFilter {
                 matches_left -= 1;
 
                 if matches_left == 0 {
-                    return Ok(Some(base_result));
+                    return Some(base_result);
                 } else {
                     continue;
                 }
             }
             // we didn't match on next_result, so get next_result on current filter
-            let next = try!(self.filters[self.current_filter].next_result());
+            let next = self.filters[self.current_filter].next_result();
             
-            if next.is_none() { return Ok(None); }
+            if next.is_none() { return None; }
             let (next_result, next_positions) = next.unwrap();
             base_result = next_result;
             base_positions = next_positions.iter()
@@ -551,13 +499,13 @@ impl DistanceFilter {
 }
 
 impl QueryRuntimeFilter for DistanceFilter {
-    fn first_result(&mut self, start: &DocResult) -> Result<Option<DocResult>, Error> {
-        let base_result = try!(self.filters[self.current_filter].first_result(start));
+    fn first_result(&mut self, start: &DocResult) -> Option<DocResult> {
+        let base_result = self.filters[self.current_filter].first_result(start);
         self.result(base_result)
     }
 
-    fn next_result(&mut self) -> Result<Option<DocResult>, Error> {
-        let base_result = try!(self.filters[self.current_filter].next_result());
+    fn next_result(&mut self) -> Option<DocResult> {
+        let base_result = self.filters[self.current_filter].next_result();
         self.result(base_result)
     }
 
@@ -592,10 +540,10 @@ impl<'a> AndFilter<'a> {
         }
     }
 
-    fn result(&mut self, base: Option<DocResult>) -> Result<Option<DocResult>, Error> {
+    fn result(&mut self, base: Option<DocResult>) -> Option<DocResult> {
         let mut matches_count = self.filters.len() - 1;
 
-        if base.is_none() { return Ok(None); }
+        if base.is_none() { return None; }
         let mut base_result = base.unwrap();
         
         base_result.arraypath.resize(self.array_depth, 0);
@@ -606,9 +554,9 @@ impl<'a> AndFilter<'a> {
                 self.current_filter = 0;
             }
 
-            let next = try!(self.filters[self.current_filter].first_result(&base_result));
+            let next = self.filters[self.current_filter].first_result(&base_result);
             
-            if next.is_none() { return Ok(None); }
+            if next.is_none() { return None; }
             let mut next_result = next.unwrap();
 
             next_result.arraypath.resize(self.array_depth, 0);
@@ -617,7 +565,7 @@ impl<'a> AndFilter<'a> {
                 matches_count -= 1;
                 base_result.combine(&mut next_result);
                 if matches_count == 0 {
-                    return Ok(Some(base_result));
+                    return Some(base_result);
                 }
             } else {
                 base_result = next_result;
@@ -628,13 +576,13 @@ impl<'a> AndFilter<'a> {
 }
 
 impl<'a> QueryRuntimeFilter for AndFilter<'a> {
-    fn first_result(&mut self, start: &DocResult) -> Result<Option<DocResult>, Error> {
-        let base_result = try!(self.filters[self.current_filter].first_result(start));
+    fn first_result(&mut self, start: &DocResult) -> Option<DocResult> {
+        let base_result = self.filters[self.current_filter].first_result(start);
         self.result(base_result)
     }
 
-    fn next_result(&mut self) -> Result<Option<DocResult>, Error> {
-        let base_result = try!(self.filters[self.current_filter].next_result());
+    fn next_result(&mut self) -> Option<DocResult> {
+        let base_result = self.filters[self.current_filter].next_result();
         self.result(base_result)
     }
 
@@ -672,36 +620,34 @@ pub struct FilterWithResult<'a> {
 }
 
 impl<'a> FilterWithResult<'a> {
-    fn prime_first_result(&mut self, start: &DocResult) -> Result<(), Error> {
+    fn prime_first_result(&mut self, start: &DocResult) {
         if self.is_done {
-            return Ok(())
+            return;
         }
         if self.result.is_none() {
-            self.result = try!(self.filter.first_result(start));
+            self.result = self.filter.first_result(start);
         } else if self.result.as_ref().unwrap().less(start, self.array_depth) {
-            self.result = try!(self.filter.first_result(start));
+            self.result = self.filter.first_result(start);
         }
         if self.result.is_none() {
             self.is_done = true;
         } else {
             self.result.as_mut().unwrap().arraypath.resize(self.array_depth, 0);
         }
-        Ok(())
     }
 
-    fn prime_next_result(&mut self) -> Result<(), Error> {
+    fn prime_next_result(&mut self) {
         if self.is_done {
-            return Ok(())
+            return;
         }
         if self.result.is_none() {
-            self.result = try!(self.filter.next_result());
+            self.result = self.filter.next_result();
         }
         if self.result.is_none() {
             self.is_done = true;
         } else {
             self.result.as_mut().unwrap().arraypath.resize(self.array_depth, 0);
         }
-        Ok(())
     }
 }
 
@@ -768,16 +714,16 @@ impl<'a> OrFilter<'a> {
 }
 
 impl<'a> QueryRuntimeFilter for OrFilter<'a> {
-    fn first_result(&mut self, start: &DocResult) -> Result<Option<DocResult>, Error> {
-        try!(self.left.prime_first_result(start));
-        try!(self.right.prime_first_result(start));
-        Ok(self.take_smallest())
+    fn first_result(&mut self, start: &DocResult) -> Option<DocResult> {
+        self.left.prime_first_result(start);
+        self.right.prime_first_result(start);
+        self.take_smallest()
     }
 
-    fn next_result(&mut self) -> Result<Option<DocResult>, Error> {
-        try!(self.left.prime_next_result());
-        try!(self.right.prime_next_result());
-        Ok(self.take_smallest())
+    fn next_result(&mut self) -> Option<DocResult> {
+        self.left.prime_next_result();
+        self.right.prime_next_result();
+        self.take_smallest()
     }
 
     fn prepare_relevancy_scoring(&mut self, mut qsi: &mut QueryScoringInfo) {
@@ -818,26 +764,26 @@ impl<'a> NotFilter<'a> {
 }
 
 impl<'a> QueryRuntimeFilter for NotFilter<'a> {
-    fn first_result(&mut self, start: &DocResult) -> Result<Option<DocResult>, Error> {
+    fn first_result(&mut self, start: &DocResult) -> Option<DocResult> {
         let mut start = start.clone_only_seq_and_arraypath();
-        while let Some(dr) = try!(self.filter.first_result(&start)) {
+        while let Some(dr) = self.filter.first_result(&start) {
             if start.less(&dr, self.array_depth) {
                 self.last_doc_returned = Some(start.clone_only_seq_and_arraypath());
-                return Ok(Some(start.clone_only_seq_and_arraypath()));
+                return Some(start.clone_only_seq_and_arraypath());
             }
             start.increment_last(self.array_depth);
         }
         self.last_doc_returned = None;
-        Ok(Some(start))
+        Some(start)
     }
 
-    fn next_result(&mut self) -> Result<Option<DocResult>, Error> {
+    fn next_result(&mut self) -> Option<DocResult> {
         let next = if let Some(ref last_doc_returned) = self.last_doc_returned {
             let mut next = last_doc_returned.clone_only_seq_and_arraypath();
             next.increment_last(self.array_depth);
             next
         } else {
-            return Ok(None);
+            return None;
         };
         self.first_result(&next)
     }
@@ -882,53 +828,53 @@ impl<'a> BindFilter<'a> {
         }
     }
     
-    fn collect_results(&mut self, mut first: DocResult) -> Result<Option<DocResult>, Error> {
+    fn collect_results(&mut self, mut first: DocResult) -> Option<DocResult> {
         let value_key = self.kb.value_key_from_doc_result(&first);
         first.add_bind_name_result(&self.bind_var_name, value_key);
         
-        while let Some(next) = try!(self.filter.next_result()) {
+        while let Some(next) = self.filter.next_result() {
             if next.seq == first.seq {
                 let value_key = self.kb.value_key_from_doc_result(&next);
                 first.add_bind_name_result(&self.bind_var_name, value_key);
             } else {
                 self.option_next = Some(next);
-                return Ok(Some(first));
+                return Some(first);
             }
         }
-        Ok(Some(first))
+        Some(first)
     }
 }
 
 impl<'a> QueryRuntimeFilter for BindFilter<'a> {
-    fn first_result(&mut self, start: &DocResult) -> Result<Option<DocResult>, Error> {
+    fn first_result(&mut self, start: &DocResult) -> Option<DocResult> {
         let first = if let Some(next) = self.option_next.take() {
             if start.less(&next, self.array_depth) {
                 Some(next)
             } else {
-                try!(self.filter.first_result(&start))
+                self.filter.first_result(&start)
             }
         } else {
-            try!(self.filter.first_result(&start))
+            self.filter.first_result(&start)
         };
 
         if let Some(first) = first {
             self.collect_results(first)
         } else {
-            Ok(None)
+            None
         }
     }
 
-    fn next_result(&mut self) -> Result<Option<DocResult>, Error> {
+    fn next_result(&mut self) -> Option<DocResult> {
         let first = if let Some(next) = self.option_next.take() {
             Some(next)
         } else {
-            try!(self.filter.next_result())
+            self.filter.next_result()
         };
 
         if let Some(first) = first {
             self.collect_results(first)
         } else {
-            Ok(None)
+            None
         }
     }
 
@@ -960,21 +906,21 @@ impl<'a> BoostFilter<'a> {
 }
 
 impl<'a> QueryRuntimeFilter for BoostFilter<'a> {
-    fn first_result(&mut self, start: &DocResult) -> Result<Option<DocResult>, Error> {
-        if let Some(mut dr) = try!(self.filter.first_result(&start)) {
+    fn first_result(&mut self, start: &DocResult) -> Option<DocResult> {
+        if let Some(mut dr) = self.filter.first_result(&start) {
             dr.boost_scores(self.boost);
-            Ok(Some(dr))
+            Some(dr)
         } else {
-            Ok(None)
+            None
         }
     }
 
-    fn next_result(&mut self) -> Result<Option<DocResult>, Error> {
-        if let Some(mut dr) = try!(self.filter.next_result()) {
+    fn next_result(&mut self) -> Option<DocResult> {
+        if let Some(mut dr) = self.filter.next_result() {
             dr.boost_scores(self.boost);
-            Ok(Some(dr))
+            Some(dr)
         } else {
-            Ok(None)
+            None
         }
     }
 

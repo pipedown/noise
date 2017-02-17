@@ -6,7 +6,6 @@ use std::mem::transmute;
 use std::collections::VecDeque;
 use std::iter::Iterator;
 
-use error::Error;
 use key_builder::{KeyBuilder, Segment};
 use json_value::{JsonValue};
 use query::{AggregateFun, SortInfo};
@@ -88,7 +87,7 @@ pub trait Returnable {
     /// VecDeque.
     fn fetch_result(&self, iter: &mut DBIterator, seq: u64, score: f32,
                     bind_var_keys: &HashMap<String, Vec<String>>,
-                    result: &mut VecDeque<JsonValue>) -> Result<(), Error>;
+                    result: &mut VecDeque<JsonValue>);
 
     /// If aggregates are used each Returnable needs to return information about the
     /// aggregate function it's using and the default value.
@@ -109,7 +108,7 @@ pub trait Returnable {
 
     /// This is the final step of a Returnable. The previous fetched JsonValues are now
     /// rendered with other ornamental json elements.
-    fn json_result(&self, results: &mut VecDeque<JsonValue>) -> Result<JsonValue, Error>;
+    fn json_result(&self, results: &mut VecDeque<JsonValue>) -> JsonValue;
 }
 
 /// A static Json Object the can contain another number of fields and nested returnables.
@@ -120,11 +119,10 @@ pub struct RetObject {
 impl Returnable for RetObject {
     fn fetch_result(&self, iter: &mut DBIterator, seq: u64, score: f32,
                     bind_var_keys: &HashMap<String, Vec<String>>,
-                    result: &mut VecDeque<JsonValue>) -> Result<(), Error> {
+                    result: &mut VecDeque<JsonValue>) {
         for &(ref _key, ref field) in self.fields.iter() {
-            try!(field.fetch_result(iter, seq, score, bind_var_keys, result));
+            field.fetch_result(iter, seq, score, bind_var_keys, result);
         }
-        Ok(())
     }
 
     fn get_aggregate_funs(&self, funs: &mut Vec<Option<(AggregateFun, JsonValue)>>) {
@@ -145,12 +143,12 @@ impl Returnable for RetObject {
        }
     }
 
-    fn json_result(&self, results: &mut VecDeque<JsonValue>) -> Result<JsonValue, Error> {
+    fn json_result(&self, results: &mut VecDeque<JsonValue>) -> JsonValue {
         let mut vec = Vec::with_capacity(self.fields.len());
         for &(ref key, ref returnable) in self.fields.iter() {
-            vec.push((key.clone(), try!(returnable.json_result(results))));
+            vec.push((key.clone(), returnable.json_result(results)));
         }
-        Ok(JsonValue::Object(vec))
+        JsonValue::Object(vec)
     }
 }
 
@@ -162,11 +160,10 @@ pub struct RetArray {
 impl Returnable for RetArray {
     fn fetch_result(&self, iter: &mut DBIterator, seq: u64, score: f32,
                     bind_var_keys: &HashMap<String, Vec<String>>,
-                    result: &mut VecDeque<JsonValue>) -> Result<(), Error> {
+                    result: &mut VecDeque<JsonValue>) {
         for ref slot in self.slots.iter() {
-            try!(slot.fetch_result(iter, seq, score, bind_var_keys, result));
+            slot.fetch_result(iter, seq, score, bind_var_keys, result);
         }
-        Ok(())
     }
 
     fn get_aggregate_funs(&self, funs: &mut Vec<Option<(AggregateFun, JsonValue)>>) {
@@ -187,12 +184,12 @@ impl Returnable for RetArray {
        }
     }
 
-    fn json_result(&self, results: &mut VecDeque<JsonValue>) -> Result<JsonValue, Error> {
+    fn json_result(&self, results: &mut VecDeque<JsonValue>) -> JsonValue {
         let mut vec = Vec::with_capacity(self.slots.len());
         for slot in self.slots.iter() {
-            vec.push(try!(slot.json_result(results)));
+            vec.push(slot.json_result(results));
         }
-        Ok(JsonValue::Array(vec))
+        JsonValue::Array(vec)
     }
 }
 
@@ -206,12 +203,12 @@ pub struct RetHidden {
 impl Returnable for RetHidden {
     fn fetch_result(&self, iter: &mut DBIterator, seq: u64, score: f32,
                     bind_var_keys: &HashMap<String, Vec<String>>,
-                    result: &mut VecDeque<JsonValue>) -> Result<(), Error> {
+                    result: &mut VecDeque<JsonValue>) {
         for ref unrendered in self.unrendered.iter() {
-            try!(unrendered.fetch_result(iter, seq, score, bind_var_keys, result));
+            unrendered.fetch_result(iter, seq, score, bind_var_keys, result);
         }
 
-        self.visible.fetch_result(iter, seq, score, bind_var_keys, result)
+        self.visible.fetch_result(iter, seq, score, bind_var_keys, result);
     }
 
     fn get_aggregate_funs(&self, funs: &mut Vec<Option<(AggregateFun, JsonValue)>>) {
@@ -230,7 +227,7 @@ impl Returnable for RetHidden {
         self.visible.get_sorting(sorts);
     }
 
-    fn json_result(&self, results: &mut VecDeque<JsonValue>) -> Result<JsonValue, Error> {
+    fn json_result(&self, results: &mut VecDeque<JsonValue>) -> JsonValue {
         for _n in 0..self.unrendered.len() {
             // we already sorted at this point, now discard the values
             results.pop_front();
@@ -248,8 +245,7 @@ pub struct RetLiteral {
 impl Returnable for RetLiteral {
     fn fetch_result(&self, _iter: &mut DBIterator, _seq: u64, _score: f32,
                     _bind_var_keys: &HashMap<String, Vec<String>>,
-                    _result: &mut VecDeque<JsonValue>) -> Result<(), Error> {
-        Ok(())
+                    _result: &mut VecDeque<JsonValue>) {
     }
 
     fn get_aggregate_funs(&self, _funs: &mut Vec<Option<(AggregateFun, JsonValue)>>) {
@@ -264,8 +260,8 @@ impl Returnable for RetLiteral {
         //noop
     }
 
-    fn json_result(&self, _results: &mut VecDeque<JsonValue>) -> Result<JsonValue, Error> {
-        Ok(self.json.clone())
+    fn json_result(&self, _results: &mut VecDeque<JsonValue>) -> JsonValue {
+        self.json.clone()
     }
 }
 
@@ -303,15 +299,15 @@ impl RetValue {
         }
     }
 
-    fn return_array(mut array: Vec<(u64, JsonValue)>) -> Result<JsonValue, Error> {
+    fn return_array(mut array: Vec<(u64, JsonValue)>) -> JsonValue {
         array.sort_by_key(|tuple| tuple.0);
-        Ok(JsonValue::Array(array.into_iter()
+        JsonValue::Array(array.into_iter()
                                  .map(|(_i, json)| json)
-                                 .collect()))
+                                 .collect())
     }
 
     fn descend_return_path(iter: &mut DBIterator, seq: u64, kb: &mut KeyBuilder,
-            rp: &ReturnPath, mut rp_index: usize) -> Result<Option<JsonValue>, Error> {
+            rp: &ReturnPath, mut rp_index: usize) -> Option<JsonValue> {
         
         while let Some(segment) = rp.nth(rp_index) {
             rp_index += 1;
@@ -325,8 +321,8 @@ impl RetValue {
                     loop {
                         kb.push_array_index(i);
                         i += 1;
-                        if let Some(json) = try!(RetValue::descend_return_path(iter, seq,
-                                &mut kb.clone(), rp, rp_index)) {
+                        if let Some(json) = RetValue::descend_return_path(iter, seq,
+                                &mut kb.clone(), rp, rp_index) {
                             vec.push(json);
                             kb.pop_array();
                         } else {
@@ -348,9 +344,9 @@ impl RetValue {
                             }
                             
                             if vec.is_empty() {
-                                return Ok(None);
+                                return None;
                             } else {
-                                return Ok(Some(JsonValue::Array(vec)));
+                                return Some(JsonValue::Array(vec));
                             }
                         }
                     }
@@ -370,25 +366,24 @@ impl RetValue {
         let (key, value) = match iter.next() {
             Some((key, value)) => (key, value),
             None => {
-                return Ok(None)
+                return None
             },
         };
 
         if !key.starts_with(value_key.as_bytes()) {
-            return Ok(None)
+            return None
         }
 
-        let json_value = try!(RetValue::fetch(&mut iter.peekable(), &value_key,
-                                            key, value));
-        Ok(Some(json_value))
+        let json_value = RetValue::fetch(&mut iter.peekable(), &value_key, key, value);
+        Some(json_value)
     }
 
     fn fetch(iter: &mut Peekable<&mut DBIterator>, value_key: &str,
-          mut key: Box<[u8]>, mut value: Box<[u8]>) -> Result<JsonValue, Error> {
+          mut key: Box<[u8]>, mut value: Box<[u8]>) -> JsonValue {
 
         if key.len() == value_key.len() {
             // we have a key match!
-            return Ok(RetValue::bytes_to_json_value(value.as_ref()));
+            return RetValue::bytes_to_json_value(value.as_ref());
         }
         let segment = {
             let key_str = unsafe{str::from_utf8_unchecked(&key)};
@@ -402,13 +397,13 @@ impl RetValue {
 
                 let mut value_key_next = value_key.to_string() + &escaped;
                 loop {
-                    let json_val = try!(RetValue::fetch(iter, &value_key_next, key, value));
+                    let json_val = RetValue::fetch(iter, &value_key_next, key, value);
                     object.push((unescaped, json_val));
     
                     let segment = match iter.peek() {
                         Some(&(ref k, ref _v)) => {
                             if !k.starts_with(value_key.as_bytes()) {
-                                return Ok(JsonValue::Object(object));
+                                return JsonValue::Object(object);
                             }
 
                             let key_str = unsafe{str::from_utf8_unchecked(&k)};
@@ -416,7 +411,7 @@ impl RetValue {
 
                             KeyBuilder::parse_first_key_value_segment(&remaining)
                         },
-                        None => return Ok(JsonValue::Object(object)),
+                        None => return JsonValue::Object(object),
                     };
 
                     if let Some((Segment::ObjectKey(unescaped2), escaped2)) = segment {
@@ -432,7 +427,7 @@ impl RetValue {
                         value_key_next.truncate(value_key.len());
                         value_key_next.push_str(&escaped2);
                     } else {
-                        return Ok(JsonValue::Object(object));
+                        return JsonValue::Object(object);
                     }
                 }
             }
@@ -443,8 +438,7 @@ impl RetValue {
 
                 let mut value_key_next = value_key.to_string() + &escaped;
                 loop {
-                    let json_val = try!(RetValue::fetch(iter, &value_key_next,
-                                                        key, value));
+                    let json_val = RetValue::fetch(iter, &value_key_next, key, value);
                     array.push((i, json_val));
     
                     let segment = match iter.peek() {
@@ -489,21 +483,19 @@ impl RetValue {
 impl Returnable for RetValue {
     fn fetch_result(&self, iter: &mut DBIterator, seq: u64, _score: f32,
                     _bind_var_keys: &HashMap<String, Vec<String>>,
-                    result: &mut VecDeque<JsonValue>) -> Result<(), Error> {
+                    result: &mut VecDeque<JsonValue>) {
         if Some((AggregateFun::Count, JsonValue::Null)) == self.ag {
             //don't fetch anything for count(). just stick in a null
             result.push_back(JsonValue::Null);
-            return Ok(());
         }
 
         let mut kb = KeyBuilder::new();
 
-        if let Some(json) = try!(RetValue::descend_return_path(iter, seq, &mut kb, &self.rp, 0)) {
+        if let Some(json) = RetValue::descend_return_path(iter, seq, &mut kb, &self.rp, 0) {
             result.push_back(json);
         } else {
             result.push_back(self.default.clone());
         }
-        Ok(())
     }
 
     fn get_aggregate_funs(&self, funs: &mut Vec<Option<(AggregateFun, JsonValue)>>) {
@@ -518,9 +510,9 @@ impl Returnable for RetValue {
         sorts.push(self.sort_info.take());
     }
 
-    fn json_result(&self, results: &mut VecDeque<JsonValue>) -> Result<JsonValue, Error> {
+    fn json_result(&self, results: &mut VecDeque<JsonValue>) -> JsonValue {
         if let Some(json) = results.pop_front() {
-            Ok(json)
+            json
         } else {
             panic!("missing result!");
         }
@@ -541,7 +533,7 @@ pub struct RetBind {
 impl Returnable for RetBind {
     fn fetch_result(&self, iter: &mut DBIterator, seq: u64, _score: f32,
                     bind_var_keys: &HashMap<String, Vec<String>>,
-                    result: &mut VecDeque<JsonValue>) -> Result<(), Error> {
+                    result: &mut VecDeque<JsonValue>) {
 
         if let Some(value_keys) = bind_var_keys.get(&self.bind_name) {
             let mut array = Vec::with_capacity(value_keys.len());
@@ -550,8 +542,8 @@ impl Returnable for RetBind {
 
                 kb.parse_value_key_path_only(KeyBuilder::value_key_path_only_from_str(&base_key));
 
-                if let Some(json) = try!(RetValue::descend_return_path(iter, seq, &mut kb,
-                        &self.extra_rp, 0)) {
+                if let Some(json) = RetValue::descend_return_path(iter, seq, &mut kb,
+                        &self.extra_rp, 0) {
                     array.push(json);
                 } else {
                     array.push(self.default.clone());
@@ -559,10 +551,8 @@ impl Returnable for RetBind {
             }
             result.push_back(JsonValue::Array(array));
         } else {
-            result.push_back(JsonValue::Array(vec![self.default.clone()]))
+            result.push_back(JsonValue::Array(vec![self.default.clone()]));
         }
-
-        Ok(())
     }
 
     fn get_aggregate_funs(&self, funs: &mut Vec<Option<(AggregateFun, JsonValue)>>) {
@@ -577,9 +567,9 @@ impl Returnable for RetBind {
         sorts.push(self.sort_info.take());
     }
 
-    fn json_result(&self, results: &mut VecDeque<JsonValue>) -> Result<JsonValue, Error> {
+    fn json_result(&self, results: &mut VecDeque<JsonValue>) -> JsonValue {
         if let Some(json) = results.pop_front() {
-            Ok(json)
+            json
         } else {
             panic!("missing bind result!");
         }
@@ -594,9 +584,8 @@ pub struct RetScore {
 impl Returnable for RetScore {
     fn fetch_result(&self, _iter: &mut DBIterator, _seq: u64, score: f32,
                     _bind_var_keys: &HashMap<String, Vec<String>>,
-                    result: &mut VecDeque<JsonValue>) -> Result<(), Error> {
+                    result: &mut VecDeque<JsonValue>) {
         result.push_back(JsonValue::Number(score as f64));
-        Ok(())
     }
 
     fn get_aggregate_funs(&self, _funs: &mut Vec<Option<(AggregateFun, JsonValue)>>) {
@@ -611,9 +600,9 @@ impl Returnable for RetScore {
         sorts.push(self.sort_info.take());
     }
 
-    fn json_result(&self, results: &mut VecDeque<JsonValue>) -> Result<JsonValue, Error> {
+    fn json_result(&self, results: &mut VecDeque<JsonValue>) -> JsonValue {
         if let Some(json) = results.pop_front() {
-            Ok(json)
+            json
         } else {
             panic!("missing score result!");
         }

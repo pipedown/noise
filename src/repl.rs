@@ -131,19 +131,12 @@ pub fn repl(r: &mut BufRead, w: &mut Write, test_mode: bool) {
                             w.write_all(b"\n").unwrap();
                         }
                         pretty.push();
-                        while let Some(result) = results.next() {
-                            match result {
-                                Ok(json) => {
-                                    json.render(w, &mut pretty).unwrap();
-                                    if results.peek().is_some() {
-                                        w.write_all(b",").unwrap();
-                                    }
-                                    w.write_all(b"\n").unwrap();
-                                },
-                                Err(reason) => {
-                                    write!(w, "{}\n", reason).unwrap();
-                                },
+                        while let Some(json) = results.next() {
+                            json.render(w, &mut pretty).unwrap();
+                            if results.peek().is_some() {
+                                w.write_all(b",").unwrap();
                             }
+                            w.write_all(b"\n").unwrap();
                         }
                         w.write_all(b"]\n").unwrap();
                     },
