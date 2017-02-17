@@ -356,57 +356,57 @@ impl<'a> QueryResults<'a> {
                 / (self.scoring_num_terms as f32)
     }
 
-    fn get_next_result(&mut self) -> Result<Option<DocResult>, Error> {
+    fn get_next_result(&mut self) -> Option<DocResult> {
         if self.done_with_sorting_and_ags {
-            return Ok(None);
+            return None;
         }
-        let result = try!(self.filter.first_result(&self.doc_result_next));
+        let result = self.filter.first_result(&self.doc_result_next);
         match result {
             Some(doc_result) => {
                 self.doc_result_next.seq = doc_result.seq + 1;
-                Ok(Some(doc_result))
+                Some(doc_result)
             },
-            None => Ok(None),
+            None => None,
         }
     }
 
-    fn get_next(&mut self) -> Result<Option<u64>, Error> {
-        if let Some(doc_result) = try!(self.get_next_result()) {
-            Ok(Some(doc_result.seq))
+    fn get_next(&mut self) -> Option<u64> {
+        if let Some(doc_result) = self.get_next_result() {
+            Some(doc_result.seq)
         } else {
-            Ok(None)
+            None
         }
     }
 
-    pub fn get_next_id(&mut self) -> Result<Option<String>, Error> {
-        let seq = try!(self.get_next());
+    pub fn get_next_id(&mut self) -> Option<String> {
+        let seq = self.get_next();
         match seq {
             Some(seq) => {
                 let key = format!("V{}#._id", seq);
-                match try!(self.snapshot.get(&key.as_bytes())) {
+                match self.snapshot.get(&key.as_bytes()).unwrap() {
                     // If there is an id, it's UTF-8. Strip off type leading byte
-                    Some(id) => Ok(Some(id.to_utf8().unwrap()[1..].to_string())),
-                    None => Ok(None)
+                    Some(id) => Some(id.to_utf8().unwrap()[1..].to_string()),
+                    None => None
                 }
             },
-            None => Ok(None),
+            None => None,
         }
     }
 
-    pub fn next_result(&mut self) -> Result<Option<JsonValue>, Error> {
+    pub fn next_result(&mut self) -> Option<JsonValue> {
         if self.needs_sorting_and_ags {
             loop {
                 let next = if self.done_with_sorting_and_ags {
                     None
                 } else {
-                    try!(self.get_next_result())
+                    self.get_next_result()
                 };
                 match next {
                     Some(dr) => {
                         let score = self.compute_relevancy_score(&dr);
                         let mut results = VecDeque::new();
-                        try!(self.returnable.fetch_result(&mut self.iter, dr.seq, score,
-                                                          &dr.bind_name_result, &mut results));
+                        self.returnable.fetch_result(&mut self.iter, dr.seq, score,
+                                                          &dr.bind_name_result, &mut results);
                         self.in_buffer.push(results);
                         if self.in_buffer.len() == self.limit {
                             self.do_sorting_and_ags();
@@ -426,23 +426,23 @@ impl<'a> QueryResults<'a> {
                             }
                         }
                         if let Some(mut results) = self.sorted_buffer.pop() {
-                            return Ok(Some(try!(self.returnable.json_result(&mut results))));
+                            return Some(self.returnable.json_result(&mut results));
                         } else {
-                            return Ok(None);
+                            return None;
                         }
                     },
                 }
             }
         } else {
-            let dr = match try!(self.get_next_result()) {
+            let dr = match self.get_next_result() {
                 Some(dr) => dr,
-                None => return Ok(None),
+                None => return None,
             };
             let score = self.compute_relevancy_score(&dr);
             let mut results = VecDeque::new();
-            try!(self.returnable.fetch_result(&mut self.iter, dr.seq, score,
-                                              &dr.bind_name_result, &mut results));
-            Ok(Some(try!(self.returnable.json_result(&mut results))))
+            self.returnable.fetch_result(&mut self.iter, dr.seq, score,
+                                              &dr.bind_name_result, &mut results);
+            Some(self.returnable.json_result(&mut results))
         }
     }
 
@@ -638,14 +638,10 @@ impl<'a> QueryResults<'a> {
 }
 
 impl<'a> Iterator for QueryResults<'a> {
-    type Item = Result<JsonValue, Error>;
+    type Item = JsonValue;
 
-    fn next(&mut self) -> Option<Result<JsonValue, Error>> {
-        match self.next_result() {
-            Ok(Some(json)) => Some(Ok(json)),
-            Ok(None) => None,
-            Err(reason) => Some(Err(reason)),
-        }
+    fn next(&mut self) -> Option<JsonValue> {
+        self.next_result()
     }
 }
 
@@ -995,9 +991,8 @@ mod tests {
         let mut query_results = Query::get_matches(r#"find {data: == "u"}"#, &index).unwrap();
         loop {
             match query_results.get_next_id() {
-                Ok(Some(result)) => println!("result: {}", result),
-                Ok(None) => break,
-                Err(error) => panic!(error),
+                Some(result) => println!("result: {}", result),
+                None => break,
             }
         }
     }

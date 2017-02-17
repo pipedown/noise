@@ -336,7 +336,7 @@ mod tests {
         index.flush().unwrap();
                                              
         let mut results = Query::get_matches(r#"find {foo:=="bar"}"#, &index).unwrap();
-        let query_id = results.get_next_id().unwrap().unwrap();
+        let query_id = results.get_next_id().unwrap();
         assert!(query_id.len() == 32);
         assert_eq!(query_id, id);
     }
