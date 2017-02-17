@@ -1,5 +1,6 @@
 extern crate rocksdb;
 
+mod aggregates;
 mod error;
 mod filters;
 mod json_shred;
