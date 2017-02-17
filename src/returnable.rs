@@ -8,7 +8,8 @@ use std::iter::Iterator;
 
 use key_builder::{KeyBuilder, Segment};
 use json_value::{JsonValue};
-use query::{AggregateFun, SortInfo};
+use query::SortInfo;
+use aggregates::AggregateFun;
 
 use rocksdb::{self, DBIterator, IteratorMode};
 
