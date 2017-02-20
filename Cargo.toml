@@ -7,7 +7,6 @@ homepage = "https://github.com/pipedown/noise.git"
 license = "MIT OR Apache-2.0"
 readme = "README.md"
 description = "Nested Object Inverted Search Engine"
-build = "build.rs"
 
 
 [dependencies]
