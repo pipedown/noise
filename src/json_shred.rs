@@ -352,8 +352,8 @@ mod tests {
     use std::str;
 
     use index::{Index, OpenOptions};
-    use returnable::RetValue;
     use json_value::JsonValue;
+    use snapshot::JsonFetcher;
 
     fn positions_from_rocks(rocks: &rocksdb::DB) -> Vec<(String, Vec<u32>)> {
         let mut result = Vec::new();
@@ -378,7 +378,7 @@ mod tests {
         for (key, value) in rocks.iterator(rocksdb::IteratorMode::Start) {
             if key[0] as char == 'V' {
                 let key_string = unsafe { str::from_utf8_unchecked((&key)) }.to_string();
-                result.push((key_string, RetValue::bytes_to_json_value(&*value)));
+                result.push((key_string, JsonFetcher::bytes_to_json_value(&*value)));
             }
         }
         result

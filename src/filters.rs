@@ -2,94 +2,13 @@ use std::str;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::collections::HashSet;
-use index::Index;
-use std::f32;
 
 use error::Error;
 use key_builder::KeyBuilder;
 use query::{DocResult, QueryScoringInfo};
-use returnable::RetValue;
 use json_value::JsonValue;
-use term_index::{DocResultIterator};
-
-// TODO vmx 2016-11-02: Make it import "rocksdb" properly instead of needing to import the individual tihngs
-use rocksdb::{self, DBIterator, Snapshot, IteratorMode};
-
-struct Scorer {
-    iter: DBIterator,
-    idf: f32,
-    boost: f32,
-    kb: KeyBuilder,
-    word: String,
-    term_ordinal: usize,
-}
-
-impl Scorer {
-    fn new(iter: DBIterator, word: &str, kb: &KeyBuilder, boost: f32) -> Scorer {
-        Scorer {
-            iter: iter,
-            idf: f32::NAN,
-            boost: boost,
-            kb: kb.clone(),
-            word: word.to_string(),
-            term_ordinal: 0,
-        }
-    }
-
-    fn init(&mut self, qsi: &mut QueryScoringInfo) {
-        let key = self.kb.keypathword_count_key(&self.word);
-        let doc_freq = if let Some(bytes) = self.get_value(&key) {
-            Index::convert_bytes_to_i32(bytes.as_ref()) as f32
-        } else {
-            0.0
-        };
-
-        let key = self.kb.keypath_count_key();
-        let num_docs = if let Some(bytes) = self.get_value(&key) {
-            Index::convert_bytes_to_i32(bytes.as_ref()) as f32
-        } else {
-            0.0
-        };
-
-        self.idf = 1.0 + (num_docs/(doc_freq + 1.0)).ln();
-        self.term_ordinal = qsi.num_terms;
-        qsi.num_terms += 1;
-        qsi.sum_of_idt_sqs += self.idf * self.idf;
-    }
-
-    fn get_value(&mut self, key: &str) -> Option<Box<[u8]>> {
-        self.iter.set_mode(IteratorMode::From(key.as_bytes(), rocksdb::Direction::Forward));
-        if let Some((ret_key, ret_value)) = self.iter.next() {
-            if ret_key.len() == key.len() && ret_key.starts_with(key.as_bytes())  {
-                Some(ret_value)
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    }
-
-    fn add_match_score(&mut self, num_matches: u32, dr: &mut DocResult) {
-        if self.should_score() {
-            let key = self.kb.field_length_key_from_doc_result(dr);
-            let total_field_words = if let Some(bytes) = self.get_value(&key) {
-                Index::convert_bytes_to_i32(bytes.as_ref()) as f32
-            } else {
-                panic!("Couldn't find field length for a match!! WHAT!");
-            };
-
-            let tf: f32 = (num_matches as f32).sqrt();
-            let norm = 1.0/(total_field_words as f32).sqrt();
-            let score = self.idf * self.idf * tf * norm * self.boost;
-            dr.add_score(self.term_ordinal, score);
-        }
-    }
-
-    fn should_score(&self) -> bool {
-        !self.idf.is_nan()
-    }
-}
+use snapshot::{Snapshot, DocResultIterator, Scorer, JsonFetcher};
+use rocksdb::{self, DBIterator, IteratorMode};
 
 pub trait QueryRuntimeFilter {
     fn first_result(&mut self, start: &DocResult) -> Option<DocResult>;
@@ -113,8 +32,8 @@ impl StemmedWordFilter {
     pub fn new(snapshot: &Snapshot, stemmed_word: &str,
                kb: &KeyBuilder, boost: f32) -> StemmedWordFilter {
         StemmedWordFilter {
-            iter: DocResultIterator::new(snapshot, stemmed_word, kb),
-            scorer: Scorer::new(snapshot.iterator(IteratorMode::Start), stemmed_word, kb, boost),
+            iter: snapshot.new_term_doc_result_iterator(stemmed_word, kb),
+            scorer: snapshot.new_scorer(stemmed_word, kb, boost),
         }
     }
 }
@@ -161,9 +80,8 @@ impl StemmedWordPosFilter {
     pub fn new(snapshot: &Snapshot, stemmed_word: &str,
                kb: &KeyBuilder, boost: f32) -> StemmedWordPosFilter {
         StemmedWordPosFilter{
-            iter: DocResultIterator::new(snapshot, stemmed_word, kb),
-            scorer: Scorer::new(snapshot.iterator(IteratorMode::Start),
-                                &stemmed_word, &kb, boost),
+            iter: snapshot.new_term_doc_result_iterator(stemmed_word, kb),
+            scorer: snapshot.new_scorer(&stemmed_word, &kb, boost),
         }
     }
 
@@ -307,7 +225,7 @@ impl ExactMatchFilter {
     pub fn new(snapshot: &Snapshot, filter: StemmedPhraseFilter,
             kb: KeyBuilder, phrase: String, case_sensitive: bool) -> ExactMatchFilter {
         ExactMatchFilter {
-            iter: snapshot.iterator(IteratorMode::Start),
+            iter: snapshot.new_iterator(),
             filter: filter,
             kb: kb,
             phrase: if case_sensitive {phrase} else {phrase.to_lowercase()},
@@ -324,7 +242,7 @@ impl ExactMatchFilter {
 
             if let Some((key, value)) = self.iter.next() {
                 debug_assert!(key.starts_with(value_key.as_bytes())); // must always be true!
-                if let JsonValue::String(string) = RetValue::bytes_to_json_value(&*value) {
+                if let JsonValue::String(string) = JsonFetcher::bytes_to_json_value(&*value) {
                     let matches = if self.case_sensitive {
                         self.phrase == string
                     } else {
