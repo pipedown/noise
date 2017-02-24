@@ -16,10 +16,7 @@ use returnable::{Returnable, RetValue, RetObject, RetArray, RetLiteral, RetBind,
 use filters::{QueryRuntimeFilter, ExactMatchFilter, StemmedWordFilter, StemmedWordPosFilter,
               StemmedPhraseFilter, DistanceFilter, AndFilter, OrFilter, BindFilter, BoostFilter,
               NotFilter};
-
-
-// TODO vmx 2016-11-02: Make it import "rocksdb" properly instead of needing to import the individual tihngs
-use rocksdb::Snapshot;
+use snapshot::Snapshot;
 
 
 pub struct Parser<'a, 'c> {
@@ -1083,8 +1080,6 @@ mod tests {
     use super::Parser;
 
     use index::{Index, OpenOptions};
-
-    use rocksdb::Snapshot;
     
     #[test]
     fn test_whitespace() {
@@ -1093,15 +1088,14 @@ mod tests {
 
         let mut index = Index::new();
         index.open(dbname, Some(OpenOptions::Create)).unwrap();
-        let rocks = &index.rocks.unwrap();
-        let mut snapshot = Snapshot::new(rocks);
+        let mut snapshot = index.new_snapshot();
 
         let query = " \n \t test";
         let mut parser = Parser::new(query, snapshot);
         parser.ws();
         assert_eq!(parser.offset, 5);
 
-        snapshot = Snapshot::new(rocks);
+        snapshot = index.new_snapshot();
         let query = "test".to_string();
         let mut parser = Parser::new(&query, snapshot);
         parser.ws();
@@ -1115,8 +1109,7 @@ mod tests {
 
         let mut index = Index::new();
         index.open(dbname, Some(OpenOptions::Create)).unwrap();
-        let rocks = &index.rocks.unwrap();
-        let snapshot = Snapshot::new(rocks);
+        let snapshot = index.new_snapshot();
 
         let query = r#"" \n \t test""#.to_string();
         let mut parser = Parser::new(&query, snapshot);

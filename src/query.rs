@@ -14,9 +14,8 @@ use json_value::{JsonValue};
 use filters::QueryRuntimeFilter;
 use aggregates::AggregateFun;
 use returnable::{Returnable, RetValue, RetScore, RetHidden, ReturnPath};
+use snapshot::{Snapshot, JsonFetcher};
 
-// TODO vmx 2016-11-02: Make it import "rocksdb" properly instead of needing to import the individual tihngs
-use rocksdb::{DBIterator, IteratorMode, Snapshot};
 
 
 #[derive(Clone)]
@@ -164,7 +163,7 @@ impl Query {
             return Err(Error::Parse("You must open the index first".to_string()));
         }
         
-        let snapshot = Snapshot::new(&index.rocks.as_ref().unwrap());
+        let snapshot = index.new_snapshot();
         let mut parser = Parser::new(query, snapshot);
         let mut filter = try!(parser.build_filter());
         let mut sorts = try!(parser.sort_clause());
@@ -299,7 +298,7 @@ impl Query {
         Ok(QueryResults {
             filter: filter,
             doc_result_next: DocResult::new(),
-            iter: parser.snapshot.iterator(IteratorMode::Start),
+            fetcher: parser.snapshot.new_json_fetcher(),
             snapshot: parser.snapshot,
             returnable: returnable,
             needs_sorting_and_ags: needs_sorting_and_ags,
@@ -323,7 +322,7 @@ pub struct QueryResults<'a> {
     filter: Box<QueryRuntimeFilter + 'a>,
     doc_result_next: DocResult,
     snapshot: Snapshot<'a>,
-    iter: DBIterator,
+    fetcher: JsonFetcher,
     returnable: Box<Returnable>,
     needs_sorting_and_ags: bool,
     done_with_sorting_and_ags: bool,
@@ -384,7 +383,7 @@ impl<'a> QueryResults<'a> {
         match seq {
             Some(seq) => {
                 let key = format!("V{}#._id", seq);
-                match self.snapshot.get(&key.as_bytes()).unwrap() {
+                match self.snapshot.get(&key.as_bytes()) {
                     // If there is an id, it's UTF-8. Strip off type leading byte
                     Some(id) => Some(id.to_utf8().unwrap()[1..].to_string()),
                     None => None
@@ -406,7 +405,7 @@ impl<'a> QueryResults<'a> {
                     Some(dr) => {
                         let score = self.compute_relevancy_score(&dr);
                         let mut results = VecDeque::new();
-                        self.returnable.fetch_result(&mut self.iter, dr.seq, score,
+                        self.returnable.fetch_result(&mut self.fetcher, dr.seq, score,
                                                           &dr.bind_name_result, &mut results);
                         self.in_buffer.push(results);
                         if self.in_buffer.len() == self.limit {
@@ -441,7 +440,7 @@ impl<'a> QueryResults<'a> {
             };
             let score = self.compute_relevancy_score(&dr);
             let mut results = VecDeque::new();
-            self.returnable.fetch_result(&mut self.iter, dr.seq, score,
+            self.returnable.fetch_result(&mut self.fetcher, dr.seq, score,
                                               &dr.bind_name_result, &mut results);
             Some(self.returnable.json_result(&mut results))
         }

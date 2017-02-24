@@ -12,11 +12,12 @@ use std::cmp::Ordering;
 
 use self::varint::{VarintRead, VarintWrite};
 
-use rocksdb::{MergeOperands, IteratorMode, CompactionDecision};
+use rocksdb::{MergeOperands, IteratorMode, Snapshot as RocksSnapshot, CompactionDecision};
 
 use error::Error;
 use json_shred::{Shredder};
 use key_builder::KeyBuilder;
+use snapshot::Snapshot;
 
 const NOISE_HEADER_VERSION: u64 = 1;
 
@@ -89,6 +90,10 @@ impl Index {
 
     pub fn is_open(&self) -> bool {
         self.rocks.is_some()
+    }
+
+    pub fn new_snapshot(&self) -> Snapshot {
+        Snapshot::new(RocksSnapshot::new(self.rocks.as_ref().unwrap()))
     }
 
     //This deletes the Rockdbs instance from disk
@@ -309,7 +314,7 @@ mod tests {
     use super::{Index, OpenOptions};
     use query::Query;
     use std::str;
-    use returnable::RetValue;
+    use snapshot::JsonFetcher;
     use json_value::JsonValue;
 
     #[test]
@@ -392,7 +397,7 @@ mod tests {
         for (key, value) in rocks.iterator(rocksdb::IteratorMode::Start) {
             if key[0] as char == 'V' {
                 let key_string = unsafe { str::from_utf8_unchecked((&key)) }.to_string();
-                results.push((key_string, RetValue::bytes_to_json_value(&*value)));
+                results.push((key_string, JsonFetcher::bytes_to_json_value(&*value)));
             }
         }
 
@@ -416,7 +421,7 @@ mod tests {
         for (key, value) in rocks.iterator(rocksdb::IteratorMode::Start) {
             if key[0] as char == 'V' {
                 let key_string = unsafe { str::from_utf8_unchecked((&key)) }.to_string();
-                results.push((key_string, RetValue::bytes_to_json_value(&*value)));
+                results.push((key_string, JsonFetcher::bytes_to_json_value(&*value)));
             }
         }
        let expected = vec![
