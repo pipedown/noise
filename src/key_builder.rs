@@ -4,8 +4,6 @@ use query::DocResult;
 use std::str;
 use std::cmp::Ordering;
 
-use self::unicode_normalization::UnicodeNormalization;
-
 pub enum Segment {
     ObjectKey(String),
     Array(u64),
@@ -257,8 +255,7 @@ impl KeyBuilder {
         let mut escaped_key = String::with_capacity((key.len() * 2) + 1); // max expansion
         escaped_key.push('.');
         
-        // normalize the key otherwise we might not match unnormalized but equivelent keys
-        for cc in key.nfkc() {
+        for cc in key.chars() {
             // Escape chars that conflict with delimiters
             if "\\$.!#".contains(cc) {
                 escaped_key.push('\\');
@@ -432,13 +429,6 @@ mod tests {
 
         kb.pop_object_key();
         assert_eq!(kb.keypath_segments_len(), 0, "No segments so far");
-    }
-
-    #[test]
-    fn test_segments_canonical() {
-        let mut kb = KeyBuilder::new();
-        kb.push_object_key("\u{0041}\u{030A}");
-        assert_eq!(kb.stemmed_word_key("word", 1), "W.Å!word#1,");
     }
 
     #[test]
