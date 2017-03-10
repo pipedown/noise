@@ -1,6 +1,6 @@
-extern crate noise;
+extern crate noise_search;
 
-use noise::repl::repl;
+use noise_search::repl::repl;
 
 use std::env;
 use std::io::{self, BufReader};
