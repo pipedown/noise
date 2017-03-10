@@ -9,6 +9,10 @@ readme = "README.md"
 description = "Nested Object Inverted Search Engine"
 build = "build.rs"
 
+[lib]
+name = "noise"
+crate-type = ["lib"]
+
 
 [dependencies]
 rustc-serialize = "0.3.19"
