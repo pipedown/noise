@@ -1,10 +1,10 @@
-extern crate noise;
+extern crate noise_search;
 
 use std::io::{Read, Write, BufReader};
 use std::fs::{self, File};
 use std::env;
 
-use noise::repl::repl;
+use noise_search::repl::repl;
 
 #[test]
 fn test_repl() {
