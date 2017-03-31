@@ -25,7 +25,6 @@ pub struct Index {
     high_doc_seq: u64,
     pub rocks: Option<rocksdb::DB>,
     id_str_in_batch: HashSet<String>,
-    batch: Option<rocksdb::WriteBatch>,
 }
 
 pub enum OpenOptions {
@@ -38,7 +37,6 @@ impl Index {
             high_doc_seq: 0,
             rocks: None,
             id_str_in_batch: HashSet::new(),
-            batch: None,
         }
     }
     // NOTE vmx 2016-10-13: Perhpas the name should be specified on `new()` as it is bound
@@ -81,8 +79,6 @@ impl Index {
         // next 8 is high seq
         self.high_doc_seq = Index::convert_bytes_to_u64(&value[8..]);
 
-        self.batch = Some(rocksdb::WriteBatch::default());
-
         Ok(())
     }
 
@@ -100,7 +96,7 @@ impl Index {
         Ok(ret)
     }
 
-    pub fn add(&mut self, json: &str) -> Result<String, Error> {
+    pub fn add(&mut self, json: &str, mut batch: &mut rocksdb::WriteBatch) -> Result<String, Error> {
         if !self.is_open() {
             return Err(Error::Write("Index isn't open.".to_string()));
         }
@@ -128,14 +124,14 @@ impl Index {
             (self.high_doc_seq, docid)
         };
         // now everything needs to be added to the batch,
-        try!(shredder.add_all_to_batch(seq, &mut self.batch.as_mut().unwrap()));
+        try!(shredder.add_all_to_batch(seq, &mut batch));
         self.id_str_in_batch.insert(docid.clone());
 
         Ok(docid)
     }
 
     /// Returns Ok(true) if the document was found and deleted, Ok(false) if it could not be found
-    pub fn delete(&mut self, docid: &str) -> Result<bool, Error> {
+    pub fn delete(&mut self, docid: &str, mut batch: &mut rocksdb::WriteBatch) -> Result<bool, Error> {
         if !self.is_open() {
             return Err(Error::Write("Index isn't open.".to_string()));
         }
@@ -147,7 +143,7 @@ impl Index {
         if let Some((seq, key_values)) = try!(self.gather_doc_fields(docid)) {
             let mut shredder = Shredder::new();
             try!(shredder.delete_existing_doc(docid, seq, key_values,
-                &mut self.batch.as_mut().unwrap()));
+                &mut batch));
             Ok(true)
         } else {
             Ok(false)
@@ -186,7 +182,7 @@ impl Index {
     }
 
     // Store the current batch
-    pub fn flush(&mut self) -> Result<(), Error> {
+    pub fn flush(&mut self, mut batch: rocksdb::WriteBatch) -> Result<(), Error> {
         // Flush can only be called if the index is open
         if !self.is_open() {
             return Err(Error::Write("Index isn't open.".to_string()));
@@ -196,12 +192,11 @@ impl Index {
         let mut bytes = Vec::with_capacity(8*2);
         bytes.write(&Index::convert_u64_to_bytes(NOISE_HEADER_VERSION)).unwrap();
         bytes.write(&Index::convert_u64_to_bytes(self.high_doc_seq)).unwrap();
-        try!(self.batch.as_mut().unwrap().put(b"HDB", &bytes));
+        try!(batch.put(b"HDB", &bytes));
 
-        let status = try!(rocks.write(self.batch.take().unwrap()));
+        let status = try!(rocks.write(batch));
         // Make sure there's a always a valid WriteBarch after writing it into RocksDB,
         // else calls to `self.batch.as_mut().unwrap()` would panic.
-        self.batch = Some(rocksdb::WriteBatch::default());
         self.id_str_in_batch.clear();
         Ok(status)
     }

@@ -3,6 +3,8 @@ use query::Query;
 use json_value::{JsonValue, PrettyPrint};
 
 use std::io::{Write, BufRead};
+use std::mem;
+use rocksdb;
 
 
 fn is_command(str: &str) -> bool {
@@ -18,6 +20,7 @@ fn is_command(str: &str) -> bool {
 
 pub fn repl(r: &mut BufRead, w: &mut Write, test_mode: bool) {
     let mut index = Index::new();
+    let mut batch = rocksdb::WriteBatch::default();
     let mut lines = String::new();
     let mut pretty = PrettyPrint::new("", "", "");
     loop {
@@ -50,7 +53,9 @@ pub fn repl(r: &mut BufRead, w: &mut Write, test_mode: bool) {
         } else {
             // commit anything written
             if index.is_open() {
-                if let Err(reason) = index.flush() {
+                let mut batch2 = rocksdb::WriteBatch::default();
+                mem::swap(&mut batch, &mut batch2);
+                if let Err(reason) = index.flush(batch2) {
                     write!(w, "{}\n", reason).unwrap();
                 }
             }
@@ -104,22 +109,26 @@ pub fn repl(r: &mut BufRead, w: &mut Write, test_mode: bool) {
                 },
             }
         } else if lines.starts_with("add") {
-            match index.add(&lines[3..]) {
+            match index.add(&lines[3..], &mut batch) {
                 Ok(id) => write!(w, "{}\n", JsonValue::str_to_literal(&id)).unwrap(),
                 Err(reason) => write!(w, "{}\n", reason).unwrap(),
             }
         } else if lines.starts_with("del") {
-            match index.delete(&lines[3..].trim_left()) {
+            match index.delete(&lines[3..].trim_left(), &mut batch) {
                 Ok(true) => write!(w, "ok\n").unwrap(),
                 Ok(false) => write!(w, "not found\n").unwrap(),
                 Err(reason) => write!(w, "{}\n", reason).unwrap(),
             }
         } else if lines.starts_with("commit") {
-            if let Err(reason) = index.flush() {
+            let mut batch2 = rocksdb::WriteBatch::default();
+            mem::swap(&mut batch, &mut batch2);
+            if let Err(reason) = index.flush(batch2) {
                 write!(w, "{}\n", reason).unwrap();
             }
         } else if lines.starts_with("find") {
-            if let Err(reason) = index.flush() {
+            let mut batch2 = rocksdb::WriteBatch::default();
+            mem::swap(&mut batch, &mut batch2);
+            if let Err(reason) = index.flush(batch2) {
                 write!(w, "{}\n", reason).unwrap();
             } else {
                 match Query::get_matches(&lines, &index) {
