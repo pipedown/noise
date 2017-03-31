@@ -22,7 +22,6 @@ use snapshot::Snapshot;
 const NOISE_HEADER_VERSION: u64 = 1;
 
 pub struct Index {
-    write_options: rocksdb::WriteOptions,
     high_doc_seq: u64,
     pub rocks: Option<rocksdb::DB>,
     id_str_in_batch: HashSet<String>,
@@ -36,7 +35,6 @@ pub enum OpenOptions {
 impl Index {
     pub fn new() -> Index {
         Index {
-            write_options: rocksdb::WriteOptions::new(),
             high_doc_seq: 0,
             rocks: None,
             id_str_in_batch: HashSet::new(),
@@ -68,7 +66,7 @@ impl Index {
                 let mut bytes = Vec::with_capacity(8*2);
                 bytes.write(&Index::convert_u64_to_bytes(NOISE_HEADER_VERSION)).unwrap();
                 bytes.write(&Index::convert_u64_to_bytes(0)).unwrap();
-                try!(rocks.put_opt(b"HDB", &bytes, &self.write_options));
+                try!(rocks.put_opt(b"HDB", &bytes, &rocksdb::WriteOptions::new()));
                 
                 rocks
             }
