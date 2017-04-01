@@ -13,6 +13,7 @@ use std::cmp::Ordering;
 use self::varint::{VarintRead, VarintWrite};
 
 use rocksdb::{MergeOperands, IteratorMode, Snapshot as RocksSnapshot, CompactionDecision};
+pub use rocksdb::batch;
 
 use error::Error;
 use json_shred::{Shredder};
