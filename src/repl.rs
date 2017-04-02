@@ -1,10 +1,9 @@
-use index::{Index, OpenOptions};
+use index::{Index, OpenOptions, Batch};
 use query::Query;
 use json_value::{JsonValue, PrettyPrint};
 
 use std::io::{Write, BufRead};
 use std::mem;
-use rocksdb;
 
 
 fn is_command(str: &str) -> bool {
@@ -20,7 +19,7 @@ fn is_command(str: &str) -> bool {
 
 pub fn repl(r: &mut BufRead, w: &mut Write, test_mode: bool) {
     let mut index = Index::new();
-    let mut batch = rocksdb::WriteBatch::default();
+    let mut batch = Batch::new();
     let mut lines = String::new();
     let mut pretty = PrettyPrint::new("", "", "");
     loop {
@@ -53,7 +52,7 @@ pub fn repl(r: &mut BufRead, w: &mut Write, test_mode: bool) {
         } else {
             // commit anything written
             if index.is_open() {
-                let mut batch2 = rocksdb::WriteBatch::default();
+                let mut batch2 = Batch::new();
                 mem::swap(&mut batch, &mut batch2);
                 if let Err(reason) = index.flush(batch2) {
                     write!(w, "{}\n", reason).unwrap();
@@ -120,13 +119,13 @@ pub fn repl(r: &mut BufRead, w: &mut Write, test_mode: bool) {
                 Err(reason) => write!(w, "{}\n", reason).unwrap(),
             }
         } else if lines.starts_with("commit") {
-            let mut batch2 = rocksdb::WriteBatch::default();
+            let mut batch2 = Batch::new();
             mem::swap(&mut batch, &mut batch2);
             if let Err(reason) = index.flush(batch2) {
                 write!(w, "{}\n", reason).unwrap();
             }
         } else if lines.starts_with("find") {
-            let mut batch2 = rocksdb::WriteBatch::default();
+            let mut batch2 = Batch::new();
             mem::swap(&mut batch, &mut batch2);
             if let Err(reason) = index.flush(batch2) {
                 write!(w, "{}\n", reason).unwrap();

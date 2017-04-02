@@ -673,7 +673,7 @@ mod tests {
 
     use super::Query;
 
-    use index::{Index, OpenOptions};
+    use index::{Index, OpenOptions, Batch};
 
     #[test]
     fn test_query_hello_world() {
@@ -682,8 +682,10 @@ mod tests {
 
         let mut index = Index::new();
         index.open(dbname, Some(OpenOptions::Create)).unwrap();
-        let _ = index.add(r#"{"_id": "foo", "hello": "world"}"#);
-        index.flush().unwrap();
+
+        let mut batch = Batch::new();
+        let _ = index.add(r#"{"_id": "foo", "hello": "world"}"#, &mut batch);
+        index.flush(batch).unwrap();
 
         let mut query_results = Query::get_matches(r#"find {hello:=="world"}"#, &index).unwrap();
         //let mut query_results = Query::get_matches(r#"a.b[foo="bar"]"#.to_string(), &index).unwrap();
@@ -697,12 +699,12 @@ mod tests {
 
         let mut index = Index::new();
         index.open(dbname, Some(OpenOptions::Create)).unwrap();
-
+        let mut batch = Batch::new();
         for ii in 1..100 {
             let data = ((ii % 25) + 97) as u8 as char;
-            let _ = index.add(&format!(r#"{{"_id":"{}", "data": "{}"}}"#, ii, data));
+            let _ = index.add(&format!(r#"{{"_id":"{}", "data": "{}"}}"#, ii, data), &mut batch);
         }
-        index.flush().unwrap();
+        index.flush(batch).unwrap();
 
         let mut query_results = Query::get_matches(r#"find {data: == "u"}"#, &index).unwrap();
         loop {
