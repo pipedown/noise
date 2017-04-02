@@ -25,7 +25,20 @@ const NOISE_HEADER_VERSION: u64 = 1;
 pub struct Index {
     high_doc_seq: u64,
     pub rocks: Option<rocksdb::DB>,
+}
+
+pub struct Batch {
+    wb: rocksdb::WriteBatch,
     id_str_in_batch: HashSet<String>,
+}
+
+impl Batch {
+    pub fn new() -> Batch {
+        Batch {
+            wb: rocksdb::WriteBatch::default(),
+            id_str_in_batch: HashSet::new(),
+        }
+    }
 }
 
 pub enum OpenOptions {
@@ -37,7 +50,6 @@ impl Index {
         Index {
             high_doc_seq: 0,
             rocks: None,
-            id_str_in_batch: HashSet::new(),
         }
     }
     // NOTE vmx 2016-10-13: Perhpas the name should be specified on `new()` as it is bound
@@ -97,14 +109,14 @@ impl Index {
         Ok(ret)
     }
 
-    pub fn add(&mut self, json: &str, mut batch: &mut rocksdb::WriteBatch) -> Result<String, Error> {
+    pub fn add(&mut self, json: &str, mut batch: &mut Batch) -> Result<String, Error> {
         if !self.is_open() {
             return Err(Error::Write("Index isn't open.".to_string()));
         }
         let mut shredder = Shredder::new();
         let (seq, docid) = if let Some(docid) = try!(shredder.shred(json)) {
             // user supplied doc id, see if we have an existing one.
-            if self.id_str_in_batch.contains(&docid) {
+            if batch.id_str_in_batch.contains(&docid) {
                 // oops use trying to add some doc 2x to this batch.
                 return Err(Error::Write("Attempt to insert multiple docs with same _id"
                     .to_string()));
@@ -125,18 +137,18 @@ impl Index {
             (self.high_doc_seq, docid)
         };
         // now everything needs to be added to the batch,
-        try!(shredder.add_all_to_batch(seq, &mut batch));
-        self.id_str_in_batch.insert(docid.clone());
+        try!(shredder.add_all_to_batch(seq, &mut batch.wb));
+        batch.id_str_in_batch.insert(docid.clone());
 
         Ok(docid)
     }
 
     /// Returns Ok(true) if the document was found and deleted, Ok(false) if it could not be found
-    pub fn delete(&mut self, docid: &str, mut batch: &mut rocksdb::WriteBatch) -> Result<bool, Error> {
+    pub fn delete(&mut self, docid: &str, mut batch: &mut Batch) -> Result<bool, Error> {
         if !self.is_open() {
             return Err(Error::Write("Index isn't open.".to_string()));
         }
-        if self.id_str_in_batch.contains(docid) {
+        if batch.id_str_in_batch.contains(docid) {
             // oops use trying to delete a doc that's in the batch. Can't happen,
             return Err(Error::Write("Attempt to delete doc with same _id added earlier"
                     .to_string()));
@@ -144,7 +156,8 @@ impl Index {
         if let Some((seq, key_values)) = try!(self.gather_doc_fields(docid)) {
             let mut shredder = Shredder::new();
             try!(shredder.delete_existing_doc(docid, seq, key_values,
-                &mut batch));
+                &mut batch.wb));
+            batch.id_str_in_batch.insert(docid.to_string());
             Ok(true)
         } else {
             Ok(false)
@@ -183,7 +196,7 @@ impl Index {
     }
 
     // Store the current batch
-    pub fn flush(&mut self, mut batch: rocksdb::WriteBatch) -> Result<(), Error> {
+    pub fn flush(&mut self, mut batch: Batch) -> Result<(), Error> {
         // Flush can only be called if the index is open
         if !self.is_open() {
             return Err(Error::Write("Index isn't open.".to_string()));
@@ -193,12 +206,9 @@ impl Index {
         let mut bytes = Vec::with_capacity(8*2);
         bytes.write(&Index::convert_u64_to_bytes(NOISE_HEADER_VERSION)).unwrap();
         bytes.write(&Index::convert_u64_to_bytes(self.high_doc_seq)).unwrap();
-        try!(batch.put(b"HDB", &bytes));
+        try!(batch.wb.put(b"HDB", &bytes));
 
-        let status = try!(rocks.write(batch));
-        // Make sure there's a always a valid WriteBarch after writing it into RocksDB,
-        // else calls to `self.batch.as_mut().unwrap()` would panic.
-        self.id_str_in_batch.clear();
+        let status = try!(rocks.write(batch.wb));
         Ok(status)
     }
 
@@ -305,7 +315,7 @@ impl Index {
 #[cfg(test)]
 mod tests {
     extern crate rocksdb;
-    use super::{Index, OpenOptions};
+    use super::{Index, OpenOptions, Batch};
     use query::Query;
     use std::str;
     use snapshot::JsonFetcher;
@@ -319,20 +329,21 @@ mod tests {
         let mut index = Index::new();
         //let db = super::Index::open("firstnoisedb", Option::None).unwrap();
         index.open(dbname, Some(OpenOptions::Create)).unwrap();
-        index.flush().unwrap();
+        index.flush(Batch::new()).unwrap();
     }
 
     #[test]
     fn test_uuid() {
         let dbname = "target/tests/testuuid";
         let _ = Index::drop(dbname);
+        let mut batch = Batch::new();
 
         let mut index = Index::new();
         index.open(dbname, Some(OpenOptions::Create)).unwrap();
 
-        let id = index.add(r#"{"foo":"bar"}"#).unwrap();
+        let id = index.add(r#"{"foo":"bar"}"#, &mut batch).unwrap();
 
-        index.flush().unwrap();
+        index.flush(batch).unwrap();
                                              
         let mut results = Query::get_matches(r#"find {foo:=="bar"}"#, &index).unwrap();
         let query_id = results.get_next_id().unwrap();
@@ -344,15 +355,17 @@ mod tests {
     fn test_compaction() {
         let dbname = "target/tests/testcompaction";
         let _ = Index::drop(dbname);
+        let mut batch = Batch::new();
 
         let mut index = Index::new();
         index.open(dbname, Some(OpenOptions::Create)).unwrap();
 
-        let id = index.add(r#"{"foo":"bar"}"#).unwrap();
-        index.flush().unwrap();
+        let id = index.add(r#"{"foo":"bar"}"#, &mut batch).unwrap();
+        index.flush(batch).unwrap();
 
-        index.delete(&id).unwrap();
-        index.flush().unwrap();
+        let mut batch = Batch::new();
+        index.delete(&id, &mut batch).unwrap();
+        index.flush(batch).unwrap();
 
         let rocks = index.rocks.as_mut().unwrap();
         
@@ -381,9 +394,10 @@ mod tests {
         
         //index.flush().unwrap();
 
-        let _ = index.add(r#"{"_id":"1", "foo":"array", "baz": [1,2,[3,4,[5]]]}"#).unwrap();
+        let mut batch = Batch::new();
+        let _ = index.add(r#"{"_id":"1", "foo":"array", "baz": [1,2,[3,4,[5]]]}"#, &mut batch).unwrap();
         
-        index.flush().unwrap();
+        index.flush(batch).unwrap();
         {
         let rocks = index.rocks.as_mut().unwrap();
 
@@ -406,8 +420,9 @@ mod tests {
         assert_eq!(results, expected);
         }
 
-        let _ = index.add(r#"{"_id":"1", "foo":"array", "baz": []}"#).unwrap();
-        index.flush().unwrap();
+        let mut batch = Batch::new();
+        let _ = index.add(r#"{"_id":"1", "foo":"array", "baz": []}"#, &mut batch).unwrap();
+        index.flush(batch).unwrap();
 
         let rocks = index.rocks.as_mut().unwrap();
 
