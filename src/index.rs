@@ -23,6 +23,7 @@ use snapshot::Snapshot;
 const NOISE_HEADER_VERSION: u64 = 1;
 
 pub struct Index {
+    name: String,
     high_doc_seq: u64,
     pub rocks: Option<rocksdb::DB>,
 }
@@ -48,6 +49,7 @@ pub enum OpenOptions {
 impl Index {
     pub fn new() -> Index {
         Index {
+            name: String::new(),
             high_doc_seq: 0,
             rocks: None,
         }
@@ -91,12 +93,16 @@ impl Index {
         assert_eq!(Index::convert_bytes_to_u64(&value[..8]), NOISE_HEADER_VERSION);
         // next 8 is high seq
         self.high_doc_seq = Index::convert_bytes_to_u64(&value[8..]);
-
+        self.name = name.to_string();
         Ok(())
     }
 
     pub fn is_open(&self) -> bool {
         self.rocks.is_some()
+    }
+
+    pub fn get_name(&self) -> &str {
+        &self.name
     }
 
     pub fn new_snapshot(&self) -> Snapshot {
