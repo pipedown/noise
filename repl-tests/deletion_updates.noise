@@ -32,7 +32,7 @@ del 5;
 ok
 
 add {"_id":"5", "A":"word"};
-"5"
+Write error: Attempt to insert multiple docs with same _id
 
 # add again without committing
 add {"_id":"5", "A":"word"};
