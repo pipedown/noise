@@ -305,8 +305,8 @@ impl KeyBuilder {
         self.keypath.len()
     }
 
-    /* splits key into key path, seq and array path
-        ex "W.foo$.bar$.baz!word#123,0,0" -> ("W.foo$.bar$.bar!word", "123", "0,0") */
+    /// splits key into key path, seq and array path
+    /// ex "W.foo$.bar$.baz!word#123,0,0" -> ("W.foo$.bar$.bar!word", "123", "0,0")
     fn split_keypath_seq_arraypath_from_key(str: &str) -> (&str, &str, &str) {
         let n = str.rfind("#").unwrap();
         assert!(n != 0);
@@ -317,7 +317,7 @@ impl KeyBuilder {
         (&str[..n], &seq_arraypath_str[..m], &seq_arraypath_str[m + 1..])
     }
 
-    /* parses a seq and array path portion (ex "123,0,0,10) of a key into a doc result */
+    /// parses a seq and array path portion (ex "123,0,0,10) of a key into a doc result
     pub fn parse_doc_result_from_key(str: &str) -> DocResult {
         let mut dr = DocResult::new();
         let (_path_str, seq_str, arraypath_str) =
