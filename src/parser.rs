@@ -64,9 +64,14 @@ impl<'a, 'c> Parser<'a, 'c> {
             self.ws();
             Ok(())
         } else {
-            Err(Error::Parse(format!("Expected '{}' at character {}, found {}.",
+            if self.offset == self.query.len() {
+                Err(Error::Parse(format!("Expected '{}' at character {} but query string ended.",
+                                     token, self.offset)))
+            } else {
+                Err(Error::Parse(format!("Expected '{}' at character {}, found {}.",
                                      token, self.offset,
                                      &self.query[self.offset..self.offset+1])))
+            }
         }
     }
 
@@ -1114,5 +1119,19 @@ mod tests {
         let query = r#"" \n \t test""#.to_string();
         let mut parser = Parser::new(&query, snapshot);
         assert_eq!(parser.must_consume_string_literal().unwrap(),  " \n \t test".to_string());
+    }
+
+    #[test]
+    fn test_bad_query_syntax() {
+        let dbname = "target/tests/test_bad_query_syntax";
+        let _ = Index::drop(dbname);
+
+        let mut index = Index::new();
+        index.open(dbname, Some(OpenOptions::Create)).unwrap();
+        let snapshot = index.new_snapshot();
+
+        let query = r#"find {foo: =="bar""#.to_string();
+        let mut parser = Parser::new(&query, snapshot);
+        assert!(parser.find().is_err());
     }
 }
