@@ -1000,9 +1000,18 @@ impl<'a, 'c> Parser<'a, 'c> {
             Ok(Some(try!(self.json_object())))
         } else if self.could_consume("[") {
             Ok(Some(try!(self.json_array())))
-        } else if let Some(string) = try!(self.consume_string_literal()) {
-            Ok(Some(JsonValue::String(string)))
         } else {
+            Ok(try!(self.json_primitive()))
+        }
+    }
+
+    /// JSON primites are strings, numbers, booleans and null
+    fn json_primitive(&mut self) -> Result<Option<JsonValue>, Error> {
+        if let Some(string) = try!(self.consume_string_literal()) {
+            Ok(Some(JsonValue::String(string)))
+        }
+        // The else is needed becaue of https://github.com/rust-lang/rust/issues/37510
+        else {
             if self.consume("true") {
                 Ok(Some(JsonValue::True))
             } else if self.consume("false") {
