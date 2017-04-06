@@ -50,7 +50,7 @@ impl Shredder {
         }
     }
 
-    fn add_entries(kb: &mut KeyBuilder, text: &str, docseq: u64,
+    fn add_stemmed_entries(kb: &mut KeyBuilder, text: &str, docseq: u64,
             batch: &mut rocksdb::WriteBatch, delete: bool) -> Result<(), Error> {
         let stems = Stems::new(text);
         let mut word_to_word_positions = HashMap::new();
@@ -189,7 +189,7 @@ impl Shredder {
             self.kb.parse_value_key_path_only(KeyBuilder::value_key_path_only_from_str(&key));
             if value[0] as char == 's' {
                 let text = unsafe{ str::from_utf8_unchecked(&value[1..]) };
-                try!(Shredder::add_entries(&mut self.kb, text, seq, batch, true));
+                try!(Shredder::add_stemmed_entries(&mut self.kb, text, seq, batch, true));
             } else {
                 try!(batch.delete(key.as_bytes()));
             }
@@ -201,7 +201,7 @@ impl Shredder {
             self.kb.parse_value_key_path_only(&key);
             if value[0] as char == 's' {
                 let text = unsafe{ str::from_utf8_unchecked(&value[1..]) };
-                try!(Shredder::add_entries(&mut self.kb, text, seq, batch, false));
+                try!(Shredder::add_stemmed_entries(&mut self.kb, text, seq, batch, false));
             } else {
                 let key = self.kb.value_key(seq);
                 try!(batch.put(&key.as_bytes(), &value.as_ref()));
@@ -226,7 +226,7 @@ impl Shredder {
             self.kb.parse_value_key_path_only(KeyBuilder::value_key_path_only_from_str(&key));
             if value[0] as char == 's' {
                 let text = unsafe{ str::from_utf8_unchecked(&value[1..]) };
-                try!(Shredder::add_entries(&mut self.kb, text, seq, batch, true));
+                try!(Shredder::add_stemmed_entries(&mut self.kb, text, seq, batch, true));
             } else {
                 try!(batch.delete(&key.into_bytes()));
             }
