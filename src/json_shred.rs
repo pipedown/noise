@@ -8,7 +8,6 @@ use std::io::Write;
 use std::str::Chars;
 use std::io::Cursor;
 use std::str;
-use std::mem;
 
 use self::varint::VarintWrite;
 use self::rustc_serialize::json::{JsonEvent, Parser, StackElement};
@@ -51,7 +50,7 @@ impl Shredder {
         }
     }
 
-    fn add_entries(&mut self, text: &str, docseq: u64,
+    fn add_entries(kb: &mut KeyBuilder, text: &str, docseq: u64,
             batch: &mut rocksdb::WriteBatch, delete: bool) -> Result<(), Error> {
         let stems = Stems::new(text);
         let mut word_to_word_positions = HashMap::new();
@@ -73,32 +72,32 @@ impl Shredder {
         }
 
         for (stemmed, (word_positions, count)) in word_to_word_positions {
-            let key = self.kb.stemmed_word_key(&stemmed, docseq);
+            let key = kb.stemmed_word_key(&stemmed, docseq);
             if delete {
                 try!(batch.delete(&key.into_bytes()));
             } else {
                 try!(batch.put(&key.into_bytes(), &word_positions.into_inner()));
             } 
 
-            let key = self.kb.field_length_key(docseq);
+            let key = kb.field_length_key(docseq);
             if delete {
                 try!(batch.delete(&key.into_bytes()));
             } else {
                 try!(batch.put(&key.into_bytes(), &Index::convert_i32_to_bytes(total_words)));
             }
             
-            let key = self.kb.keypathword_count_key(&stemmed);
+            let key = kb.keypathword_count_key(&stemmed);
             if delete {
                 try!(batch.merge(&key.into_bytes(), &Index::convert_i32_to_bytes(-count)));
             } else {
                 try!(batch.merge(&key.into_bytes(), &Index::convert_i32_to_bytes(count)));
             }
 
-            let key = self.kb.keypath_count_key();
+            let key = kb.keypath_count_key();
             try!(batch.merge(&key.into_bytes(), one_enc_bytes.get_ref()));
         }
 
-        let key = self.kb.value_key(docseq);
+        let key = kb.value_key(docseq);
         if delete {
             try!(batch.delete(&key.into_bytes()));
         } else {
@@ -184,32 +183,32 @@ impl Shredder {
     }
 
     pub fn add_all_to_batch(&mut self, seq: u64,
-            batch: &mut rocksdb::WriteBatch) -> Result<(), Error> {
-        let mut key_values = BTreeMap::new();
-        mem::swap(&mut key_values, &mut self.existing_key_value_to_delete);
-        for (key, value) in key_values.into_iter() {
+                            batch: &mut rocksdb::WriteBatch) -> Result<(), Error> {
+        for (key, value) in &self.existing_key_value_to_delete {
             self.kb.clear();
             self.kb.parse_value_key_path_only(KeyBuilder::value_key_path_only_from_str(&key));
             if value[0] as char == 's' {
                 let text = unsafe{ str::from_utf8_unchecked(&value[1..]) };
-                try!(self.add_entries(text, seq, batch, true));
+                try!(Shredder::add_entries(&mut self.kb, text, seq, batch, true));
             } else {
-                try!(batch.delete(&key.into_bytes()));
+                try!(batch.delete(key.as_bytes()));
             }
         }
-        let mut key_values = BTreeMap::new();
-        mem::swap(&mut key_values, &mut self.shredded_key_values);
-        for (key, value) in key_values.into_iter() {
+        self.existing_key_value_to_delete = BTreeMap::new();
+
+        for (key, value) in &self.shredded_key_values {
             self.kb.clear();
             self.kb.parse_value_key_path_only(&key);
             if value[0] as char == 's' {
                 let text = unsafe{ str::from_utf8_unchecked(&value[1..]) };
-                try!(self.add_entries(text, seq, batch, false));
+                try!(Shredder::add_entries(&mut self.kb, text, seq, batch, false));
             } else {
                 let key = self.kb.value_key(seq);
-                try!(batch.put(&key.into_bytes(), &value.as_ref()));
+                try!(batch.put(&key.as_bytes(), &value.as_ref()));
             }
         }
+        self.shredded_key_values = BTreeMap::new();
+
         let key = self.kb.id_to_seq_key(self.doc_id.as_ref().unwrap());
         try!(batch.put(&key.into_bytes(), &seq.to_string().as_bytes()));
 
@@ -227,7 +226,7 @@ impl Shredder {
             self.kb.parse_value_key_path_only(KeyBuilder::value_key_path_only_from_str(&key));
             if value[0] as char == 's' {
                 let text = unsafe{ str::from_utf8_unchecked(&value[1..]) };
-                try!(self.add_entries(text, seq, batch, true));
+                try!(Shredder::add_entries(&mut self.kb, text, seq, batch, true));
             } else {
                 try!(batch.delete(&key.into_bytes()));
             }
