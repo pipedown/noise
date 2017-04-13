@@ -1,0 +1,33 @@
+# Test for less and greater than
+
+drop target/tests/querytestranges;
+create target/tests/querytestranges;
+
+
+add {"_id":"one", "A":12};
+"one"
+add {"_id":"two", "A":12};
+"two"
+add {"_id":"three", "numberarray": [30, 60, 90]};
+"three"
+
+
+# Exact match number
+
+find {A: ==12};
+[
+"one",
+"two"
+]
+
+find {numberarray: [==60]};
+[
+"three"
+]
+
+del one;
+ok
+find {A: ==12};
+[
+"two"
+]

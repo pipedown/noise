@@ -68,6 +68,27 @@ impl KeyBuilder {
         str
     }
 
+    // Build the keypath for a number primitive without the arraypath
+    pub fn number_key_without_arraypath(&self, seq: u64) -> String {
+        let mut string = String::with_capacity(100);
+        string.push('f');
+        for segment in &self.keypath {
+            string.push_str(&segment);
+        };
+        string.push('#');
+        string.push_str(&seq.to_string());
+        string
+    }
+
+    // Build the index key that corresponds to a number primitive
+    pub fn number_key(&self, seq: u64) -> String {
+        let mut string = String::with_capacity(100);
+        string.push_str(&self.number_key_without_arraypath(seq));
+        KeyBuilder::add_arraypath(&mut string, &self.arraypath);
+        string
+    }
+
+
     /// Builds a stemmed word key for the input word and seq, using the key_path and arraypath
     /// built up internally.
     pub fn stemmed_word_key(&self, word: &str, seq: u64) -> String {
@@ -114,6 +135,10 @@ impl KeyBuilder {
         KeyBuilder::add_arraypath(keypathword, &dr.arraypath);
     }
 
+    // NOTE vmx 2017-04-13: I find `keypathword` not really descriptive. I would call the
+    // path without the Internal Id simply "keypath" and the one with and Internal Id
+    // "keypath_iid".
+    /// Truncates key to keypath only
     pub fn truncate_to_keypathword(stemmed_word_key: &mut String) {
         let n = stemmed_word_key.rfind("#").unwrap();
         stemmed_word_key.truncate(n + 1);
