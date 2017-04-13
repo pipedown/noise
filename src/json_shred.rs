@@ -50,6 +50,28 @@ impl Shredder {
         }
     }
 
+    fn add_number_entries(kb: &mut KeyBuilder, number: &[u8], docseq: u64,
+                          batch: &mut rocksdb::WriteBatch, delete: bool) -> Result<(), Error> {
+        // Add/delete the key that is used for range lookups
+        let number_key = kb.number_key(docseq);
+        if delete {
+            try!(batch.delete(&number_key.as_bytes()));
+        } else {
+            // The number contains the `f` prefix
+            try!(batch.put(&number_key.as_bytes(), &number[1..]));
+        }
+
+        // Add/elete the key-value pair of the shredded original JSON
+        let value_key = kb.value_key(docseq);
+        if delete {
+            try!(batch.delete(&value_key.as_bytes()));
+        } else {
+            try!(batch.put(&value_key.into_bytes(), &number.as_ref()));
+        }
+
+        Ok(())
+    }
+
     fn add_stemmed_entries(kb: &mut KeyBuilder, text: &str, docseq: u64,
             batch: &mut rocksdb::WriteBatch, delete: bool) -> Result<(), Error> {
         let stems = Stems::new(text);
@@ -187,11 +209,17 @@ impl Shredder {
         for (key, value) in &self.existing_key_value_to_delete {
             self.kb.clear();
             self.kb.parse_value_key_path_only(KeyBuilder::value_key_path_only_from_str(&key));
-            if value[0] as char == 's' {
-                let text = unsafe{ str::from_utf8_unchecked(&value[1..]) };
-                try!(Shredder::add_stemmed_entries(&mut self.kb, text, seq, batch, true));
-            } else {
-                try!(batch.delete(key.as_bytes()));
+            match value[0] as char {
+                's' => {
+                    let text = unsafe{ str::from_utf8_unchecked(&value[1..]) };
+                    try!(Shredder::add_stemmed_entries(&mut self.kb, text, seq, batch, true));
+                },
+                'f' => {
+                    try!(Shredder::add_number_entries(&mut self.kb, &value, seq, batch, true));
+                },
+                _ => {
+                    try!(batch.delete(key.as_bytes()));
+                },
             }
         }
         self.existing_key_value_to_delete = BTreeMap::new();
@@ -199,12 +227,18 @@ impl Shredder {
         for (key, value) in &self.shredded_key_values {
             self.kb.clear();
             self.kb.parse_value_key_path_only(&key);
-            if value[0] as char == 's' {
-                let text = unsafe{ str::from_utf8_unchecked(&value[1..]) };
-                try!(Shredder::add_stemmed_entries(&mut self.kb, text, seq, batch, false));
-            } else {
-                let key = self.kb.value_key(seq);
-                try!(batch.put(&key.as_bytes(), &value.as_ref()));
+            match value[0] as char {
+                's' => {
+                    let text = unsafe{ str::from_utf8_unchecked(&value[1..]) };
+                    try!(Shredder::add_stemmed_entries(&mut self.kb, text, seq, batch, false));
+                },
+                'f' => {
+                    try!(Shredder::add_number_entries(&mut self.kb, &value, seq, batch, false));
+                },
+                _ => {
+                    let key = self.kb.value_key(seq);
+                    try!(batch.put(&key.as_bytes(), &value.as_ref()));
+                },
             }
         }
         self.shredded_key_values = BTreeMap::new();
@@ -224,11 +258,17 @@ impl Shredder {
         for (key, value) in existing.into_iter() {
             self.kb.clear();
             self.kb.parse_value_key_path_only(KeyBuilder::value_key_path_only_from_str(&key));
-            if value[0] as char == 's' {
-                let text = unsafe{ str::from_utf8_unchecked(&value[1..]) };
-                try!(Shredder::add_stemmed_entries(&mut self.kb, text, seq, batch, true));
-            } else {
-                try!(batch.delete(&key.into_bytes()));
+            match value[0] as char {
+                's' => {
+                    let text = unsafe{ str::from_utf8_unchecked(&value[1..]) };
+                    try!(Shredder::add_stemmed_entries(&mut self.kb, text, seq, batch, true));
+                },
+                'f' => {
+                    try!(Shredder::add_number_entries(&mut self.kb, &value, seq, batch, true));
+                },
+                _ => {
+                    try!(batch.delete(&key.as_bytes()));
+                },
             }
         }
         let key = self.kb.id_to_seq_key(self.doc_id.as_ref().unwrap());

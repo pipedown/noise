@@ -15,7 +15,7 @@ use returnable::{Returnable, RetValue, RetObject, RetArray, RetLiteral, RetBind,
                  ReturnPath};
 use filters::{QueryRuntimeFilter, ExactMatchFilter, StemmedWordFilter, StemmedWordPosFilter,
               StemmedPhraseFilter, DistanceFilter, AndFilter, OrFilter, BindFilter, BoostFilter,
-              NotFilter};
+              NotFilter, RangeFilter};
 use snapshot::Snapshot;
 
 
@@ -635,18 +635,29 @@ impl<'a, 'c> Parser<'a, 'c> {
             return Ok(Box::new(NotFilter::new(try!(self.compare()), self.kb.arraypath_len())));
         }
         if self.consume("==") {
-            let literal = try!(self.must_consume_string_literal());
+            let json = try!(self.must_consume_json_primitive());
             let boost = try!(self.consume_boost());
-            let mut filters: Vec<StemmedWordPosFilter> = Vec::new();
-            {
-                let stems = Stems::new(&literal);
-                for stem in stems {
-                    filters.push(StemmedWordPosFilter::new(&self.snapshot,
-                                                           &stem.stemmed, &self.kb, boost));
-                }
-            }
-            let filter = StemmedPhraseFilter::new(filters);
-            Ok(Box::new(ExactMatchFilter::new(&self.snapshot, filter, self.kb.clone(), literal, true)))
+            let filter: Box<QueryRuntimeFilter> = match json {
+                JsonValue::String(literal) => {
+                    let mut filters: Vec<StemmedWordPosFilter> = Vec::new();
+                    {
+                        let stems = Stems::new(&literal);
+                        for stem in stems {
+                            filters.push(StemmedWordPosFilter::new(&self.snapshot,
+                                                                   &stem.stemmed,
+                                                                   &self.kb,
+                                                                   boost));
+                        }
+                    }
+                    let filter = StemmedPhraseFilter::new(filters);
+                    Box::new(ExactMatchFilter::new(&self.snapshot, filter, self.kb.clone(), literal, true))
+                },
+                JsonValue::Number(num) => {
+                    Box::new(RangeFilter::new(&self.snapshot, self.kb.clone(), Some(num), Some(num)))
+                },
+                _ => panic!("Comparison on other JSON types is not yet implemented!"),
+            };
+            Ok(filter)
         } else if self.consume("~=") {
             // regular search
             let literal = try!(self.must_consume_string_literal());
@@ -1002,6 +1013,14 @@ impl<'a, 'c> Parser<'a, 'c> {
             Ok(Some(try!(self.json_array())))
         } else {
             Ok(try!(self.json_primitive()))
+        }
+    }
+
+    fn must_consume_json_primitive(&mut self) -> Result<JsonValue, Error> {
+        if let Some(json) = try!(self.json_primitive()) {
+            Ok(json)
+        } else {
+            Err(Error::Parse("Expected JSON primitive.".to_string()))
         }
     }
 
