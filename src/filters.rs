@@ -1,4 +1,4 @@
-use std::str;
+use std::{mem, str};
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::collections::HashSet;
@@ -297,6 +297,83 @@ impl QueryRuntimeFilter for ExactMatchFilter {
         self.filter.is_all_not()
     }
 }
+
+pub struct RangeFilter {
+    iter: DBIterator,
+    kb: KeyBuilder,
+    min: Option<f64>,
+    max: Option<f64>,
+    keypath: String,
+}
+
+impl RangeFilter {
+    pub fn new(snapshot: &Snapshot, kb: KeyBuilder, min: Option<f64>, max: Option<f64>) -> RangeFilter {
+        RangeFilter {
+            iter: snapshot.new_iterator(),
+            kb: kb,
+            min: min,
+            max: max,
+            // The keypath we use to seek to the correct key within RocksDB
+            keypath: String::new(),
+        }
+    }
+}
+
+impl QueryRuntimeFilter for RangeFilter {
+    fn first_result(&mut self, start: &DocResult) -> Option<DocResult> {
+        let mut value_key = self.kb.number_key_without_arraypath(start.seq);
+
+        // NOTE vmx 2017-04-13: Iterating over keys is really similar to the
+        // `DocResultIterator` in `snapshot.rs`. It should probablly be unified.
+        self.iter.set_mode(IteratorMode::From(value_key.as_bytes(),
+                                              rocksdb::Direction::Forward));
+        KeyBuilder::truncate_to_keypathword(&mut value_key);
+        self.keypath = value_key;
+        self.next_result()
+    }
+
+    fn next_result(&mut self) -> Option<DocResult> {
+        while let Some((key, value)) = self.iter.next() {
+            if !key.starts_with(self.keypath.as_bytes()) {
+                // we passed the key path we are interested in. nothing left to do
+                return None
+            }
+
+            let key_str = unsafe{ str::from_utf8_unchecked(&key) };
+            let number = unsafe{
+                let array = *(value[..].as_ptr() as *const [_; 8]);
+                mem::transmute::<[u8; 8], f64>(array)
+            };
+
+            match (self.min, self.max) {
+                (Some(min), Some(max)) => {
+                    if number >= min && number <= max {
+                        let dr = KeyBuilder::parse_doc_result_from_key(&key_str);
+                        return Some(dr);
+                    }
+                    // Keep looping and move on to the next key
+                },
+                _ => {
+                    panic!("Only closed ranges are supported atm");
+                }
+            }
+        }
+        None
+    }
+
+    // TODO vmx 2017-04-13: Scoring is not implemented yet
+    fn prepare_relevancy_scoring(&mut self, _qsi: &mut QueryScoringInfo) {
+    }
+
+    fn check_double_not(&self, _parent_is_neg: bool) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn is_all_not(&self) -> bool {
+        false
+    }
+}
+
 
 pub struct DistanceFilter {
     filters: Vec<StemmedWordPosFilter>,
