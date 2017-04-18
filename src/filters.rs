@@ -23,6 +23,11 @@ pub trait QueryRuntimeFilter {
 }
 
 
+pub enum RangeOperator {
+    Inclusive(f64),
+    Exclusive(f64),
+}
+
 pub struct StemmedWordFilter {
     iter: DocResultIterator,
     scorer: Scorer,
@@ -301,13 +306,16 @@ impl QueryRuntimeFilter for ExactMatchFilter {
 pub struct RangeFilter {
     iter: DBIterator,
     kb: KeyBuilder,
-    min: Option<f64>,
-    max: Option<f64>,
+    min: Option<RangeOperator>,
+    max: Option<RangeOperator>,
     keypath: String,
 }
 
 impl RangeFilter {
-    pub fn new(snapshot: &Snapshot, kb: KeyBuilder, min: Option<f64>, max: Option<f64>) -> RangeFilter {
+    pub fn new(snapshot: &Snapshot,
+               kb: KeyBuilder,
+               min: Option<RangeOperator>,
+               max: Option<RangeOperator>) -> RangeFilter {
         RangeFilter {
             iter: snapshot.new_iterator(),
             kb: kb,
@@ -345,18 +353,24 @@ impl QueryRuntimeFilter for RangeFilter {
                 mem::transmute::<[u8; 8], f64>(array)
             };
 
-            match (self.min, self.max) {
-                (Some(min), Some(max)) => {
-                    if number >= min && number <= max {
-                        let dr = KeyBuilder::parse_doc_result_from_key(&key_str);
-                        return Some(dr);
-                    }
-                    // Keep looping and move on to the next key
-                },
-                _ => {
-                    panic!("Only closed ranges are supported atm");
-                }
+            let min_condition = match self.min {
+                Some(RangeOperator::Inclusive(min)) => number >= min,
+                Some(RangeOperator::Exclusive(min)) => number > min,
+                // No condition was given => it always matches
+                None => true,
+            };
+            let max_condition = match self.max {
+                Some(RangeOperator::Inclusive(max)) => number <= max,
+                Some(RangeOperator::Exclusive(max)) => number < max,
+                // No condition was given => it always matches
+                None => true,
+            };
+
+            if min_condition && max_condition {
+                let dr = KeyBuilder::parse_doc_result_from_key(&key_str);
+                return Some(dr);
             }
+            // Else: No match => KKeep looping and move on to the next key
         }
         None
     }
