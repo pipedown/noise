@@ -15,7 +15,7 @@ use returnable::{Returnable, RetValue, RetObject, RetArray, RetLiteral, RetBind,
                  ReturnPath};
 use filters::{QueryRuntimeFilter, ExactMatchFilter, StemmedWordFilter, StemmedWordPosFilter,
               StemmedPhraseFilter, DistanceFilter, AndFilter, OrFilter, BindFilter, BoostFilter,
-              NotFilter, RangeFilter};
+              NotFilter, RangeFilter, RangeOperator};
 use snapshot::Snapshot;
 
 
@@ -514,6 +514,21 @@ impl<'a, 'c> Parser<'a, 'c> {
         Ok(Some(lit))
     }
 
+    fn consume_range_operator(&mut self) -> Result<RangeOperator, Error> {
+        let inclusive = self.consume("=");
+        let json = try!(self.must_consume_json_primitive());
+        match json {
+            JsonValue::Number(num) => {
+                if inclusive {
+                    Ok(RangeOperator::Inclusive(num))
+                } else {
+                    Ok(RangeOperator::Exclusive(num))
+                }
+            },
+            _ => panic!("Range operator on other JSON types is not yet implemented!"),
+        }
+    }
+
     fn find<'b>(&'b mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
         if !self.consume("find") {
             return Err(Error::Parse("Missing 'find' keyword".to_string()));
@@ -653,9 +668,12 @@ impl<'a, 'c> Parser<'a, 'c> {
                     Box::new(ExactMatchFilter::new(&self.snapshot, filter, self.kb.clone(), literal, true))
                 },
                 JsonValue::Number(num) => {
-                    Box::new(RangeFilter::new(&self.snapshot, self.kb.clone(), Some(num), Some(num)))
+                    Box::new(RangeFilter::new(&self.snapshot,
+                                              self.kb.clone(),
+                                              Some(RangeOperator::Inclusive(num)),
+                                              Some(RangeOperator::Inclusive(num))))
                 },
-                _ => panic!("Comparison on other JSON types is not yet implemented!"),
+                _ => panic!("Exact match on other JSON types is not yet implemented!"),
             };
             Ok(filter)
         } else if self.consume("~=") {
@@ -706,6 +724,14 @@ impl<'a, 'c> Parser<'a, 'c> {
                 0 => panic!("Cannot create a DistanceFilter"),
                 _ => Ok(Box::new(DistanceFilter::new(filters, word_distance as u32))),
             }
+        } else if self.consume(">") {
+            let min = try!(self.consume_range_operator());
+            let filter = RangeFilter::new(&self.snapshot, self.kb.clone(), Some(min), None);
+            Ok(Box::new(filter))
+        } else if self.consume("<") {
+            let max = try!(self.consume_range_operator());
+            let filter = RangeFilter::new(&self.snapshot, self.kb.clone(), None, Some(max));
+            Ok(Box::new(filter))
         } else {
             Err(Error::Parse("Expected comparison operator".to_string()))
         }
