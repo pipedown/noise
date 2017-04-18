@@ -61,14 +61,6 @@ impl Shredder {
             try!(batch.put(&number_key.as_bytes(), &number[1..]));
         }
 
-        // Add/elete the key-value pair of the shredded original JSON
-        let value_key = kb.value_key(docseq);
-        if delete {
-            try!(batch.delete(&value_key.as_bytes()));
-        } else {
-            try!(batch.put(&value_key.into_bytes(), &number.as_ref()));
-        }
-
         Ok(())
     }
 
@@ -117,17 +109,6 @@ impl Shredder {
 
             let key = kb.keypath_count_key();
             try!(batch.merge(&key.into_bytes(), one_enc_bytes.get_ref()));
-        }
-
-        let key = kb.value_key(docseq);
-        if delete {
-            try!(batch.delete(&key.into_bytes()));
-        } else {
-            let mut buffer = String::with_capacity(text.len() + 1);
-            buffer.push('s');
-            buffer.push_str(&text);
-
-            try!(batch.put(&key.into_bytes(), &buffer.as_bytes()));
         }
 
         Ok(())
@@ -217,10 +198,9 @@ impl Shredder {
                 'f' => {
                     try!(Shredder::add_number_entries(&mut self.kb, &value, seq, batch, true));
                 },
-                _ => {
-                    try!(batch.delete(key.as_bytes()));
-                },
+                _ => {},
             }
+            try!(batch.delete(&key.as_bytes()));
         }
         self.existing_key_value_to_delete = BTreeMap::new();
 
@@ -235,11 +215,10 @@ impl Shredder {
                 'f' => {
                     try!(Shredder::add_number_entries(&mut self.kb, &value, seq, batch, false));
                 },
-                _ => {
-                    let key = self.kb.value_key(seq);
-                    try!(batch.put(&key.as_bytes(), &value.as_ref()));
-                },
+                _ => {},
             }
+            let key = self.kb.value_key(seq);
+            try!(batch.put(&key.as_bytes(), &value.as_ref()));
         }
         self.shredded_key_values = BTreeMap::new();
 
@@ -266,10 +245,9 @@ impl Shredder {
                 'f' => {
                     try!(Shredder::add_number_entries(&mut self.kb, &value, seq, batch, true));
                 },
-                _ => {
-                    try!(batch.delete(&key.as_bytes()));
-                },
+                _ => {},
             }
+            try!(batch.delete(&key.as_bytes()));
         }
         let key = self.kb.id_to_seq_key(self.doc_id.as_ref().unwrap());
         try!(batch.delete(&key.into_bytes()));
