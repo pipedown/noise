@@ -10,6 +10,10 @@ add {"_id":"two", "A":12};
 "two"
 add {"_id":"three", "numberarray": [30, 60, 90]};
 "three"
+add {"_id":"four", "A":-3};
+"four"
+add {"_id":"five", "A":35};
+"five"
 
 
 # Exact match number
@@ -30,4 +34,73 @@ ok
 find {A: ==12};
 [
 "two"
+]
+
+
+# Greater than (equal) on number
+
+find {A: >20};
+[
+"five"
+]
+
+find {A: >-5};
+[
+"two",
+"four",
+"five"
+]
+
+find {numberarray: [>40]};
+[
+"three"
+]
+
+find {A: >35};
+[]
+
+find {A: >=35};
+[
+"five"
+]
+
+
+# Less than (equal) on number
+
+find {A: <-1};
+[
+"four"
+]
+
+find {A: <20};
+[
+"two",
+"four"
+]
+
+find {numberarray: [<70]};
+[
+"three"
+]
+
+find {A: <-3};
+[]
+
+find {A: <=-3};
+[
+"four"
+]
+
+
+# Range on number
+
+find {A: >10, A: <20};
+[
+"two"
+]
+
+find {A: >-10, A: <20};
+[
+"two",
+"four"
 ]
