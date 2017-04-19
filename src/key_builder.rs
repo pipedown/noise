@@ -43,7 +43,7 @@ impl KeyBuilder {
 
     pub fn keypathword_count_key(&self, word: &str) -> String {
         let mut string = String::with_capacity(100);
-        string.push('F');
+        string.push('C');
         for segment in &self.keypath {
             string.push_str(&segment);
         }
