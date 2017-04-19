@@ -673,6 +673,24 @@ impl<'a, 'c> Parser<'a, 'c> {
                                               Some(RangeOperator::Inclusive(num)),
                                               Some(RangeOperator::Inclusive(num))))
                 },
+                JsonValue::True => {
+                    Box::new(RangeFilter::new(&self.snapshot,
+                                              self.kb.clone(),
+                                              Some(RangeOperator::True),
+                                              Some(RangeOperator::True)))
+                },
+                JsonValue::False => {
+                    Box::new(RangeFilter::new(&self.snapshot,
+                                              self.kb.clone(),
+                                              Some(RangeOperator::False),
+                                              Some(RangeOperator::False)))
+                },
+                JsonValue::Null => {
+                    Box::new(RangeFilter::new(&self.snapshot,
+                                              self.kb.clone(),
+                                              Some(RangeOperator::Null),
+                                              Some(RangeOperator::Null)))
+                },
                 _ => panic!("Exact match on other JSON types is not yet implemented!"),
             };
             Ok(filter)
