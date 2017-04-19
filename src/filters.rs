@@ -23,9 +23,15 @@ pub trait QueryRuntimeFilter {
 }
 
 
+#[derive(PartialEq)]
 pub enum RangeOperator {
     Inclusive(f64),
     Exclusive(f64),
+    // For booleans and null only exact match makes sense, hence no inclusive/exclusive
+    // boundaries are needed
+    True,
+    False,
+    Null,
 }
 
 pub struct StemmedWordFilter {
@@ -329,8 +335,24 @@ impl RangeFilter {
 
 impl QueryRuntimeFilter for RangeFilter {
     fn first_result(&mut self, start: &DocResult) -> Option<DocResult> {
-        let mut value_key = self.kb.number_key(start.seq);
-
+        let mut value_key = {
+            // `min` and `max` have the save type, so picking one is OK
+            let range_operator = self.min.as_ref().or(self.max.as_ref()).unwrap();
+            match range_operator {
+                &RangeOperator::Inclusive(_) | &RangeOperator::Exclusive(_)  => {
+                    self.kb.number_key(start.seq)
+                },
+                &RangeOperator::True => {
+                    self.kb.bool_null_key('T', start.seq)
+                },
+                &RangeOperator::False => {
+                    self.kb.bool_null_key('F', start.seq)
+                },
+                &RangeOperator::Null => {
+                    self.kb.bool_null_key('N', start.seq)
+                }
+            }
+        };
         // NOTE vmx 2017-04-13: Iterating over keys is really similar to the
         // `DocResultIterator` in `snapshot.rs`. It should probablly be unified.
         self.iter.set_mode(IteratorMode::From(value_key.as_bytes(),
@@ -348,6 +370,16 @@ impl QueryRuntimeFilter for RangeFilter {
             }
 
             let key_str = unsafe{ str::from_utf8_unchecked(&key) };
+
+            // The key already matched, hence it's a valid doc result. Return it.
+            if self.min == Some(RangeOperator::True)
+                    || self.min == Some(RangeOperator::False)
+                    || self.min == Some(RangeOperator::Null) {
+                let dr = KeyBuilder::parse_doc_result_from_key(&key_str);
+                return Some(dr);
+            }
+            // Else it's a range query on numbers
+
             let number = unsafe{
                 let array = *(value[..].as_ptr() as *const [_; 8]);
                 mem::transmute::<[u8; 8], f64>(array)
@@ -358,12 +390,14 @@ impl QueryRuntimeFilter for RangeFilter {
                 Some(RangeOperator::Exclusive(min)) => number > min,
                 // No condition was given => it always matches
                 None => true,
+                _ => panic!("Can't happen, it returns early on the other types"),
             };
             let max_condition = match self.max {
                 Some(RangeOperator::Inclusive(max)) => number <= max,
                 Some(RangeOperator::Exclusive(max)) => number < max,
                 // No condition was given => it always matches
                 None => true,
+                _ => panic!("Can't happen, it returns early on the other types"),
             };
 
             if min_condition && max_condition {
