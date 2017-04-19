@@ -64,6 +64,19 @@ impl Shredder {
         Ok(())
     }
 
+    fn add_bool_null_entries(kb: &mut KeyBuilder, prefix: char, docseq: u64,
+                             batch: &mut rocksdb::WriteBatch, delete: bool) -> Result<(), Error> {
+        let key = kb.bool_null_key(prefix, docseq);
+        if delete {
+            try!(batch.delete(&key.as_bytes()));
+        } else {
+            // No need to store any value as the key already contains it
+            try!(batch.put(&key.as_bytes(), &[]));
+        }
+
+        Ok(())
+    }
+
     fn add_stemmed_entries(kb: &mut KeyBuilder, text: &str, docseq: u64,
             batch: &mut rocksdb::WriteBatch, delete: bool) -> Result<(), Error> {
         let stems = Stems::new(text);
@@ -198,6 +211,13 @@ impl Shredder {
                 'f' => {
                     try!(Shredder::add_number_entries(&mut self.kb, &value, seq, batch, true));
                 },
+                'T' | 'F' | 'N' => {
+                    try!(Shredder::add_bool_null_entries(&mut self.kb,
+                                                         value[0] as char,
+                                                         seq,
+                                                         batch,
+                                                         true));
+                },
                 _ => {},
             }
             try!(batch.delete(&key.as_bytes()));
@@ -214,6 +234,13 @@ impl Shredder {
                 },
                 'f' => {
                     try!(Shredder::add_number_entries(&mut self.kb, &value, seq, batch, false));
+                },
+                'T' | 'F' | 'N' => {
+                    try!(Shredder::add_bool_null_entries(&mut self.kb,
+                                                         value[0] as char,
+                                                         seq,
+                                                         batch,
+                                                         false));
                 },
                 _ => {},
             }
@@ -244,6 +271,13 @@ impl Shredder {
                 },
                 'f' => {
                     try!(Shredder::add_number_entries(&mut self.kb, &value, seq, batch, true));
+                },
+                'T' | 'F' | 'N' => {
+                    try!(Shredder::add_bool_null_entries(&mut self.kb,
+                                                         value[0] as char,
+                                                         seq,
+                                                         batch,
+                                                         true));
                 },
                 _ => {},
             }

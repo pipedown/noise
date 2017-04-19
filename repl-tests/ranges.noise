@@ -14,6 +14,16 @@ add {"_id":"four", "A":-3};
 "four"
 add {"_id":"five", "A":35};
 "five"
+add {"_id":"six", "A":true};
+"six"
+add {"_id":"seven", "A":false};
+"seven"
+add {"_id":"eight", "A":null};
+"eight"
+add {"_id":"nine", "boolarray":[true, true]};
+"nine"
+add {"_id":"ten", "boolarray":[false, true]};
+"ten"
 
 
 # Exact match number
@@ -103,4 +113,28 @@ find {A: >-10, A: <20};
 [
 "two",
 "four"
+]
+
+
+# Exact match boolean
+
+find {A: ==true};
+[
+"six"
+]
+
+find {A: ==false};
+[
+"seven"
+]
+
+find {A: ==null};
+[
+"eight"
+]
+
+find {boolarray: [==true]};
+[
+"nine",
+"ten"
 ]

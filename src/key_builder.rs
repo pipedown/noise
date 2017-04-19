@@ -82,6 +82,20 @@ impl KeyBuilder {
         string
     }
 
+    /// Build the index key that corresponds to a true, false or nulla primitive
+    pub fn bool_null_key(&self, prefix: char, seq: u64) -> String {
+        let mut string = String::with_capacity(100);
+        string.push(prefix);
+        for segment in &self.keypath {
+            string.push_str(&segment);
+        };
+        string.push('#');
+        string.push_str(&seq.to_string());
+
+        KeyBuilder::add_arraypath(&mut string, &self.arraypath);
+        string
+    }
+
 
     /// Builds a stemmed word key for the input word and seq, using the key_path and arraypath
     /// built up internally.
