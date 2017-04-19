@@ -20,8 +20,11 @@ fn test_repl() {
     test_dir.push("repl-tests");
     let mut failures = 0;
     let mut total = 0;
-    for entry in fs::read_dir(test_dir).unwrap() {
-        let mut path = entry.unwrap().path();
+    // Sort files by last modified date to make debugging easier
+    let mut entries: Vec<_> = fs::read_dir(test_dir).unwrap().map(|r| r.unwrap()).collect();
+    entries.sort_by_key(|entry| entry.metadata().unwrap().modified().unwrap());
+    for entry in entries {
+        let mut path = entry.path();
         if path.extension().unwrap().to_str().unwrap() != "noise" {
             continue;
         }
