@@ -276,7 +276,7 @@ impl Index {
     }
 
     fn compaction_filter(_level: u32, key: &[u8], value: &[u8]) -> CompactionDecision {
-        if !(key[0] as char == 'F' || key[0] as char == 'K') {
+        if !(key[0] as char == 'C' || key[0] as char == 'K') {
             return CompactionDecision::Keep;
         }
         if 0 == Index::convert_bytes_to_i32(&value) {
@@ -300,7 +300,7 @@ impl Index {
                     existing_val: Option<&[u8]>,
                     operands: &mut MergeOperands)
                     -> Vec<u8> {
-        if !(new_key[0] as char == 'F' || new_key[0] as char == 'K') {
+        if !(new_key[0] as char == 'C' || new_key[0] as char == 'K') {
             panic!("unknown key type to merge!");
         }
 
