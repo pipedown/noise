@@ -329,7 +329,7 @@ impl RangeFilter {
 
 impl QueryRuntimeFilter for RangeFilter {
     fn first_result(&mut self, start: &DocResult) -> Option<DocResult> {
-        let mut value_key = self.kb.number_key_without_arraypath(start.seq);
+        let mut value_key = self.kb.number_key(start.seq);
 
         // NOTE vmx 2017-04-13: Iterating over keys is really similar to the
         // `DocResultIterator` in `snapshot.rs`. It should probablly be unified.

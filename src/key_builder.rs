@@ -68,8 +68,8 @@ impl KeyBuilder {
         str
     }
 
-    // Build the keypath for a number primitive without the arraypath
-    pub fn number_key_without_arraypath(&self, seq: u64) -> String {
+    /// Build the index key that corresponds to a number primitive
+    pub fn number_key(&self, seq: u64) -> String {
         let mut string = String::with_capacity(100);
         string.push('f');
         for segment in &self.keypath {
@@ -77,13 +77,7 @@ impl KeyBuilder {
         };
         string.push('#');
         string.push_str(&seq.to_string());
-        string
-    }
 
-    // Build the index key that corresponds to a number primitive
-    pub fn number_key(&self, seq: u64) -> String {
-        let mut string = String::with_capacity(100);
-        string.push_str(&self.number_key_without_arraypath(seq));
         KeyBuilder::add_arraypath(&mut string, &self.arraypath);
         string
     }
@@ -357,14 +351,22 @@ impl KeyBuilder {
     }
 
     pub fn compare_keys(akey: &str, bkey: &str) -> Ordering {
-        debug_assert!(akey.starts_with('W'));
-        debug_assert!(bkey.starts_with('W'));
+        debug_assert!(akey.starts_with('W') ||
+                      akey.starts_with('f') ||
+                      akey.starts_with('T') ||
+                      akey.starts_with('F') ||
+                      akey.starts_with('N'));
+        debug_assert!(bkey.starts_with('W') ||
+                      bkey.starts_with('f') ||
+                      bkey.starts_with('T') ||
+                      bkey.starts_with('F') ||
+                      bkey.starts_with('N'));
         let (apath_str, aseq_str, aarraypath_str) =
                 KeyBuilder::split_keypath_seq_arraypath_from_key(&akey);
         let (bpath_str, bseq_str, barraypath_str) =
                 KeyBuilder::split_keypath_seq_arraypath_from_key(&bkey);
 
-        match apath_str[1..].cmp(&bpath_str[1..]) {
+        match apath_str[0..].cmp(&bpath_str[0..]) {
             Ordering::Less => Ordering::Less,
             Ordering::Greater => Ordering::Greater,
             Ordering::Equal => {
