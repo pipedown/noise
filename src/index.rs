@@ -287,7 +287,8 @@ impl Index {
     }
 
     fn compare_keys(a: &[u8], b: &[u8]) -> Ordering {
-        if a[0] == 'W' as u8 && b[0] == 'W' as u8 {
+        let value_prefixes = ['W', 'f', 'T', 'F', 'N'];
+        if value_prefixes.contains(&(a[0] as char)) && value_prefixes.contains(&(b[0] as char)) {
             let astr = unsafe {str::from_utf8_unchecked(&a)};
             let bstr = unsafe {str::from_utf8_unchecked(&b)};
             KeyBuilder::compare_keys(astr, bstr)
