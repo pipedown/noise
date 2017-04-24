@@ -14,10 +14,10 @@ pub trait QueryRuntimeFilter {
     fn first_result(&mut self, start: &DocResult) -> Option<DocResult>;
     fn next_result(&mut self) -> Option<DocResult>;
     fn prepare_relevancy_scoring(&mut self, qsi: &mut QueryScoringInfo);
-    
+
     /// returns error is a double negation is detected
     fn check_double_not(&self, parent_is_neg: bool) -> Result<(), Error>;
-    
+
     /// return true if filter or all subfilters are NotFilters
     fn is_all_not(&self) -> bool;
 }
@@ -40,8 +40,11 @@ pub struct StemmedWordFilter {
 }
 
 impl StemmedWordFilter {
-    pub fn new(snapshot: &Snapshot, stemmed_word: &str,
-               kb: &KeyBuilder, boost: f32) -> StemmedWordFilter {
+    pub fn new(snapshot: &Snapshot,
+               stemmed_word: &str,
+               kb: &KeyBuilder,
+               boost: f32)
+               -> StemmedWordFilter {
         StemmedWordFilter {
             iter: snapshot.new_term_doc_result_iterator(stemmed_word, kb),
             scorer: snapshot.new_scorer(stemmed_word, kb, boost),
@@ -74,7 +77,7 @@ impl QueryRuntimeFilter for StemmedWordFilter {
     fn check_double_not(&self, _parent_is_neg: bool) -> Result<(), Error> {
         Ok(())
     }
-    
+
     fn is_all_not(&self) -> bool {
         false
     }
@@ -88,9 +91,12 @@ pub struct StemmedWordPosFilter {
 }
 
 impl StemmedWordPosFilter {
-    pub fn new(snapshot: &Snapshot, stemmed_word: &str,
-               kb: &KeyBuilder, boost: f32) -> StemmedWordPosFilter {
-        StemmedWordPosFilter{
+    pub fn new(snapshot: &Snapshot,
+               stemmed_word: &str,
+               kb: &KeyBuilder,
+               boost: f32)
+               -> StemmedWordPosFilter {
+        StemmedWordPosFilter {
             iter: snapshot.new_term_doc_result_iterator(stemmed_word, kb),
             scorer: snapshot.new_scorer(&stemmed_word, &kb, boost),
         }
@@ -126,16 +132,16 @@ pub struct StemmedPhraseFilter {
 impl StemmedPhraseFilter {
     pub fn new(filters: Vec<StemmedWordPosFilter>) -> StemmedPhraseFilter {
         assert!(filters.len() > 0);
-        StemmedPhraseFilter {
-            filters: filters,
-        }
+        StemmedPhraseFilter { filters: filters }
     }
 
     fn result(&mut self, base: Option<(DocResult, Vec<u32>)>) -> Option<DocResult> {
-        // this is the number of matches left before all terms match and we can return a result 
+        // this is the number of matches left before all terms match and we can return a result
         let mut matches_left = self.filters.len() - 1;
 
-        if base.is_none() { return None; }
+        if base.is_none() {
+            return None;
+        }
         let (mut base_result, mut base_positions) = base.unwrap();
 
         if matches_left == 0 {
@@ -150,8 +156,10 @@ impl StemmedPhraseFilter {
             }
 
             let next = self.filters[current_filter].first_result(&base_result);
-            
-            if next.is_none() { return None; }
+
+            if next.is_none() {
+                return None;
+            }
             let (next_result, next_positions) = next.unwrap();
 
             if base_result == next_result {
@@ -173,7 +181,9 @@ impl StemmedPhraseFilter {
                     // we didn't match on phrase, so get next_result from first filter
                     current_filter = 0;
                     let next = self.filters[current_filter].next_result();
-                    if next.is_none() { return None; }
+                    if next.is_none() {
+                        return None;
+                    }
                     let (next_result, next_positions) = next.unwrap();
                     base_result = next_result;
                     base_positions = next_positions;
@@ -185,7 +195,9 @@ impl StemmedPhraseFilter {
                 // 1st filter.
                 current_filter = 0;
                 let next = self.filters[current_filter].first_result(&next_result);
-                if next.is_none() { return None; }
+                if next.is_none() {
+                    return None;
+                }
                 let (next_result, next_positions) = next.unwrap();
                 base_result = next_result;
                 base_positions = next_positions;
@@ -217,7 +229,7 @@ impl QueryRuntimeFilter for StemmedPhraseFilter {
     fn check_double_not(&self, _parent_is_neg: bool) -> Result<(), Error> {
         Ok(())
     }
-    
+
     fn is_all_not(&self) -> bool {
         false
     }
@@ -233,13 +245,21 @@ pub struct ExactMatchFilter {
 }
 
 impl ExactMatchFilter {
-    pub fn new(snapshot: &Snapshot, filter: StemmedPhraseFilter,
-            kb: KeyBuilder, phrase: String, case_sensitive: bool) -> ExactMatchFilter {
+    pub fn new(snapshot: &Snapshot,
+               filter: StemmedPhraseFilter,
+               kb: KeyBuilder,
+               phrase: String,
+               case_sensitive: bool)
+               -> ExactMatchFilter {
         ExactMatchFilter {
             iter: snapshot.new_iterator(),
             filter: filter,
             kb: kb,
-            phrase: if case_sensitive {phrase} else {phrase.to_lowercase()},
+            phrase: if case_sensitive {
+                phrase
+            } else {
+                phrase.to_lowercase()
+            },
             case_sensitive: case_sensitive,
         }
     }
@@ -248,8 +268,8 @@ impl ExactMatchFilter {
         loop {
             let value_key = self.kb.value_key_from_doc_result(&dr);
 
-            self.iter.set_mode(IteratorMode::From(value_key.as_bytes(),
-                               rocksdb::Direction::Forward));
+            self.iter
+                .set_mode(IteratorMode::From(value_key.as_bytes(), rocksdb::Direction::Forward));
 
             if let Some((key, value)) = self.iter.next() {
                 debug_assert!(key.starts_with(value_key.as_bytes())); // must always be true!
@@ -303,7 +323,7 @@ impl QueryRuntimeFilter for ExactMatchFilter {
     fn check_double_not(&self, parent_is_neg: bool) -> Result<(), Error> {
         self.filter.check_double_not(parent_is_neg)
     }
-    
+
     fn is_all_not(&self) -> bool {
         self.filter.is_all_not()
     }
@@ -321,7 +341,8 @@ impl RangeFilter {
     pub fn new(snapshot: &Snapshot,
                kb: KeyBuilder,
                min: Option<RangeOperator>,
-               max: Option<RangeOperator>) -> RangeFilter {
+               max: Option<RangeOperator>)
+               -> RangeFilter {
         RangeFilter {
             iter: snapshot.new_iterator(),
             kb: kb,
@@ -339,24 +360,17 @@ impl QueryRuntimeFilter for RangeFilter {
             // `min` and `max` have the save type, so picking one is OK
             let range_operator = self.min.as_ref().or(self.max.as_ref()).unwrap();
             match range_operator {
-                &RangeOperator::Inclusive(_) | &RangeOperator::Exclusive(_)  => {
-                    self.kb.number_key(start.seq)
-                },
-                &RangeOperator::True => {
-                    self.kb.bool_null_key('T', start.seq)
-                },
-                &RangeOperator::False => {
-                    self.kb.bool_null_key('F', start.seq)
-                },
-                &RangeOperator::Null => {
-                    self.kb.bool_null_key('N', start.seq)
-                }
+                &RangeOperator::Inclusive(_) |
+                &RangeOperator::Exclusive(_) => self.kb.number_key(start.seq),
+                &RangeOperator::True => self.kb.bool_null_key('T', start.seq),
+                &RangeOperator::False => self.kb.bool_null_key('F', start.seq),
+                &RangeOperator::Null => self.kb.bool_null_key('N', start.seq),
             }
         };
         // NOTE vmx 2017-04-13: Iterating over keys is really similar to the
         // `DocResultIterator` in `snapshot.rs`. It should probablly be unified.
-        self.iter.set_mode(IteratorMode::From(value_key.as_bytes(),
-                                              rocksdb::Direction::Forward));
+        self.iter
+            .set_mode(IteratorMode::From(value_key.as_bytes(), rocksdb::Direction::Forward));
         KeyBuilder::truncate_to_keypathword(&mut value_key);
         self.keypath = value_key;
         self.next_result()
@@ -366,21 +380,20 @@ impl QueryRuntimeFilter for RangeFilter {
         while let Some((key, value)) = self.iter.next() {
             if !key.starts_with(self.keypath.as_bytes()) {
                 // we passed the key path we are interested in. nothing left to do
-                return None
+                return None;
             }
 
-            let key_str = unsafe{ str::from_utf8_unchecked(&key) };
+            let key_str = unsafe { str::from_utf8_unchecked(&key) };
 
             // The key already matched, hence it's a valid doc result. Return it.
-            if self.min == Some(RangeOperator::True)
-                    || self.min == Some(RangeOperator::False)
-                    || self.min == Some(RangeOperator::Null) {
+            if self.min == Some(RangeOperator::True) || self.min == Some(RangeOperator::False) ||
+               self.min == Some(RangeOperator::Null) {
                 let dr = KeyBuilder::parse_doc_result_from_key(&key_str);
                 return Some(dr);
             }
             // Else it's a range query on numbers
 
-            let number = unsafe{
+            let number = unsafe {
                 let array = *(value[..].as_ptr() as *const [_; 8]);
                 mem::transmute::<[u8; 8], f64>(array)
             };
@@ -410,8 +423,7 @@ impl QueryRuntimeFilter for RangeFilter {
     }
 
     // TODO vmx 2017-04-13: Scoring is not implemented yet
-    fn prepare_relevancy_scoring(&mut self, _qsi: &mut QueryScoringInfo) {
-    }
+    fn prepare_relevancy_scoring(&mut self, _qsi: &mut QueryScoringInfo) {}
 
     fn check_double_not(&self, _parent_is_neg: bool) -> Result<(), Error> {
         Ok(())
@@ -441,18 +453,21 @@ impl DistanceFilter {
     fn result(&mut self, base: Option<(DocResult, Vec<u32>)>) -> Option<DocResult> {
         // yes this code complex. I tried to break it up, but it wants to be like this.
 
-        // this is the number of matches left before all terms match and we can return a result 
+        // this is the number of matches left before all terms match and we can return a result
         let mut matches_left = self.filters.len() - 1;
 
-        if base.is_none() { return None; }
+        if base.is_none() {
+            return None;
+        }
         let (mut base_result, positions) = base.unwrap();
 
         // This contains tuples of word postions and the filter they came from,
         // sorted by word position.
-        let mut base_positions: Vec<(u32, usize)> = positions.iter()
-                                                            .map(|pos|(*pos, self.current_filter))
-                                                            .collect();
-        
+        let mut base_positions: Vec<(u32, usize)> = positions
+            .iter()
+            .map(|pos| (*pos, self.current_filter))
+            .collect();
+
         // distance is number of words between searched words.
         // add one to make calculating difference easier since abs(posa - posb) == distance + 1
         let dis = self.distance + 1;
@@ -463,16 +478,19 @@ impl DistanceFilter {
             }
 
             let next = self.filters[self.current_filter].first_result(&base_result);
-            
-            if next.is_none() { return None; }
+
+            if next.is_none() {
+                return None;
+            }
             let (next_result, next_positions) = next.unwrap();
 
             if base_result != next_result {
                 // not same field, next_result becomes base_result.
                 base_result = next_result;
-                base_positions = next_positions.iter()
-                                                .map(|pos| (*pos, self.current_filter))
-                                                .collect();
+                base_positions = next_positions
+                    .iter()
+                    .map(|pos| (*pos, self.current_filter))
+                    .collect();
 
                 matches_left = self.filters.len() - 1;
                 continue;
@@ -487,14 +505,13 @@ impl DistanceFilter {
             for &pos in next_positions.iter() {
                 // coud these lines be any longer? No they could not.
                 let sub = pos.saturating_sub(dis); // underflows othewises
-                let start = match base_positions.binary_search_by_key(&(sub),
-                                                                        |&(pos2,_)| pos2) {
+                let start = match base_positions.binary_search_by_key(&(sub), |&(pos2, _)| pos2) {
                     Ok(start) => start,
                     Err(start) => start,
                 };
 
-                let end = match base_positions.binary_search_by_key(&(pos+dis),
-                                                                    |&(pos2,_)| pos2) {
+                let end = match base_positions.binary_search_by_key(&(pos + dis),
+                                                                    |&(pos2, _)| pos2) {
                     Ok(end) => end,
                     Err(end) => end,
                 };
@@ -504,9 +521,9 @@ impl DistanceFilter {
                 for &(_, filter_n) in base_positions[start..end].iter() {
                     filters_encountered.insert(filter_n);
                 }
-                
+
                 if filters_encountered.len() == self.filters.len() - matches_left {
-                    // we encountered all the filters we can at this stage, 
+                    // we encountered all the filters we can at this stage,
                     // so we should add them all to the new_positions_map
                     for &(prev_pos, filter_n) in base_positions[start..end].iter() {
                         new_positions_map.insert(prev_pos, filter_n);
@@ -528,13 +545,16 @@ impl DistanceFilter {
             }
             // we didn't match on next_result, so get next_result on current filter
             let next = self.filters[self.current_filter].next_result();
-            
-            if next.is_none() { return None; }
+
+            if next.is_none() {
+                return None;
+            }
             let (next_result, next_positions) = next.unwrap();
             base_result = next_result;
-            base_positions = next_positions.iter()
-                                            .map(|pos| (*pos, self.current_filter))
-                                            .collect();
+            base_positions = next_positions
+                .iter()
+                .map(|pos| (*pos, self.current_filter))
+                .collect();
 
             matches_left = self.filters.len() - 1;
         }
@@ -557,11 +577,11 @@ impl QueryRuntimeFilter for DistanceFilter {
             f.prepare_relevancy_scoring(&mut qsi);
         }
     }
-    
+
     fn check_double_not(&self, _parent_is_neg: bool) -> Result<(), Error> {
         Ok(())
     }
-    
+
     fn is_all_not(&self) -> bool {
         false
     }
@@ -586,9 +606,11 @@ impl<'a> AndFilter<'a> {
     fn result(&mut self, base: Option<DocResult>) -> Option<DocResult> {
         let mut matches_count = self.filters.len() - 1;
 
-        if base.is_none() { return None; }
+        if base.is_none() {
+            return None;
+        }
         let mut base_result = base.unwrap();
-        
+
         base_result.arraypath.resize(self.array_depth, 0);
 
         loop {
@@ -598,8 +620,10 @@ impl<'a> AndFilter<'a> {
             }
 
             let next = self.filters[self.current_filter].first_result(&base_result);
-            
-            if next.is_none() { return None; }
+
+            if next.is_none() {
+                return None;
+            }
             let mut next_result = next.unwrap();
 
             next_result.arraypath.resize(self.array_depth, 0);
@@ -641,7 +665,7 @@ impl<'a> QueryRuntimeFilter for AndFilter<'a> {
         }
         Ok(())
     }
-    
+
     fn is_all_not(&self) -> bool {
         for f in self.filters.iter() {
             if !f.is_all_not() {
@@ -669,13 +693,20 @@ impl<'a> FilterWithResult<'a> {
         }
         if self.result.is_none() {
             self.result = self.filter.first_result(start);
-        } else if self.result.as_ref().unwrap().less(start, self.array_depth) {
+        } else if self.result
+                      .as_ref()
+                      .unwrap()
+                      .less(start, self.array_depth) {
             self.result = self.filter.first_result(start);
         }
         if self.result.is_none() {
             self.is_done = true;
         } else {
-            self.result.as_mut().unwrap().arraypath.resize(self.array_depth, 0);
+            self.result
+                .as_mut()
+                .unwrap()
+                .arraypath
+                .resize(self.array_depth, 0);
         }
     }
 
@@ -689,7 +720,11 @@ impl<'a> FilterWithResult<'a> {
         if self.result.is_none() {
             self.is_done = true;
         } else {
-            self.result.as_mut().unwrap().arraypath.resize(self.array_depth, 0);
+            self.result
+                .as_mut()
+                .unwrap()
+                .arraypath
+                .resize(self.array_depth, 0);
         }
     }
 }
@@ -701,20 +736,23 @@ pub struct OrFilter<'a> {
 
 impl<'a> OrFilter<'a> {
     pub fn new(left: Box<QueryRuntimeFilter + 'a>,
-           right: Box<QueryRuntimeFilter + 'a>,
-           array_depth: usize) -> OrFilter<'a> {
+               right: Box<QueryRuntimeFilter + 'a>,
+               array_depth: usize)
+               -> OrFilter<'a> {
         OrFilter {
-            left: FilterWithResult{filter: left,
-                                 result: None,
-                                 array_depth: array_depth,
-                                 is_done: false,
-                                 },
-            
-            right: FilterWithResult{filter: right,
-                                 result: None,
-                                 array_depth: array_depth,
-                                 is_done: false,
-                                 },
+            left: FilterWithResult {
+                filter: left,
+                result: None,
+                array_depth: array_depth,
+                is_done: false,
+            },
+
+            right: FilterWithResult {
+                filter: right,
+                result: None,
+                array_depth: array_depth,
+                is_done: false,
+            },
         }
     }
     fn take_smallest(&mut self) -> Option<DocResult> {
@@ -727,17 +765,17 @@ impl<'a> OrFilter<'a> {
                         // left is smallest, return and put back right
                         self.right.result = Some(right);
                         Some(left)
-                    },
+                    }
                     Ordering::Greater => {
                         // right is smallest, return and put back left
                         self.left.result = Some(left);
                         Some(right)
-                    },
+                    }
                     Ordering::Equal => {
                         left.combine(&mut right);
                         self.right.result = Some(right);
                         Some(left)
-                    },
+                    }
                 }
             } else {
                 // right doesn't exist. return left
@@ -779,7 +817,7 @@ impl<'a> QueryRuntimeFilter for OrFilter<'a> {
         try!(self.right.filter.check_double_not(parent_is_neg));
         Ok(())
     }
-    
+
     fn is_all_not(&self) -> bool {
         if self.left.filter.is_all_not() && self.right.filter.is_all_not() {
             true
@@ -838,12 +876,13 @@ impl<'a> QueryRuntimeFilter for NotFilter<'a> {
     fn check_double_not(&self, parent_is_neg: bool) -> Result<(), Error> {
         if parent_is_neg {
             return Err(Error::Parse("Logical not (\"!\") is nested inside of another logical not. \
-                                     This is not allowed.".to_string()));
+                                     This is not allowed."
+                                            .to_string()));
         }
         try!(self.filter.check_double_not(true));
         Ok(())
     }
-    
+
     fn is_all_not(&self) -> bool {
         true
     }
@@ -858,10 +897,10 @@ pub struct BindFilter<'a> {
 }
 
 impl<'a> BindFilter<'a> {
-
     pub fn new(bind_var_name: String,
                filter: Box<QueryRuntimeFilter + 'a>,
-               kb: KeyBuilder) -> BindFilter {
+               kb: KeyBuilder)
+               -> BindFilter {
         BindFilter {
             bind_var_name: bind_var_name,
             filter: filter,
@@ -870,11 +909,11 @@ impl<'a> BindFilter<'a> {
             option_next: None,
         }
     }
-    
+
     fn collect_results(&mut self, mut first: DocResult) -> Option<DocResult> {
         let value_key = self.kb.value_key_from_doc_result(&first);
         first.add_bind_name_result(&self.bind_var_name, value_key);
-        
+
         while let Some(next) = self.filter.next_result() {
             if next.seq == first.seq {
                 let value_key = self.kb.value_key_from_doc_result(&next);
@@ -928,7 +967,7 @@ impl<'a> QueryRuntimeFilter for BindFilter<'a> {
     fn check_double_not(&self, parent_is_neg: bool) -> Result<(), Error> {
         self.filter.check_double_not(parent_is_neg)
     }
-    
+
     fn is_all_not(&self) -> bool {
         self.filter.is_all_not()
     }
@@ -974,9 +1013,8 @@ impl<'a> QueryRuntimeFilter for BoostFilter<'a> {
     fn check_double_not(&self, parent_is_neg: bool) -> Result<(), Error> {
         self.filter.check_double_not(parent_is_neg)
     }
-    
+
     fn is_all_not(&self) -> bool {
         self.filter.is_all_not()
     }
 }
-

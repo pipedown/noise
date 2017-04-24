@@ -7,7 +7,7 @@ use std::cmp::Ordering;
 pub enum Segment {
     ObjectKey(String),
     Array(u64),
-} 
+}
 
 #[derive(Debug, Clone)]
 pub struct KeyBuilder {
@@ -17,8 +17,8 @@ pub struct KeyBuilder {
 
 impl KeyBuilder {
     pub fn new() -> KeyBuilder {
-        KeyBuilder{
-             // Magic reserve number is completely arbitrary
+        KeyBuilder {
+            // Magic reserve number is completely arbitrary
             keypath: Vec::with_capacity(10),
             arraypath: Vec::with_capacity(10),
         }
@@ -51,7 +51,7 @@ impl KeyBuilder {
         string.push_str(word);
         string
     }
-    
+
     pub fn keypath_count_key(&self) -> String {
         let mut string = String::with_capacity(100);
         string.push('K');
@@ -74,7 +74,7 @@ impl KeyBuilder {
         string.push('f');
         for segment in &self.keypath {
             string.push_str(&segment);
-        };
+        }
         string.push('#');
         string.push_str(&seq.to_string());
 
@@ -88,7 +88,7 @@ impl KeyBuilder {
         string.push(prefix);
         for segment in &self.keypath {
             string.push_str(&segment);
-        };
+        }
         string.push('#');
         string.push_str(&seq.to_string());
 
@@ -184,7 +184,7 @@ impl KeyBuilder {
         }
         string
     }
-    
+
     /// Returns a value key without the doc seq prepended.
     pub fn value_key_path_only_from_str(str: &str) -> &str {
         &str[str.find('#').unwrap() + 1..]
@@ -197,12 +197,12 @@ impl KeyBuilder {
                 (Segment::ObjectKey(_key), unescaped) => {
                     str = &str[unescaped.len()..];
                     self.keypath.push(unescaped);
-                },
+                }
                 (Segment::Array(i), unescaped) => {
                     str = &str[unescaped.len()..];
                     self.keypath.push("$".to_string());
                     self.arraypath.push(i);
-                },
+                }
             }
         }
     }
@@ -234,7 +234,7 @@ impl KeyBuilder {
         }
     }
 
-    // returns the unescaped segment as Segment and the escaped segment as a slice 
+    // returns the unescaped segment as Segment and the escaped segment as a slice
     pub fn parse_first_key_value_segment(keypath: &str) -> Option<(Segment, String)> {
 
         let mut unescaped = String::with_capacity(50);
@@ -253,10 +253,10 @@ impl KeyBuilder {
                             } else {
                                 panic!("Escape char found as last char in keypath");
                             }
-                        },
+                        }
                         Some('.') | Some('$') => {
                             break;
-                        },
+                        }
                         Some(c) => {
                             len_bytes += c.len_utf8();
                             unescaped.push(c);
@@ -267,7 +267,7 @@ impl KeyBuilder {
                     }
                 }
                 Some((Segment::ObjectKey(unescaped), keypath[..len_bytes].to_string()))
-            },
+            }
             Some('$') => {
                 let mut i = String::new();
                 for c in chars {
@@ -277,17 +277,17 @@ impl KeyBuilder {
                         break;
                     }
                 }
-                Some((Segment::Array(i.parse().unwrap()), keypath[..1+i.len()].to_string()))
-            },
-            Some(_) => None, // we must be past the keypath portion of string. done. 
+                Some((Segment::Array(i.parse().unwrap()), keypath[..1 + i.len()].to_string()))
+            }
+            Some(_) => None, // we must be past the keypath portion of string. done.
             None => None,
         }
-    }  
+    }
 
     pub fn push_object_key(&mut self, key: &str) {
         let mut escaped_key = String::with_capacity((key.len() * 2) + 1); // max expansion
         escaped_key.push('.');
-        
+
         for cc in key.chars() {
             // Escape chars that conflict with delimiters
             if "\\$.!#".contains(cc) {
@@ -354,8 +354,8 @@ impl KeyBuilder {
     pub fn parse_doc_result_from_key(str: &str) -> DocResult {
         let mut dr = DocResult::new();
         let (_path_str, seq_str, arraypath_str) =
-                KeyBuilder::split_keypath_seq_arraypath_from_key(&str);
-        dr.seq = seq_str.parse().unwrap(); 
+            KeyBuilder::split_keypath_seq_arraypath_from_key(&str);
+        dr.seq = seq_str.parse().unwrap();
         if !arraypath_str.is_empty() {
             for numstr in arraypath_str.split(",") {
                 dr.arraypath.push(numstr.parse().unwrap());
@@ -365,27 +365,23 @@ impl KeyBuilder {
     }
 
     pub fn compare_keys(akey: &str, bkey: &str) -> Ordering {
-        debug_assert!(akey.starts_with('W') ||
-                      akey.starts_with('f') ||
-                      akey.starts_with('T') ||
+        debug_assert!(akey.starts_with('W') || akey.starts_with('f') || akey.starts_with('T') ||
                       akey.starts_with('F') ||
                       akey.starts_with('N'));
-        debug_assert!(bkey.starts_with('W') ||
-                      bkey.starts_with('f') ||
-                      bkey.starts_with('T') ||
+        debug_assert!(bkey.starts_with('W') || bkey.starts_with('f') || bkey.starts_with('T') ||
                       bkey.starts_with('F') ||
                       bkey.starts_with('N'));
         let (apath_str, aseq_str, aarraypath_str) =
-                KeyBuilder::split_keypath_seq_arraypath_from_key(&akey);
+            KeyBuilder::split_keypath_seq_arraypath_from_key(&akey);
         let (bpath_str, bseq_str, barraypath_str) =
-                KeyBuilder::split_keypath_seq_arraypath_from_key(&bkey);
+            KeyBuilder::split_keypath_seq_arraypath_from_key(&bkey);
 
         match apath_str[0..].cmp(&bpath_str[0..]) {
             Ordering::Less => Ordering::Less,
             Ordering::Greater => Ordering::Greater,
             Ordering::Equal => {
                 let aseq: u64 = aseq_str.parse().unwrap();
-                let bseq: u64 = bseq_str.parse().unwrap();;
+                let bseq: u64 = bseq_str.parse().unwrap();
                 if aseq < bseq {
                     Ordering::Less
                 } else if aseq > bseq {
@@ -423,7 +419,7 @@ impl KeyBuilder {
                         }
                     }
                 }
-            },
+            }
         }
     }
 }
@@ -431,7 +427,7 @@ impl KeyBuilder {
 
 #[cfg(test)]
 mod tests {
-    use super::{KeyBuilder};
+    use super::KeyBuilder;
     use query::DocResult;
 
 
@@ -458,9 +454,10 @@ mod tests {
         kb.push_array();
 
         assert_eq!(kb.keypath_segments_len(), 3, "three segments");
-        assert_eq!(kb.stemmed_word_key("astemmedword", 123), "W.first.second$!astemmedword#123,0",
+        assert_eq!(kb.stemmed_word_key("astemmedword", 123),
+                   "W.first.second$!astemmedword#123,0",
                    "Key for six segments is correct");
-        
+
 
         kb.pop_array();
         assert_eq!(kb.keypath_segments_len(), 2, "Two segments");
@@ -475,22 +472,24 @@ mod tests {
     #[test]
     fn test_doc_result_parse() {
         let key = "W.foo$.bar$!word#123,1,0".to_string();
-        let (keypathstr, seqstr, arraypathstr) = KeyBuilder::split_keypath_seq_arraypath_from_key(&key);
+        let (keypathstr, seqstr, arraypathstr) =
+            KeyBuilder::split_keypath_seq_arraypath_from_key(&key);
         assert_eq!(keypathstr, "W.foo$.bar$!word");
         assert_eq!(seqstr, "123");
         assert_eq!(arraypathstr, "1,0");
 
         // make sure escaped commas and # in key path don't cause problems
         let key1 = "W.foo\\#$.bar\\,$!word#123,2,0".to_string();
-        let (keypathstr1, seqstr1, arraypathstr1) = KeyBuilder::split_keypath_seq_arraypath_from_key(&key1);
+        let (keypathstr1, seqstr1, arraypathstr1) =
+            KeyBuilder::split_keypath_seq_arraypath_from_key(&key1);
         assert_eq!(keypathstr1, "W.foo\\#$.bar\\,$!word");
         assert_eq!(seqstr1, "123");
         assert_eq!(arraypathstr1, "2,0");
 
         let mut dr = DocResult::new();
         dr.seq = 123;
-        dr.arraypath = vec![1,0];
-        
+        dr.arraypath = vec![1, 0];
+
         assert!(dr == KeyBuilder::parse_doc_result_from_key(&key));
     }
 }

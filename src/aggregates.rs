@@ -21,13 +21,13 @@ pub enum AggregateFun {
 
 pub struct AggregateFunImpls {
     // Initalizes for a computing the aggregate action (optional)
-    pub init: Option<fn (JsonValue) -> JsonValue>,
+    pub init: Option<fn(JsonValue) -> JsonValue>,
 
     // The actual aggregate action function
-    pub action: fn (&mut JsonValue, JsonValue, &JsonValue),
+    pub action: fn(&mut JsonValue, JsonValue, &JsonValue),
 
     // extracts the final aggregate value (optional)
-    pub extract: Option<fn (&mut JsonValue)>,
+    pub extract: Option<fn(&mut JsonValue)>,
 }
 
 impl AggregateFun {
@@ -35,56 +35,76 @@ impl AggregateFun {
         match self {
             &AggregateFun::GroupAsc => panic!("cannot get aggregate fun for grouping!"),
             &AggregateFun::GroupDesc => panic!("cannot get aggregate fun for grouping!"),
-            &AggregateFun::Sum => AggregateFunImpls{
-                init: Some(AggregateFun::sum_init),
-                action: AggregateFun::sum,
-                extract: None,
-             },
-            &AggregateFun::Max => AggregateFunImpls{
-                init: None,
-                action: AggregateFun::max,
-                extract: None,
-             },
-            &AggregateFun::Min => AggregateFunImpls{
-                init: None,
-                action: AggregateFun::min,
-                extract: None,
-             },
-            &AggregateFun::MaxArray => AggregateFunImpls{
-                init: Some(AggregateFun::max_array_init),
-                action: AggregateFun::max_array,
-                extract: None,
-             },
-            &AggregateFun::MinArray => AggregateFunImpls{
-                init: Some(AggregateFun::min_array_init),
-                action: AggregateFun::min_array,
-                extract: None,
-             },
-            &AggregateFun::Array => AggregateFunImpls{
-                init: Some(AggregateFun::array_init),
-                action: AggregateFun::array,
-                extract: None,
-             },
-            &AggregateFun::ArrayFlat => AggregateFunImpls{
-                init: Some(AggregateFun::array_flat_init),
-                action: AggregateFun::array_flat,
-                extract: None,
-             },
-            &AggregateFun::Concat => AggregateFunImpls{
-                init: Some(AggregateFun::concat_init),
-                action: AggregateFun::concat,
-                extract: None,
-             },
-            &AggregateFun::Avg => AggregateFunImpls{
-                init: Some(AggregateFun::avg_init),
-                action: AggregateFun::avg,
-                extract: Some(AggregateFun::avg_final),
-             },
-            &AggregateFun::Count => AggregateFunImpls{
-                init: Some(AggregateFun::count_init),
-                action: AggregateFun::count,
-                extract: None,
-             },
+            &AggregateFun::Sum => {
+                AggregateFunImpls {
+                    init: Some(AggregateFun::sum_init),
+                    action: AggregateFun::sum,
+                    extract: None,
+                }
+            }
+            &AggregateFun::Max => {
+                AggregateFunImpls {
+                    init: None,
+                    action: AggregateFun::max,
+                    extract: None,
+                }
+            }
+            &AggregateFun::Min => {
+                AggregateFunImpls {
+                    init: None,
+                    action: AggregateFun::min,
+                    extract: None,
+                }
+            }
+            &AggregateFun::MaxArray => {
+                AggregateFunImpls {
+                    init: Some(AggregateFun::max_array_init),
+                    action: AggregateFun::max_array,
+                    extract: None,
+                }
+            }
+            &AggregateFun::MinArray => {
+                AggregateFunImpls {
+                    init: Some(AggregateFun::min_array_init),
+                    action: AggregateFun::min_array,
+                    extract: None,
+                }
+            }
+            &AggregateFun::Array => {
+                AggregateFunImpls {
+                    init: Some(AggregateFun::array_init),
+                    action: AggregateFun::array,
+                    extract: None,
+                }
+            }
+            &AggregateFun::ArrayFlat => {
+                AggregateFunImpls {
+                    init: Some(AggregateFun::array_flat_init),
+                    action: AggregateFun::array_flat,
+                    extract: None,
+                }
+            }
+            &AggregateFun::Concat => {
+                AggregateFunImpls {
+                    init: Some(AggregateFun::concat_init),
+                    action: AggregateFun::concat,
+                    extract: None,
+                }
+            }
+            &AggregateFun::Avg => {
+                AggregateFunImpls {
+                    init: Some(AggregateFun::avg_init),
+                    action: AggregateFun::avg,
+                    extract: Some(AggregateFun::avg_final),
+                }
+            }
+            &AggregateFun::Count => {
+                AggregateFunImpls {
+                    init: Some(AggregateFun::count_init),
+                    action: AggregateFun::count,
+                    extract: None,
+                }
+            }
         }
     }
 
@@ -100,12 +120,12 @@ impl AggregateFun {
                 if let &mut JsonValue::Number(ref mut existing) = existing {
                     *existing += new;
                 }
-            },
+            }
             JsonValue::Array(vec) => {
                 for v in vec {
                     AggregateFun::sum(existing, v, _user_arg);
                 }
-            },
+            }
             _ => (),
         }
     }
@@ -243,7 +263,7 @@ impl AggregateFun {
                     // can't happen but compiler need this here
                     1.0
                 };
-                
+
                 avg = (avg * count + new) / (count + 1.0);
                 count += 1.0;
                 array[0] = JsonValue::Number(avg);
@@ -290,4 +310,3 @@ impl AggregateFun {
         }
     }
 }
-

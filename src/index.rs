@@ -16,7 +16,7 @@ use rocksdb::{MergeOperands, IteratorMode, Snapshot as RocksSnapshot, Compaction
 pub use rocksdb::WriteBatch;
 
 use error::Error;
-use json_shred::{Shredder};
+use json_shred::Shredder;
 use key_builder::KeyBuilder;
 use snapshot::Snapshot;
 
@@ -43,7 +43,7 @@ impl Batch {
 }
 
 pub enum OpenOptions {
-    Create
+    Create,
 }
 
 impl Index {
@@ -63,7 +63,7 @@ impl Index {
         rocks_options.set_comparator("noise_cmp", Index::compare_keys);
         rocks_options.set_merge_operator("noise_merge", Index::sum_merge);
         rocks_options.set_compaction_filter("noise_compact", Index::compaction_filter);
-        
+
         let rocks = match rocksdb::DB::open(&rocks_options, name) {
             Ok(rocks) => rocks,
             Err(error) => {
@@ -75,12 +75,14 @@ impl Index {
                 rocks_options.create_if_missing(true);
 
                 let rocks = try!(rocksdb::DB::open(&rocks_options, name));
-                
-                let mut bytes = Vec::with_capacity(8*2);
-                bytes.write(&Index::convert_u64_to_bytes(NOISE_HEADER_VERSION)).unwrap();
+
+                let mut bytes = Vec::with_capacity(8 * 2);
+                bytes
+                    .write(&Index::convert_u64_to_bytes(NOISE_HEADER_VERSION))
+                    .unwrap();
                 bytes.write(&Index::convert_u64_to_bytes(0)).unwrap();
                 try!(rocks.put_opt(b"HDB", &bytes, &rocksdb::WriteOptions::new()));
-                
+
                 rocks
             }
         };
@@ -88,9 +90,10 @@ impl Index {
         // validate header is there
         let value = try!(rocks.get(b"HDB")).unwrap();
         self.rocks = Some(rocks);
-        assert_eq!(value.len(), 8*2);
+        assert_eq!(value.len(), 8 * 2);
         // first 8 is version
-        assert_eq!(Index::convert_bytes_to_u64(&value[..8]), NOISE_HEADER_VERSION);
+        assert_eq!(Index::convert_bytes_to_u64(&value[..8]),
+                   NOISE_HEADER_VERSION);
         // next 8 is high seq
         self.high_doc_seq = Index::convert_bytes_to_u64(&value[8..]);
         self.name = name.to_string();
@@ -125,7 +128,7 @@ impl Index {
             if batch.id_str_in_batch.contains(&docid) {
                 // oops use trying to add some doc 2x to this batch.
                 return Err(Error::Write("Attempt to insert multiple docs with same _id"
-                    .to_string()));
+                                            .to_string()));
             }
             if let Some((seq, existing_key_values)) = try!(self.gather_doc_fields(&docid)) {
                 shredder.merge_existing_doc(existing_key_values);
@@ -137,7 +140,10 @@ impl Index {
             }
         } else {
             // no doc id supplied in document, so we create one.
-            let docid = Uuid::new(UuidVersion::Random).unwrap().simple().to_string();
+            let docid = Uuid::new(UuidVersion::Random)
+                .unwrap()
+                .simple()
+                .to_string();
             try!(shredder.add_id(&docid));
             self.high_doc_seq += 1;
             (self.high_doc_seq, docid)
@@ -157,12 +163,11 @@ impl Index {
         if batch.id_str_in_batch.contains(docid) {
             // oops use trying to delete a doc that's in the batch. Can't happen,
             return Err(Error::Write("Attempt to delete doc with same _id added earlier"
-                    .to_string()));
+                                        .to_string()));
         }
         if let Some((seq, key_values)) = try!(self.gather_doc_fields(docid)) {
             let mut shredder = Shredder::new();
-            try!(shredder.delete_existing_doc(docid, seq, key_values,
-                &mut batch.wb));
+            try!(shredder.delete_existing_doc(docid, seq, key_values, &mut batch.wb));
             batch.id_str_in_batch.insert(docid.to_string());
             Ok(true)
         } else {
@@ -170,18 +175,21 @@ impl Index {
         }
     }
 
-    fn gather_doc_fields(&self, docid: &str) ->
-            Result<Option<(u64, BTreeMap<String, Vec<u8>>)>, Error> {
+    fn gather_doc_fields(&self,
+                         docid: &str)
+                         -> Result<Option<(u64, BTreeMap<String, Vec<u8>>)>, Error> {
         if let Some(seq) = try!(self.fetch_seq(&docid)) {
             // collect up all the fields for the existing doc
             let kb = KeyBuilder::new();
             let value_key = kb.value_key(seq);
             let mut key_values = BTreeMap::new();
-            
-            let mut iter = self.rocks.as_ref().unwrap().iterator(IteratorMode::Start);
+
+            let mut iter = self.rocks
+                .as_ref()
+                .unwrap()
+                .iterator(IteratorMode::Start);
             // Seek in index to >= entry
-            iter.set_mode(IteratorMode::From(value_key.as_bytes(),
-                                            rocksdb::Direction::Forward));
+            iter.set_mode(IteratorMode::From(value_key.as_bytes(), rocksdb::Direction::Forward));
             loop {
                 let (key, value) = match iter.next() {
                     Some((key, value)) => (key, value),
@@ -191,8 +199,8 @@ impl Index {
                 if !key.starts_with(value_key.as_bytes()) {
                     break;
                 }
-                let key = unsafe{ str::from_utf8_unchecked(&key)}.to_string();
-                let value = value.iter().map(|i|*i).collect();
+                let key = unsafe { str::from_utf8_unchecked(&key) }.to_string();
+                let value = value.iter().map(|i| *i).collect();
                 key_values.insert(key, value);
             }
             return Ok(Some((seq, key_values)));
@@ -209,9 +217,13 @@ impl Index {
         }
         let rocks = self.rocks.as_ref().unwrap();
 
-        let mut bytes = Vec::with_capacity(8*2);
-        bytes.write(&Index::convert_u64_to_bytes(NOISE_HEADER_VERSION)).unwrap();
-        bytes.write(&Index::convert_u64_to_bytes(self.high_doc_seq)).unwrap();
+        let mut bytes = Vec::with_capacity(8 * 2);
+        bytes
+            .write(&Index::convert_u64_to_bytes(NOISE_HEADER_VERSION))
+            .unwrap();
+        bytes
+            .write(&Index::convert_u64_to_bytes(self.high_doc_seq))
+            .unwrap();
         try!(batch.wb.put(b"HDB", &bytes));
 
         let status = try!(rocks.write(batch.wb));
@@ -239,13 +251,13 @@ impl Index {
         for (n, b) in bytes.iter().enumerate() {
             buffer[n] = *b;
         }
-        unsafe{ mem::transmute(buffer) }
+        unsafe { mem::transmute(buffer) }
     }
-    
+
     /// Should not be used generally since it not varint. Used for header fields
     /// since only one header is in the database it's not a problem with excess size.
     fn convert_u64_to_bytes(val: u64) -> [u8; 8] {
-        unsafe{ mem::transmute(val) }
+        unsafe { mem::transmute(val) }
     }
 
     pub fn convert_bytes_to_i32(bytes: &[u8]) -> i32 {
@@ -254,14 +266,14 @@ impl Index {
         let mut read = Cursor::new(vec);
         read.read_signed_varint_32().unwrap()
     }
-    
+
     pub fn convert_i32_to_bytes(val: i32) -> Vec<u8> {
         let mut bytes = Cursor::new(Vec::new());
         assert!(bytes.write_signed_varint_32(val).is_ok());
         bytes.into_inner()
     }
 
-    pub fn fetch_seq(&self, id: &str) ->  Result<Option<u64>, Error> {
+    pub fn fetch_seq(&self, id: &str) -> Result<Option<u64>, Error> {
         // Fetching an seq is only possible if the index is open
         // NOTE vmx 2016-10-17: Perhaps that shouldn't panic?
         assert!(&self.rocks.is_some());
@@ -271,7 +283,7 @@ impl Index {
         match try!(rocks.get(&key.as_bytes())) {
             // If there is an id, it's UTF-8
             Some(bytes) => Ok(Some(bytes.to_utf8().unwrap().parse().unwrap())),
-            None => Ok(None)
+            None => Ok(None),
         }
     }
 
@@ -289,8 +301,8 @@ impl Index {
     fn compare_keys(a: &[u8], b: &[u8]) -> Ordering {
         let value_prefixes = ['W', 'f', 'T', 'F', 'N'];
         if value_prefixes.contains(&(a[0] as char)) && value_prefixes.contains(&(b[0] as char)) {
-            let astr = unsafe {str::from_utf8_unchecked(&a)};
-            let bstr = unsafe {str::from_utf8_unchecked(&b)};
+            let astr = unsafe { str::from_utf8_unchecked(&a) };
+            let bstr = unsafe { str::from_utf8_unchecked(&b) };
             KeyBuilder::compare_keys(astr, bstr)
         } else {
             a.cmp(b)
@@ -298,9 +310,9 @@ impl Index {
     }
 
     fn sum_merge(new_key: &[u8],
-                    existing_val: Option<&[u8]>,
-                    operands: &mut MergeOperands)
-                    -> Vec<u8> {
+                 existing_val: Option<&[u8]>,
+                 operands: &mut MergeOperands)
+                 -> Vec<u8> {
         if !(new_key[0] as char == 'C' || new_key[0] as char == 'K') {
             panic!("unknown key type to merge!");
         }
@@ -310,7 +322,7 @@ impl Index {
         } else {
             0
         };
-        
+
         for bytes in operands {
             count += Index::convert_bytes_to_i32(&bytes);
         }
@@ -351,7 +363,7 @@ mod tests {
         let id = index.add(r#"{"foo":"bar"}"#, &mut batch).unwrap();
 
         index.flush(batch).unwrap();
-                                             
+
         let mut results = Query::get_matches(r#"find {foo:=="bar"}"#, &index).unwrap();
         let query_id = results.get_next_id().unwrap();
         assert!(query_id.len() == 32);
@@ -375,7 +387,7 @@ mod tests {
         index.flush(batch).unwrap();
 
         let rocks = index.rocks.as_mut().unwrap();
-        
+
         // apparently you need to do compaction twice when there are merges
         // first one lets the merges happen, the second lets them be collected.
         // this is acceptable since eventually the keys go away.
@@ -397,38 +409,38 @@ mod tests {
         let mut index = Index::new();
         index.open(dbname, Some(OpenOptions::Create)).unwrap();
 
-        //let _ = index.add(r#"{"_id":"1", "foo":"array", "baz": ["a","b",["c","d",["e"]]]}"#).unwrap();
-        
-        //index.flush().unwrap();
-
         let mut batch = Batch::new();
-        let _ = index.add(r#"{"_id":"1", "foo":"array", "baz": [1,2,[3,4,[5]]]}"#, &mut batch).unwrap();
-        
+        let _ = index
+            .add(r#"{"_id":"1", "foo":"array", "baz": [1,2,[3,4,[5]]]}"#,
+                 &mut batch)
+            .unwrap();
+
         index.flush(batch).unwrap();
         {
-        let rocks = index.rocks.as_mut().unwrap();
+            let rocks = index.rocks.as_mut().unwrap();
 
-        let mut results = Vec::new();
-        for (key, value) in rocks.iterator(rocksdb::IteratorMode::Start) {
-            if key[0] as char == 'V' {
-                let key_string = unsafe { str::from_utf8_unchecked((&key)) }.to_string();
-                results.push((key_string, JsonFetcher::bytes_to_json_value(&*value)));
+            let mut results = Vec::new();
+            for (key, value) in rocks.iterator(rocksdb::IteratorMode::Start) {
+                if key[0] as char == 'V' {
+                    let key_string = unsafe { str::from_utf8_unchecked((&key)) }.to_string();
+                    results.push((key_string, JsonFetcher::bytes_to_json_value(&*value)));
+                }
             }
-        }
 
-        let expected = vec![
-            ("V1#._id".to_string(), JsonValue::String("1".to_string())),
-            ("V1#.baz$0".to_string(), JsonValue::Number(1.0)),
-            ("V1#.baz$1".to_string(), JsonValue::Number(2.0)),
-            ("V1#.baz$2$0".to_string(), JsonValue::Number(3.0)),
-            ("V1#.baz$2$1".to_string(), JsonValue::Number(4.0)),
-            ("V1#.baz$2$2$0".to_string(), JsonValue::Number(5.0)),
-            ("V1#.foo".to_string(), JsonValue::String("array".to_string()))];
-        assert_eq!(results, expected);
+            let expected = vec![("V1#._id".to_string(), JsonValue::String("1".to_string())),
+                                ("V1#.baz$0".to_string(), JsonValue::Number(1.0)),
+                                ("V1#.baz$1".to_string(), JsonValue::Number(2.0)),
+                                ("V1#.baz$2$0".to_string(), JsonValue::Number(3.0)),
+                                ("V1#.baz$2$1".to_string(), JsonValue::Number(4.0)),
+                                ("V1#.baz$2$2$0".to_string(), JsonValue::Number(5.0)),
+                                ("V1#.foo".to_string(), JsonValue::String("array".to_string()))];
+            assert_eq!(results, expected);
         }
 
         let mut batch = Batch::new();
-        let _ = index.add(r#"{"_id":"1", "foo":"array", "baz": []}"#, &mut batch).unwrap();
+        let _ = index
+            .add(r#"{"_id":"1", "foo":"array", "baz": []}"#, &mut batch)
+            .unwrap();
         index.flush(batch).unwrap();
 
         let rocks = index.rocks.as_mut().unwrap();
@@ -440,11 +452,9 @@ mod tests {
                 results.push((key_string, JsonFetcher::bytes_to_json_value(&*value)));
             }
         }
-       let expected = vec![
-            ("V1#._id".to_string(), JsonValue::String("1".to_string())),
-            ("V1#.baz".to_string(), JsonValue::Array(vec![])),
-            ("V1#.foo".to_string(), JsonValue::String("array".to_string()))
-            ];
+        let expected = vec![("V1#._id".to_string(), JsonValue::String("1".to_string())),
+                            ("V1#.baz".to_string(), JsonValue::Array(vec![])),
+                            ("V1#.foo".to_string(), JsonValue::String("array".to_string()))];
         assert_eq!(results, expected);
     }
 }

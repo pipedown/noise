@@ -10,7 +10,7 @@ use std::usize;
 use error::Error;
 use index::Index;
 use parser::Parser;
-use json_value::{JsonValue};
+use json_value::JsonValue;
 use filters::QueryRuntimeFilter;
 use aggregates::AggregateFun;
 use returnable::{Returnable, RetValue, RetScore, RetHidden, ReturnPath};
@@ -41,7 +41,8 @@ impl DocResult {
             result_keys.push(result_key);
             return;
         }
-        self.bind_name_result.insert(bind_name.to_string(), vec![result_key]);
+        self.bind_name_result
+            .insert(bind_name.to_string(), vec![result_key]);
     }
 
     pub fn combine(&mut self, other: &mut DocResult) {
@@ -52,7 +53,8 @@ impl DocResult {
                 result_keys.append(&mut result_keys_other);
                 continue;
             }
-            self.bind_name_result.insert(bind_name, result_keys_other);
+            self.bind_name_result
+                .insert(bind_name, result_keys_other);
         }
         self.scores.append(&mut other.scores);
     }
@@ -162,7 +164,7 @@ impl Query {
         if index.rocks.is_none() {
             return Err(Error::Parse("You must open the index first".to_string()));
         }
-        
+
         let snapshot = index.new_snapshot();
         let mut parser = Parser::new(query, snapshot);
         let mut filter = try!(parser.build_filter());
@@ -173,11 +175,12 @@ impl Query {
         try!(filter.check_double_not(false));
 
         if filter.is_all_not() {
-            return Err(Error::Parse("query cannot be made up of only logical not. Must have at least \
-                                    one match clause not negated.".to_string()));
+            return Err(Error::Parse("query cannot be made up of only logical not. Must have at \
+                                     least one match clause not negated."
+                                            .to_string()));
         }
-        
-        let mut ags = Vec::new(); 
+
+        let mut ags = Vec::new();
         returnable.get_aggregate_funs(&mut ags);
 
         let mut has_ags = false;
@@ -191,7 +194,7 @@ impl Query {
 
         returnable = if has_sorting && has_ags {
             return Err(Error::Parse("Cannot have aggregates and sorting in the same query"
-                                    .to_string()));
+                                        .to_string()));
         } else if has_sorting {
             returnable.take_sort_for_matching_fields(&mut sorts);
             if !sorts.is_empty() {
@@ -200,17 +203,22 @@ impl Query {
                     let sort = sort_info.clone();
                     match sort_info.field {
                         SortField::FetchValue(rp) => {
-                            vec.push(Box::new(RetValue{ rp: rp, 
-                                                        ag: None,
-                                                        default: sort_info.default,
-                                                        sort_info: Some(sort)}));
-                        },
+                            vec.push(Box::new(RetValue {
+                                                  rp: rp,
+                                                  ag: None,
+                                                  default: sort_info.default,
+                                                  sort_info: Some(sort),
+                                              }));
+                        }
                         SortField::Score => {
-                            vec.push(Box::new(RetScore{ sort_info: Some(sort)}));
-                        },
+                            vec.push(Box::new(RetScore { sort_info: Some(sort) }));
+                        }
                     }
                 }
-                Box::new(RetHidden{unrendered: vec, visible: returnable})
+                Box::new(RetHidden {
+                             unrendered: vec,
+                             visible: returnable,
+                         })
             } else {
                 returnable
             }
@@ -223,7 +231,8 @@ impl Query {
             for option_ag in ags.iter() {
                 if option_ag.is_none() {
                     return Err(Error::Parse("Return keypaths must either all have \
-                        aggregate functions, or none can them.".to_string()));
+                        aggregate functions, or none can them."
+                                                    .to_string()));
                 }
             }
         }
@@ -249,12 +258,15 @@ impl Query {
             }
             // order we process sorts is important
             sorts.sort_by_key(|&(ref sort_info, ref _n)| sort_info.order_to_apply);
-            sorts.into_iter().map(|(sort_info, n)| (sort_info.sort, n)).collect()
+            sorts
+                .into_iter()
+                .map(|(sort_info, n)| (sort_info.sort, n))
+                .collect()
         } else {
             Vec::new()
         };
-        
-        
+
+
         let mut does_group_or_aggr = false;
         let mut aggr_inits = Vec::new();
         let mut aggr_actions = Vec::new();
@@ -266,7 +278,7 @@ impl Query {
                 n -= 1;
                 if ag == AggregateFun::GroupAsc {
                     sorts.push((Sort::Asc, n));
-                } else if  ag == AggregateFun::GroupDesc {
+                } else if ag == AggregateFun::GroupDesc {
                     sorts.push((Sort::Desc, n));
                 } else {
                     let ag_impls = ag.get_fun_impls();
@@ -282,38 +294,41 @@ impl Query {
             // the order we process groups in important
             sorts.reverse();
         }
-        
-        let mut qsi = QueryScoringInfo{num_terms: 0, sum_of_idt_sqs: 0.0};
-        
+
+        let mut qsi = QueryScoringInfo {
+            num_terms: 0,
+            sum_of_idt_sqs: 0.0,
+        };
+
         if parser.needs_scoring {
             filter.prepare_relevancy_scoring(&mut qsi);
         }
 
         let query_norm = if qsi.num_terms > 0 {
-            1.0/(qsi.sum_of_idt_sqs as f32)
+            1.0 / (qsi.sum_of_idt_sqs as f32)
         } else {
             0.0
         };
 
         Ok(QueryResults {
-            filter: filter,
-            doc_result_next: DocResult::new(),
-            fetcher: parser.snapshot.new_json_fetcher(),
-            snapshot: parser.snapshot,
-            returnable: returnable,
-            needs_sorting_and_ags: needs_sorting_and_ags,
-            done_with_sorting_and_ags: false,
-            does_group_or_aggr: does_group_or_aggr,
-            sorts: Some(sorts),
-            aggr_inits: aggr_inits,
-            aggr_actions: aggr_actions,
-            aggr_finals: aggr_finals,
-            in_buffer: Vec::new(),
-            sorted_buffer: Vec::new(),
-            limit: limit,
-            scoring_num_terms: qsi.num_terms,
-            scoring_query_norm: query_norm,
-        })
+               filter: filter,
+               doc_result_next: DocResult::new(),
+               fetcher: parser.snapshot.new_json_fetcher(),
+               snapshot: parser.snapshot,
+               returnable: returnable,
+               needs_sorting_and_ags: needs_sorting_and_ags,
+               done_with_sorting_and_ags: false,
+               does_group_or_aggr: does_group_or_aggr,
+               sorts: Some(sorts),
+               aggr_inits: aggr_inits,
+               aggr_actions: aggr_actions,
+               aggr_finals: aggr_finals,
+               in_buffer: Vec::new(),
+               sorted_buffer: Vec::new(),
+               limit: limit,
+               scoring_num_terms: qsi.num_terms,
+               scoring_query_norm: query_norm,
+           })
     }
 }
 
@@ -328,9 +343,9 @@ pub struct QueryResults<'a> {
     done_with_sorting_and_ags: bool,
     does_group_or_aggr: bool,
     sorts: Option<Vec<(Sort, usize)>>,
-    aggr_inits: Vec<(fn (JsonValue) -> JsonValue, usize)>,
-    aggr_actions: Vec<(fn (&mut JsonValue, JsonValue, &JsonValue), JsonValue, usize)>,
-    aggr_finals: Vec<(fn (&mut JsonValue), usize)>,
+    aggr_inits: Vec<(fn(JsonValue) -> JsonValue, usize)>,
+    aggr_actions: Vec<(fn(&mut JsonValue, JsonValue, &JsonValue), JsonValue, usize)>,
+    aggr_finals: Vec<(fn(&mut JsonValue), usize)>,
     in_buffer: Vec<VecDeque<JsonValue>>,
     sorted_buffer: Vec<VecDeque<JsonValue>>,
     limit: usize,
@@ -339,21 +354,20 @@ pub struct QueryResults<'a> {
 }
 
 impl<'a> QueryResults<'a> {
-
-    fn compute_relevancy_score(& self, dr: &DocResult) -> f32 {
+    fn compute_relevancy_score(&self, dr: &DocResult) -> f32 {
         if self.scoring_num_terms == 0 {
-            return 0.0
+            return 0.0;
         }
         let mut num_terms_matched = 0;
         let mut score: f32 = 0.0;
         for &(ref total_term_score, ref num_times_term_matched) in dr.scores.iter() {
             if *num_times_term_matched > 0 {
-                score += *total_term_score/(*num_times_term_matched as f32);
+                score += *total_term_score / (*num_times_term_matched as f32);
                 num_terms_matched += 1;
             }
         }
-        self.scoring_query_norm * score * (num_terms_matched as f32)
-                / (self.scoring_num_terms as f32)
+        self.scoring_query_norm * score * (num_terms_matched as f32) /
+        (self.scoring_num_terms as f32)
     }
 
     fn get_next_result(&mut self) -> Option<DocResult> {
@@ -365,7 +379,7 @@ impl<'a> QueryResults<'a> {
             Some(doc_result) => {
                 self.doc_result_next.seq = doc_result.seq + 1;
                 Some(doc_result)
-            },
+            }
             None => None,
         }
     }
@@ -386,9 +400,9 @@ impl<'a> QueryResults<'a> {
                 match self.snapshot.get(&key.as_bytes()) {
                     // If there is an id, it's UTF-8. Strip off type leading byte
                     Some(id) => Some(id.to_utf8().unwrap()[1..].to_string()),
-                    None => None
+                    None => None,
                 }
-            },
+            }
             None => None,
         }
     }
@@ -405,13 +419,17 @@ impl<'a> QueryResults<'a> {
                     Some(dr) => {
                         let score = self.compute_relevancy_score(&dr);
                         let mut results = VecDeque::new();
-                        self.returnable.fetch_result(&mut self.fetcher, dr.seq, score,
-                                                          &dr.bind_name_result, &mut results);
+                        self.returnable
+                            .fetch_result(&mut self.fetcher,
+                                          dr.seq,
+                                          score,
+                                          &dr.bind_name_result,
+                                          &mut results);
                         self.in_buffer.push(results);
                         if self.in_buffer.len() == self.limit {
                             self.do_sorting_and_ags();
                         }
-                    },
+                    }
                     None => {
                         if !self.done_with_sorting_and_ags {
                             self.do_sorting_and_ags();
@@ -430,7 +448,7 @@ impl<'a> QueryResults<'a> {
                         } else {
                             return None;
                         }
-                    },
+                    }
                 }
             }
         } else {
@@ -440,14 +458,20 @@ impl<'a> QueryResults<'a> {
             };
             let score = self.compute_relevancy_score(&dr);
             let mut results = VecDeque::new();
-            self.returnable.fetch_result(&mut self.fetcher, dr.seq, score,
-                                              &dr.bind_name_result, &mut results);
+            self.returnable
+                .fetch_result(&mut self.fetcher,
+                              dr.seq,
+                              score,
+                              &dr.bind_name_result,
+                              &mut results);
             Some(self.returnable.json_result(&mut results))
         }
     }
 
     fn cmp_results(sorts: &Vec<(Sort, usize)>,
-                   a: &VecDeque<JsonValue>, b: &VecDeque<JsonValue>) -> Ordering {
+                   a: &VecDeque<JsonValue>,
+                   b: &VecDeque<JsonValue>)
+                   -> Ordering {
         for &(ref sort_dir, n) in sorts.iter() {
             let cmp = if *sort_dir != Sort::Desc {
                 b[n].cmp(&a[n])
@@ -467,7 +491,8 @@ impl<'a> QueryResults<'a> {
         // we need to put it back before returning.
         let sorts = self.sorts.take().unwrap();
         if !sorts.is_empty() {
-            self.in_buffer.sort_by(|a, b| QueryResults::cmp_results(&sorts, &a, &b));
+            self.in_buffer
+                .sort_by(|a, b| QueryResults::cmp_results(&sorts, &a, &b));
         }
         // put back
         self.sorts = Some(sorts);
@@ -491,13 +516,13 @@ impl<'a> QueryResults<'a> {
                                     new_buffer.push(b);
                                     option_a = Some(a);
                                     option_b = self.in_buffer.pop();
-                                },
+                                }
                                 Ordering::Greater => {
                                     new_buffer.push(a);
                                     option_a = self.sorted_buffer.pop();
                                     option_b = Some(b);
 
-                                },
+                                }
                                 Ordering::Equal => {
                                     new_buffer.push(a);
                                     new_buffer.push(b);
@@ -511,7 +536,7 @@ impl<'a> QueryResults<'a> {
                                 new_buffer.truncate(self.limit);
                                 break;
                             }
-                        },
+                        }
                         (Some(a), None) => {
                             new_buffer.push(a);
                             if new_buffer.len() == self.limit {
@@ -524,7 +549,7 @@ impl<'a> QueryResults<'a> {
                                 }
                             }
                             break;
-                        },
+                        }
                         (None, Some(b)) => {
                             new_buffer.push(b);
                             if new_buffer.len() == self.limit {
@@ -537,9 +562,9 @@ impl<'a> QueryResults<'a> {
                                 }
                             }
                             break;
-                        },
+                        }
                         (None, None) => break,
-                    }   
+                    }
                 }
                 // put back
                 self.sorts = Some(sorts);
@@ -550,10 +575,9 @@ impl<'a> QueryResults<'a> {
             return;
         }
 
-        
+
         //merge the sorted buffers
-        let mut new_buffer = Vec::with_capacity(self.sorted_buffer.len() +
-                                                self.in_buffer.len());
+        let mut new_buffer = Vec::with_capacity(self.sorted_buffer.len() + self.in_buffer.len());
         let mut option_old = self.sorted_buffer.pop();
         let mut option_new = self.in_buffer.pop();
         // take out for borrow check
@@ -576,12 +600,12 @@ impl<'a> QueryResults<'a> {
                             self.sorted_buffer.push(old);
                             option_old = Some(new);
                             option_new = self.in_buffer.pop();
-                        },
+                        }
                         Ordering::Greater => {
                             new_buffer.push(old);
                             option_old = self.sorted_buffer.pop();
                             option_new = Some(new);
-                        },
+                        }
                         Ordering::Equal => {
                             for &(ref action, ref user_arg, n) in self.aggr_actions.iter() {
                                 // we can't swap out a value of new directly, so this lets us
@@ -600,7 +624,7 @@ impl<'a> QueryResults<'a> {
                         self.in_buffer.clear();
                         break;
                     }
-                },
+                }
                 (Some(old), None) => {
                     new_buffer.push(old);
                     if new_buffer.len() == self.limit {
@@ -613,7 +637,7 @@ impl<'a> QueryResults<'a> {
                         }
                     }
                     break;
-                },
+                }
                 (None, Some(mut new)) => {
                     for &(ref init, n) in self.aggr_inits.iter() {
                         // we can't swap out a value of new directly, so this lets us
@@ -625,9 +649,9 @@ impl<'a> QueryResults<'a> {
                     }
                     option_old = Some(new);
                     option_new = self.in_buffer.pop();
-                },
+                }
                 (None, None) => break,
-            }   
+            }
         }
         // put back
         self.sorts = Some(sorts);
@@ -688,7 +712,6 @@ mod tests {
         index.flush(batch).unwrap();
 
         let mut query_results = Query::get_matches(r#"find {hello:=="world"}"#, &index).unwrap();
-        //let mut query_results = Query::get_matches(r#"a.b[foo="bar"]"#.to_string(), &index).unwrap();
         println!("query results: {:?}", query_results.get_next_id());
     }
 
@@ -702,7 +725,8 @@ mod tests {
         let mut batch = Batch::new();
         for ii in 1..100 {
             let data = ((ii % 25) + 97) as u8 as char;
-            let _ = index.add(&format!(r#"{{"_id":"{}", "data": "{}"}}"#, ii, data), &mut batch);
+            let _ = index.add(&format!(r#"{{"_id":"{}", "data": "{}"}}"#, ii, data),
+                              &mut batch);
         }
         index.flush(batch).unwrap();
 

@@ -24,7 +24,7 @@ pub struct StemmedWord {
 
 impl<'a> Stems<'a> {
     pub fn new(text: &str) -> Stems {
-        Stems{
+        Stems {
             words: text.split_word_bound_indices(),
             stemmer: Stemmer::new("english").unwrap(),
             word_position: 0,
@@ -38,34 +38,34 @@ impl<'a> Iterator for Stems<'a> {
     fn next(&mut self) -> Option<StemmedWord> {
         // we loop though until we find alphabetic chars. That becomes our stem word.
         let mut non_alpha = String::new(); // will contain any non-alphabetic chars
-                                           // returned iff no other alphabetic chars
+        // returned iff no other alphabetic chars
         while let Some((_pos, word)) = self.words.next() {
             let normalized = word.nfkc().collect::<String>();
             if normalized.chars().next().unwrap().is_alphabetic() {
                 let pos = self.word_position;
                 self.word_position += 1;
                 return Some(StemmedWord {
-                    word_pos: pos as u32,
-                    stemmed: self.stemmer.stem(&normalized.to_lowercase()),
-                });
+                                word_pos: pos as u32,
+                                stemmed: self.stemmer.stem(&normalized.to_lowercase()),
+                            });
             } else {
                 if self.word_position == 0 {
                     non_alpha.push_str(&normalized);
                 }
             }
-        } 
+        }
         if non_alpha.is_empty() {
             if self.word_position == 0 {
                 self.word_position = 1;
                 // in this case we were passed an empty string
-                // so we don't just return None, but we return 
+                // so we don't just return None, but we return
                 // an empty string Stemmed word.
                 // otherwise searching fields for empty strings
                 // wouldn't be possible.
                 return Some(StemmedWord {
-                    word_pos: 0,
-                    stemmed: String::new(),
-                });
+                                word_pos: 0,
+                                stemmed: String::new(),
+                            });
             } else {
                 return None;
             }
@@ -73,9 +73,9 @@ impl<'a> Iterator for Stems<'a> {
             if self.word_position == 0 {
                 self.word_position = 1;
                 return Some(StemmedWord {
-                    word_pos: 0,
-                    stemmed: non_alpha,
-                });
+                                word_pos: 0,
+                                stemmed: non_alpha,
+                            });
             } else {
                 return None;
             }
@@ -92,16 +92,35 @@ mod tests {
     fn test_stems_mixedcase() {
         let input = "THEse Words deeplY test smOOthly that stemmING";
         let result = Stems::new(input).collect::<Vec<StemmedWord>>();
-        let expected = vec![
-            StemmedWord { word_pos: 0, stemmed: String::from("these")},
-            StemmedWord { word_pos: 1, stemmed: String::from("word")},
-            // "deeply" stems to "deepli"
-            StemmedWord { word_pos: 2, stemmed: String::from("deepli")},
-            StemmedWord { word_pos: 3, stemmed: String::from("test")},
-            StemmedWord { word_pos: 4, stemmed: String::from("smooth")},
-            StemmedWord { word_pos: 5, stemmed: String::from("that")},
-            StemmedWord { word_pos: 6, stemmed: String::from("stem")},
-            ];
+        let expected = vec![StemmedWord {
+                                word_pos: 0,
+                                stemmed: String::from("these"),
+                            },
+                            StemmedWord {
+                                word_pos: 1,
+                                stemmed: String::from("word"),
+                            },
+                            // "deeply" stems to "deepli"
+                            StemmedWord {
+                                word_pos: 2,
+                                stemmed: String::from("deepli"),
+                            },
+                            StemmedWord {
+                                word_pos: 3,
+                                stemmed: String::from("test"),
+                            },
+                            StemmedWord {
+                                word_pos: 4,
+                                stemmed: String::from("smooth"),
+                            },
+                            StemmedWord {
+                                word_pos: 5,
+                                stemmed: String::from("that"),
+                            },
+                            StemmedWord {
+                                word_pos: 6,
+                                stemmed: String::from("stem"),
+                            }];
         assert_eq!(result.len(), expected.len());
         for (stem, expected_stem) in result.iter().zip(expected.iter()) {
             assert_eq!(stem, expected_stem);
@@ -112,17 +131,25 @@ mod tests {
     fn test_stems_nonchars() {
         let input = "  @#$!== \t+-";
         let result = Stems::new(input).collect::<Vec<StemmedWord>>();
-        assert_eq!(result, vec![StemmedWord { word_pos: 0, stemmed: String::from("  @#$!== \t+-")}]);
+        assert_eq!(result,
+                   vec![StemmedWord {
+                            word_pos: 0,
+                            stemmed: String::from("  @#$!== \t+-"),
+                        }]);
     }
 
     #[test]
     fn test_stems_some_nonchars() {
         let input = "@!?   Let's seeing...";
         let result = Stems::new(input).collect::<Vec<StemmedWord>>();
-        let expected = vec![
-            StemmedWord { word_pos: 0, stemmed: String::from("let")},
-            StemmedWord { word_pos: 1, stemmed: String::from("see")},
-            ];
+        let expected = vec![StemmedWord {
+                                word_pos: 0,
+                                stemmed: String::from("let"),
+                            },
+                            StemmedWord {
+                                word_pos: 1,
+                                stemmed: String::from("see"),
+                            }];
         assert_eq!(result.len(), expected.len());
         for (stem, expected_stem) in result.iter().zip(expected.iter()) {
             assert_eq!(stem, expected_stem);
@@ -133,10 +160,14 @@ mod tests {
     fn test_stems_unicode() {
         let input = "Ünicöde stemming";
         let result = Stems::new(input).collect::<Vec<StemmedWord>>();
-        let expected = vec![
-            StemmedWord { word_pos: 0, stemmed: String::from("ünicöd")},
-            StemmedWord { word_pos: 1, stemmed: String::from("stem")},
-            ];
+        let expected = vec![StemmedWord {
+                                word_pos: 0,
+                                stemmed: String::from("ünicöd"),
+                            },
+                            StemmedWord {
+                                word_pos: 1,
+                                stemmed: String::from("stem"),
+                            }];
         assert_eq!(result.len(), expected.len());
         for (stem, expected_stem) in result.iter().zip(expected.iter()) {
             assert_eq!(stem, expected_stem);
@@ -147,10 +178,14 @@ mod tests {
     fn test_stems_trailing_needs_normalized() {
         let input = r#"Didgeridoos™"#;
         let result = Stems::new(input).collect::<Vec<StemmedWord>>();
-        let expected = vec![
-            StemmedWord { word_pos: 0, stemmed: String::from("didgeridoo")},
-            StemmedWord { word_pos: 1, stemmed: String::from("tm")},
-            ];
+        let expected = vec![StemmedWord {
+                                word_pos: 0,
+                                stemmed: String::from("didgeridoo"),
+                            },
+                            StemmedWord {
+                                word_pos: 1,
+                                stemmed: String::from("tm"),
+                            }];
         assert_eq!(result.len(), expected.len());
         for (stem, expected_stem) in result.iter().zip(expected.iter()) {
             assert_eq!(stem, expected_stem);
@@ -161,7 +196,10 @@ mod tests {
     fn test_stems_unicode_lowercase_has_more_bytes() {
         let input = "İ";
         let result = Stems::new(input).collect::<Vec<StemmedWord>>();
-        let expected = vec![StemmedWord { word_pos: 0, stemmed: String::from("i̇")}];
+        let expected = vec![StemmedWord {
+                                word_pos: 0,
+                                stemmed: String::from("i̇"),
+                            }];
         assert_eq!(result.len(), expected.len());
         for (stem, expected_stem) in result.iter().zip(expected.iter()) {
             assert_eq!(stem, expected_stem);
@@ -185,7 +223,8 @@ mod tests {
     //    let upper = "Ρ̓";
     //    let lower = "ῤ";
     //    println!("lower({}) == {}: {}", upper, lower, upper.to_lowercase() == lower);
-    //    println!("lower({}) == lower(upper({})): {}", upper, lower, upper.to_lowercase() == lower.to_uppercase().to_lowercase());
+    //    println!("lower({}) == lower(upper({})): {}", upper, lower, upper.to_lowercase() ==
+    //             lower.to_uppercase().to_lowercase());
     //    lower(Ρ̓) == ῤ: false
     //    lower(Ρ̓) == lower(upper(ῤ)): true
     #[test]
@@ -193,9 +232,10 @@ mod tests {
         // The input is: Ρ̓ῤῤ (11 bytes), lowercases is ῤῤῤ (9 bytes)
         let input = "\u{03A1}\u{0313}\u{03C1}\u{0313}\u{1FE4}";
         let result = Stems::new(input).collect::<Vec<StemmedWord>>();
-        let expected = vec![
-            StemmedWord { word_pos: 0, stemmed: String::from("\u{03C1}\u{0313}\u{1FE4}\u{1FE4}")},
-           ];
+        let expected = vec![StemmedWord {
+                                word_pos: 0,
+                                stemmed: String::from("\u{03C1}\u{0313}\u{1FE4}\u{1FE4}"),
+                            }];
         assert_eq!(result.len(), expected.len());
         for (stem, expected_stem) in result.iter().zip(expected.iter()) {
             assert_eq!(stem, expected_stem);

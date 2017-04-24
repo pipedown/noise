@@ -58,7 +58,7 @@ impl<'a, 'c> Parser<'a, 'c> {
     }
 
 
-    fn must_consume(&mut self, token: &str) -> Result<(), Error>  {
+    fn must_consume(&mut self, token: &str) -> Result<(), Error> {
         if self.could_consume(token) {
             self.offset += token.len();
             self.ws();
@@ -66,11 +66,13 @@ impl<'a, 'c> Parser<'a, 'c> {
         } else {
             if self.offset == self.query.len() {
                 Err(Error::Parse(format!("Expected '{}' at character {} but query string ended.",
-                                     token, self.offset)))
+                                         token,
+                                         self.offset)))
             } else {
                 Err(Error::Parse(format!("Expected '{}' at character {}, found {}.",
-                                     token, self.offset,
-                                     &self.query[self.offset..self.offset+1])))
+                                         token,
+                                         self.offset,
+                                         &self.query[self.offset..self.offset + 1])))
             }
         }
     }
@@ -94,7 +96,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         {
             let mut chars = self.query[self.offset..].chars();
             if let Some(c) = chars.next() {
-                // first char cannot be numeric 
+                // first char cannot be numeric
                 if c.is_alphabetic() || '_' == c || '$' == c {
                     result.push(c);
                     for c in chars {
@@ -106,7 +108,7 @@ impl<'a, 'c> Parser<'a, 'c> {
                     }
                 }
             }
-        } 
+        }
         if result.len() > 0 {
             self.offset += result.len();
             self.ws();
@@ -146,11 +148,10 @@ impl<'a, 'c> Parser<'a, 'c> {
             Ok(None)
         }
     }
-    
-    fn consume_aggregate(&mut self) -> Result<Option<(AggregateFun, 
-                                                      Option<String>,
-                                                      ReturnPath,
-                                                      JsonValue)>, Error> {
+
+    fn consume_aggregate
+        (&mut self)
+         -> Result<Option<(AggregateFun, Option<String>, ReturnPath, JsonValue)>, Error> {
         let offset = self.offset;
         let mut aggregate_fun = if self.consume("group") {
             AggregateFun::GroupAsc
@@ -175,7 +176,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         } else if self.consume("count") {
             AggregateFun::Count
         } else {
-            return Ok(None)
+            return Ok(None);
         };
 
         if self.consume("(") {
@@ -232,7 +233,7 @@ impl<'a, 'c> Parser<'a, 'c> {
                 try!(self.must_consume("]"));
                 key
             } else {
-                 if let Some(key) = self.consume_field() {
+                if let Some(key) = self.consume_field() {
                     key
                 } else {
                     self.ws();
@@ -285,8 +286,9 @@ impl<'a, 'c> Parser<'a, 'c> {
         }
     }
 
-    fn consume_boost_and_wrap_filter(&mut self, filter: Box<QueryRuntimeFilter + 'a>)
-                        -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
+    fn consume_boost_and_wrap_filter(&mut self,
+                                     filter: Box<QueryRuntimeFilter + 'a>)
+                                     -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
         let boost = try!(self.consume_boost());
         if boost != 1.0 {
             Ok(Box::new(BoostFilter::new(filter, boost)))
@@ -317,7 +319,11 @@ impl<'a, 'c> Parser<'a, 'c> {
             // parse the sign
             c = if c == '-' {
                 result.push('-');
-                if let Some(c) = chars.next() { c } else {return Ok(None); }
+                if let Some(c) = chars.next() {
+                    c
+                } else {
+                    return Ok(None);
+                }
             } else {
                 c
             };
@@ -327,10 +333,18 @@ impl<'a, 'c> Parser<'a, 'c> {
             c = if c == '0' {
                 result.push('0');
                 leading_zero = true;
-                if let Some(c) = chars.next() { c } else {return Ok(None); }
+                if let Some(c) = chars.next() {
+                    c
+                } else {
+                    return Ok(None);
+                }
             } else if c >= '1' && c <= '9' {
                 result.push(c);
-                if let Some(c) = chars.next() { c } else {return Ok(None); }
+                if let Some(c) = chars.next() {
+                    c
+                } else {
+                    return Ok(None);
+                }
             } else if result.is_empty() {
                 // no sign or digits found. not a number
                 return Ok(None);
@@ -398,7 +412,7 @@ impl<'a, 'c> Parser<'a, 'c> {
             } else {
                 break 'outer;
             };
-            
+
             // parse exponent sign
             c = if c == '+' || c == '-' {
                 result.push(c);
@@ -454,61 +468,64 @@ impl<'a, 'c> Parser<'a, 'c> {
         // inside the string literal
         self.offset += 1;
         {
-        let mut chars = self.query[self.offset..].chars();
-        'outer: loop {
-            let char = if let Some(char) = chars.next() {
-                char
-            } else {
-                break;
-            };
-            if char == '\\' {
-                self.offset += 1;
-
+            let mut chars = self.query[self.offset..].chars();
+            'outer: loop {
                 let char = if let Some(char) = chars.next() {
                     char
                 } else {
                     break;
                 };
-                match char {
-                    '\\' | '"' | '/' => lit.push(char),
-                    'n' => lit.push('\n'),
-                    'b' => lit.push('\x08'),
-                    'r' => lit.push('\r'),
-                    'f' => lit.push('\x0C'),
-                    't' => lit.push('\t'),
-                    'v' => lit.push('\x0B'),
-                    'u' => {
-                        let mut n = 0;
-                        for _i in 0..4 {
-                            let char = if let Some(char) = chars.next() {
-                                char
-                            } else {
-                                break 'outer;
-                            };
-                            n = match char {
-                                c @ '0' ... '9' => n * 16 + ((c as u16) - ('0' as u16)),
-                                c @ 'a' ... 'f' => n * 16 + (10 + (c as u16) - ('a' as u16)),
-                                c @ 'A' ... 'F' => n * 16 + (10 + (c as u16) - ('A' as u16)),
-                                _ => return Err(Error::Parse(format!(
-                                        "Invalid hexidecimal escape: {}", char))),
-                            };
-                            
+                if char == '\\' {
+                    self.offset += 1;
+
+                    let char = if let Some(char) = chars.next() {
+                        char
+                    } else {
+                        break;
+                    };
+                    match char {
+                        '\\' | '"' | '/' => lit.push(char),
+                        'n' => lit.push('\n'),
+                        'b' => lit.push('\x08'),
+                        'r' => lit.push('\r'),
+                        'f' => lit.push('\x0C'),
+                        't' => lit.push('\t'),
+                        'v' => lit.push('\x0B'),
+                        'u' => {
+                            let mut n = 0;
+                            for _i in 0..4 {
+                                let char = if let Some(char) = chars.next() {
+                                    char
+                                } else {
+                                    break 'outer;
+                                };
+                                n = match char {
+                                    c @ '0'...'9' => n * 16 + ((c as u16) - ('0' as u16)),
+                                    c @ 'a'...'f' => n * 16 + (10 + (c as u16) - ('a' as u16)),
+                                    c @ 'A'...'F' => n * 16 + (10 + (c as u16) - ('A' as u16)),
+                                    _ => {
+                                        let msg = format!("Invalid hexidecimal escape: {}", char);
+                                        return Err(Error::Parse(msg));
+                                    }
+                                };
+
+                            }
+                            self.offset += 3; // 3 because 1 is always added after the match below
                         }
-                        self.offset += 3; // 3 because 1 is always added after the match below        
-                    },
-                    _ => return Err(Error::Parse(format!("Unknown character escape: {}",
-                                                            char))),
-                };
-                self.offset += 1;
-            } else {
-                if char == '"' {
-                    break;
+                        _ => {
+                            return Err(Error::Parse(format!("Unknown character escape: {}", char)))
+                        }
+                    };
+                    self.offset += 1;
                 } else {
-                    lit.push(char);
-                    self.offset += char.len_utf8();
+                    if char == '"' {
+                        break;
+                    } else {
+                        lit.push(char);
+                        self.offset += char.len_utf8();
+                    }
                 }
             }
-        }
         }
         try!(self.must_consume("\""));
         Ok(Some(lit))
@@ -524,7 +541,7 @@ impl<'a, 'c> Parser<'a, 'c> {
                 } else {
                     Ok(RangeOperator::Exclusive(num))
                 }
-            },
+            }
             _ => panic!("Range operator on other JSON types is not yet implemented!"),
         }
     }
@@ -548,9 +565,9 @@ impl<'a, 'c> Parser<'a, 'c> {
         if self.consume("{") {
             let mut left = try!(self.obool());
             try!(self.must_consume("}"));
-            
+
             left = try!(self.consume_boost_and_wrap_filter(left));
-            
+
             if self.consume("&&") {
                 let right = try!(self.not_object());
                 Ok(Box::new(AndFilter::new(vec![left, right], self.kb.arraypath_len())))
@@ -562,7 +579,7 @@ impl<'a, 'c> Parser<'a, 'c> {
                 Ok(left)
             }
         } else {
-             self.parens()
+            self.parens()
         }
     }
 
@@ -573,7 +590,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         try!(self.must_consume("("));
         let filter = try!(self.object());
         try!(self.must_consume(")"));
-        
+
         self.consume_boost_and_wrap_filter(filter)
     }
 
@@ -665,32 +682,36 @@ impl<'a, 'c> Parser<'a, 'c> {
                         }
                     }
                     let filter = StemmedPhraseFilter::new(filters);
-                    Box::new(ExactMatchFilter::new(&self.snapshot, filter, self.kb.clone(), literal, true))
-                },
+                    Box::new(ExactMatchFilter::new(&self.snapshot,
+                                                   filter,
+                                                   self.kb.clone(),
+                                                   literal,
+                                                   true))
+                }
                 JsonValue::Number(num) => {
                     Box::new(RangeFilter::new(&self.snapshot,
                                               self.kb.clone(),
                                               Some(RangeOperator::Inclusive(num)),
                                               Some(RangeOperator::Inclusive(num))))
-                },
+                }
                 JsonValue::True => {
                     Box::new(RangeFilter::new(&self.snapshot,
                                               self.kb.clone(),
                                               Some(RangeOperator::True),
                                               Some(RangeOperator::True)))
-                },
+                }
                 JsonValue::False => {
                     Box::new(RangeFilter::new(&self.snapshot,
                                               self.kb.clone(),
                                               Some(RangeOperator::False),
                                               Some(RangeOperator::False)))
-                },
+                }
                 JsonValue::Null => {
                     Box::new(RangeFilter::new(&self.snapshot,
                                               self.kb.clone(),
                                               Some(RangeOperator::Null),
                                               Some(RangeOperator::Null)))
-                },
+                }
                 _ => panic!("Exact match on other JSON types is not yet implemented!"),
             };
             Ok(filter)
@@ -705,24 +726,28 @@ impl<'a, 'c> Parser<'a, 'c> {
                 0 => panic!("Cannot create a StemmedWordFilter"),
                 1 => {
                     Ok(Box::new(StemmedWordFilter::new(&self.snapshot,
-                                                       &stemmed_words[0], &self.kb, boost)))
-                },
+                                                       &stemmed_words[0],
+                                                       &self.kb,
+                                                       boost)))
+                }
                 _ => {
                     let mut filters: Vec<StemmedWordPosFilter> = Vec::new();
                     for stemmed_word in stemmed_words {
                         let filter = StemmedWordPosFilter::new(&self.snapshot,
-                                                               &stemmed_word, &self.kb, boost);
+                                                               &stemmed_word,
+                                                               &self.kb,
+                                                               boost);
                         filters.push(filter);
                     }
                     Ok(Box::new(StemmedPhraseFilter::new(filters)))
-                },
+                }
             }
         } else if self.consume("~") {
             let word_distance = match try!(self.consume_integer()) {
                 Some(int) => int,
                 None => {
                     return Err(Error::Parse("Expected integer for proximity search".to_string()));
-                },
+                }
             };
             try!(self.must_consume("="));
 
@@ -731,8 +756,8 @@ impl<'a, 'c> Parser<'a, 'c> {
             let stems = Stems::new(&literal);
             let mut filters: Vec<StemmedWordPosFilter> = Vec::new();
             for stem in stems {
-                let filter = StemmedWordPosFilter::new(&self.snapshot,
-                    &stem.stemmed, &self.kb, boost);
+                let filter =
+                    StemmedWordPosFilter::new(&self.snapshot, &stem.stemmed, &self.kb, boost);
                 filters.push(filter);
             }
             if word_distance > std::u32::MAX as i64 {
@@ -875,8 +900,13 @@ impl<'a, 'c> Parser<'a, 'c> {
                         sort
                     };
 
-                    sort_infos.insert(rp.to_key(), SortInfo{field: SortField::FetchValue(rp),
-                        sort: sort, order_to_apply: n, default: default});
+                    sort_infos.insert(rp.to_key(),
+                                      SortInfo {
+                                          field: SortField::FetchValue(rp),
+                                          sort: sort,
+                                          order_to_apply: n,
+                                          default: default,
+                                      });
                 } else {
                     try!(self.must_consume("score"));
                     try!(self.must_consume("("));
@@ -893,8 +923,12 @@ impl<'a, 'c> Parser<'a, 'c> {
                     };
 
                     sort_infos.insert("score()".to_string(),
-                                      SortInfo{field: SortField::Score, order_to_apply: n,
-                                               sort: sort, default: JsonValue::Null});
+                                      SortInfo {
+                                          field: SortField::Score,
+                                          order_to_apply: n,
+                                          sort: sort,
+                                          default: JsonValue::Null,
+                                      });
                 }
 
                 if !self.consume(",") {
@@ -919,7 +953,12 @@ impl<'a, 'c> Parser<'a, 'c> {
         } else {
             let mut rp = ReturnPath::new();
             rp.push_object_key("_id".to_string());
-            Ok(Box::new(RetValue{rp: rp, ag:None, default: JsonValue::Null, sort_info: None}))
+            Ok(Box::new(RetValue {
+                            rp: rp,
+                            ag: None,
+                            default: JsonValue::Null,
+                            sort_info: None,
+                        }))
         }
     }
 
@@ -941,9 +980,9 @@ impl<'a, 'c> Parser<'a, 'c> {
                 break;
             }
         }
-        
+
         try!(self.must_consume("}"));
-        Ok(Box::new(RetObject{fields: fields}))
+        Ok(Box::new(RetObject { fields: fields }))
     }
 
     fn ret_array(&mut self) -> Result<Box<Returnable>, Error> {
@@ -960,24 +999,24 @@ impl<'a, 'c> Parser<'a, 'c> {
             }
         }
         try!(self.must_consume("]"));
-        Ok(Box::new(RetArray{slots: slots}))
+        Ok(Box::new(RetArray { slots: slots }))
 
     }
 
     fn ret_value(&mut self) -> Result<Option<Box<Returnable>>, Error> {
         if self.consume("true") {
-            return Ok(Some(Box::new(RetLiteral{json: JsonValue::True})));
+            return Ok(Some(Box::new(RetLiteral { json: JsonValue::True })));
         } else if self.consume("false") {
-            return Ok(Some(Box::new(RetLiteral{json: JsonValue::False})));
+            return Ok(Some(Box::new(RetLiteral { json: JsonValue::False })));
         } else if self.consume("null") {
-            return Ok(Some(Box::new(RetLiteral{json: JsonValue::Null})));
+            return Ok(Some(Box::new(RetLiteral { json: JsonValue::Null })));
         } else if self.could_consume("score") {
             let offset = self.offset;
             let _ = self.consume("score");
             if self.consume("(") {
                 try!(self.must_consume(")"));
                 self.needs_scoring = true;
-                return Ok(Some(Box::new(RetScore{sort_info: None})));
+                return Ok(Some(Box::new(RetScore { sort_info: None })));
             } else {
                 //wasn't the score, maybe it's a bind variable
                 self.offset = offset;
@@ -991,11 +1030,20 @@ impl<'a, 'c> Parser<'a, 'c> {
                 JsonValue::Null
             };
             if let Some(bind_name) = bind_name_option {
-                Ok(Some(Box::new(RetBind{bind_name: bind_name, extra_rp: rp,
-                                         ag: Some((ag, json)), default: default, sort_info:None})))
+                Ok(Some(Box::new(RetBind {
+                                     bind_name: bind_name,
+                                     extra_rp: rp,
+                                     ag: Some((ag, json)),
+                                     default: default,
+                                     sort_info: None,
+                                 })))
             } else {
-                Ok(Some(Box::new(RetValue{rp: rp, ag: Some((ag, json)),
-                                          default: default, sort_info:None})))
+                Ok(Some(Box::new(RetValue {
+                                     rp: rp,
+                                     ag: Some((ag, json)),
+                                     default: default,
+                                     sort_info: None,
+                                 })))
             }
         } else if let Some(bind_name) = self.consume_field() {
             let rp = if let Some(rp) = try!(self.consume_keypath()) {
@@ -1010,24 +1058,34 @@ impl<'a, 'c> Parser<'a, 'c> {
                 JsonValue::Null
             };
 
-            Ok(Some(Box::new(RetBind{bind_name: bind_name, extra_rp: rp,
-                                        ag: None, default: default, sort_info:None})))
+            Ok(Some(Box::new(RetBind {
+                                 bind_name: bind_name,
+                                 extra_rp: rp,
+                                 ag: None,
+                                 default: default,
+                                 sort_info: None,
+                             })))
         } else if let Some(rp) = try!(self.consume_keypath()) {
             let default = if let Some(default) = try!(self.consume_default()) {
                 default
             } else {
                 JsonValue::Null
             };
-    
-            Ok(Some(Box::new(RetValue{rp: rp, ag: None, default: default, sort_info: None})))
+
+            Ok(Some(Box::new(RetValue {
+                                 rp: rp,
+                                 ag: None,
+                                 default: default,
+                                 sort_info: None,
+                             })))
         } else if self.could_consume("{") {
             Ok(Some(try!(self.ret_object())))
         } else if self.could_consume("[") {
             Ok(Some(try!(self.ret_array())))
         } else if let Some(string) = try!(self.consume_string_literal()) {
-            Ok(Some(Box::new(RetLiteral{json: JsonValue::String(string)})))
+            Ok(Some(Box::new(RetLiteral { json: JsonValue::String(string) })))
         } else if let Some(num) = try!(self.consume_number()) {
-            Ok(Some(Box::new(RetLiteral{json: JsonValue::Number(num)})))
+            Ok(Some(Box::new(RetLiteral { json: JsonValue::Number(num) })))
         } else {
             Ok(None)
         }
@@ -1037,13 +1095,11 @@ impl<'a, 'c> Parser<'a, 'c> {
         if self.consume("limit") {
             if let Some(i) = try!(self.consume_integer()) {
                 if i <= 0 {
-                    return Err(Error::Parse("limit must be an integer greater than 0"
-                                            .to_string()));
+                    return Err(Error::Parse("limit must be an integer greater than 0".to_string()));
                 }
                 Ok(i as usize)
             } else {
-                return Err(Error::Parse("limit expects an integer greater than 0"
-                                            .to_string()));
+                return Err(Error::Parse("limit expects an integer greater than 0".to_string()));
             }
         } else {
             Ok(usize::MAX)
@@ -1157,7 +1213,7 @@ mod tests {
     use super::Parser;
 
     use index::{Index, OpenOptions};
-    
+
     #[test]
     fn test_whitespace() {
         let dbname = "target/tests/test_whitespace";
@@ -1190,7 +1246,8 @@ mod tests {
 
         let query = r#"" \n \t test""#.to_string();
         let mut parser = Parser::new(&query, snapshot);
-        assert_eq!(parser.must_consume_string_literal().unwrap(),  " \n \t test".to_string());
+        assert_eq!(parser.must_consume_string_literal().unwrap(),
+                   " \n \t test".to_string());
     }
 
     #[test]
