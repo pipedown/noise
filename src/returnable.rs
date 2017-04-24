@@ -23,7 +23,7 @@ pub struct ReturnPath {
 
 impl ReturnPath {
     pub fn new() -> ReturnPath {
-        ReturnPath{path: Vec::new()}
+        ReturnPath { path: Vec::new() }
     }
 
     pub fn push_object_key(&mut self, key: String) {
@@ -51,14 +51,14 @@ impl ReturnPath {
                         }
                         key.push(cc);
                     }
-                },
+                }
                 &PathSegment::Array(ref i) => {
                     key.push('$');
                     key.push_str(&i.to_string());
-                },
+                }
                 &PathSegment::ArrayAll => {
                     key.push_str("$*");
-                },
+                }
             }
         }
         key
@@ -82,7 +82,10 @@ pub trait Returnable {
     /// and then each nested Returnable will fetch information about the document (fields or
     /// scores or bind variables etc) and convert them to JsonValues and add them to the result
     /// VecDeque.
-    fn fetch_result(&self, fetcher: &mut JsonFetcher, seq: u64, score: f32,
+    fn fetch_result(&self,
+                    fetcher: &mut JsonFetcher,
+                    seq: u64,
+                    score: f32,
                     bind_var_keys: &HashMap<String, Vec<String>>,
                     result: &mut VecDeque<JsonValue>);
 
@@ -114,7 +117,10 @@ pub struct RetObject {
 }
 
 impl Returnable for RetObject {
-    fn fetch_result(&self, fetcher: &mut JsonFetcher, seq: u64, score: f32,
+    fn fetch_result(&self,
+                    fetcher: &mut JsonFetcher,
+                    seq: u64,
+                    score: f32,
                     bind_var_keys: &HashMap<String, Vec<String>>,
                     result: &mut VecDeque<JsonValue>) {
         for &(ref _key, ref field) in self.fields.iter() {
@@ -127,17 +133,17 @@ impl Returnable for RetObject {
             field.get_aggregate_funs(funs);
         }
     }
-    
+
     fn take_sort_for_matching_fields(&mut self, map: &mut HashMap<String, SortInfo>) {
-       for &mut (ref _key, ref mut field) in self.fields.iter_mut() {
+        for &mut (ref _key, ref mut field) in self.fields.iter_mut() {
             field.take_sort_for_matching_fields(map);
-       }
+        }
     }
 
     fn get_sorting(&mut self, sorts: &mut Vec<Option<SortInfo>>) {
-       for &mut (ref mut _key, ref mut field) in self.fields.iter_mut() {
+        for &mut (ref mut _key, ref mut field) in self.fields.iter_mut() {
             field.get_sorting(sorts);
-       }
+        }
     }
 
     fn json_result(&self, results: &mut VecDeque<JsonValue>) -> JsonValue {
@@ -155,7 +161,10 @@ pub struct RetArray {
 }
 
 impl Returnable for RetArray {
-    fn fetch_result(&self, fetcher: &mut JsonFetcher, seq: u64, score: f32,
+    fn fetch_result(&self,
+                    fetcher: &mut JsonFetcher,
+                    seq: u64,
+                    score: f32,
                     bind_var_keys: &HashMap<String, Vec<String>>,
                     result: &mut VecDeque<JsonValue>) {
         for ref slot in self.slots.iter() {
@@ -164,21 +173,21 @@ impl Returnable for RetArray {
     }
 
     fn get_aggregate_funs(&self, funs: &mut Vec<Option<(AggregateFun, JsonValue)>>) {
-       for ref slot in self.slots.iter() {
+        for ref slot in self.slots.iter() {
             slot.get_aggregate_funs(funs);
         }
     }
-    
+
     fn take_sort_for_matching_fields(&mut self, map: &mut HashMap<String, SortInfo>) {
-       for slot in self.slots.iter_mut() {
+        for slot in self.slots.iter_mut() {
             slot.take_sort_for_matching_fields(map);
-       }
+        }
     }
 
     fn get_sorting(&mut self, sorts: &mut Vec<Option<SortInfo>>) {
-       for ref mut slot in self.slots.iter_mut() {
+        for ref mut slot in self.slots.iter_mut() {
             slot.get_sorting(sorts);
-       }
+        }
     }
 
     fn json_result(&self, results: &mut VecDeque<JsonValue>) -> JsonValue {
@@ -198,29 +207,33 @@ pub struct RetHidden {
 }
 
 impl Returnable for RetHidden {
-    fn fetch_result(&self, fetcher: &mut JsonFetcher, seq: u64, score: f32,
+    fn fetch_result(&self,
+                    fetcher: &mut JsonFetcher,
+                    seq: u64,
+                    score: f32,
                     bind_var_keys: &HashMap<String, Vec<String>>,
                     result: &mut VecDeque<JsonValue>) {
         for ref unrendered in self.unrendered.iter() {
             unrendered.fetch_result(fetcher, seq, score, bind_var_keys, result);
         }
 
-        self.visible.fetch_result(fetcher, seq, score, bind_var_keys, result);
+        self.visible
+            .fetch_result(fetcher, seq, score, bind_var_keys, result);
     }
 
     fn get_aggregate_funs(&self, funs: &mut Vec<Option<(AggregateFun, JsonValue)>>) {
         self.visible.get_aggregate_funs(funs);
     }
-    
+
     fn take_sort_for_matching_fields(&mut self, map: &mut HashMap<String, SortInfo>) {
         self.visible.take_sort_for_matching_fields(map);
     }
 
     fn get_sorting(&mut self, sorts: &mut Vec<Option<SortInfo>>) {
-       for ref mut unrendered in self.unrendered.iter_mut() {
+        for ref mut unrendered in self.unrendered.iter_mut() {
             unrendered.get_sorting(sorts);
         }
-       
+
         self.visible.get_sorting(sorts);
     }
 
@@ -240,7 +253,10 @@ pub struct RetLiteral {
 }
 
 impl Returnable for RetLiteral {
-    fn fetch_result(&self, _fetcher: &mut JsonFetcher, _seq: u64, _score: f32,
+    fn fetch_result(&self,
+                    _fetcher: &mut JsonFetcher,
+                    _seq: u64,
+                    _score: f32,
                     _bind_var_keys: &HashMap<String, Vec<String>>,
                     _result: &mut VecDeque<JsonValue>) {
     }
@@ -248,7 +264,7 @@ impl Returnable for RetLiteral {
     fn get_aggregate_funs(&self, _funs: &mut Vec<Option<(AggregateFun, JsonValue)>>) {
         //noop
     }
-    
+
     fn take_sort_for_matching_fields(&mut self, _map: &mut HashMap<String, SortInfo>) {
         //noop
     }
@@ -274,7 +290,10 @@ pub struct RetValue {
 
 
 impl Returnable for RetValue {
-    fn fetch_result(&self, fetcher: &mut JsonFetcher, seq: u64, _score: f32,
+    fn fetch_result(&self,
+                    fetcher: &mut JsonFetcher,
+                    seq: u64,
+                    _score: f32,
                     _bind_var_keys: &HashMap<String, Vec<String>>,
                     result: &mut VecDeque<JsonValue>) {
         if Some((AggregateFun::Count, JsonValue::Null)) == self.ag {
@@ -292,8 +311,8 @@ impl Returnable for RetValue {
     fn get_aggregate_funs(&self, funs: &mut Vec<Option<(AggregateFun, JsonValue)>>) {
         funs.push(self.ag.clone());
     }
-    
-    fn take_sort_for_matching_fields(&mut self, map: &mut HashMap<String,SortInfo>) {
+
+    fn take_sort_for_matching_fields(&mut self, map: &mut HashMap<String, SortInfo>) {
         self.sort_info = map.remove(&self.rp.to_key());
     }
 
@@ -322,7 +341,10 @@ pub struct RetBind {
 }
 
 impl Returnable for RetBind {
-    fn fetch_result(&self, fetcher: &mut JsonFetcher, seq: u64, _score: f32,
+    fn fetch_result(&self,
+                    fetcher: &mut JsonFetcher,
+                    seq: u64,
+                    _score: f32,
                     bind_var_keys: &HashMap<String, Vec<String>>,
                     result: &mut VecDeque<JsonValue>) {
 
@@ -347,8 +369,8 @@ impl Returnable for RetBind {
     fn get_aggregate_funs(&self, funs: &mut Vec<Option<(AggregateFun, JsonValue)>>) {
         funs.push(self.ag.clone());
     }
-    
-    fn take_sort_for_matching_fields(&mut self, map: &mut HashMap<String,SortInfo>) {
+
+    fn take_sort_for_matching_fields(&mut self, map: &mut HashMap<String, SortInfo>) {
         self.sort_info = map.remove(&(self.bind_name.to_string() + &self.extra_rp.to_key()));
     }
 
@@ -371,7 +393,10 @@ pub struct RetScore {
 }
 
 impl Returnable for RetScore {
-    fn fetch_result(&self, _fetcher: &mut JsonFetcher, _seq: u64, score: f32,
+    fn fetch_result(&self,
+                    _fetcher: &mut JsonFetcher,
+                    _seq: u64,
+                    score: f32,
                     _bind_var_keys: &HashMap<String, Vec<String>>,
                     result: &mut VecDeque<JsonValue>) {
         result.push_back(JsonValue::Number(score as f64));
@@ -380,8 +405,8 @@ impl Returnable for RetScore {
     fn get_aggregate_funs(&self, _funs: &mut Vec<Option<(AggregateFun, JsonValue)>>) {
         // noop
     }
-    
-    fn take_sort_for_matching_fields(&mut self, map: &mut HashMap<String,SortInfo>) {
+
+    fn take_sort_for_matching_fields(&mut self, map: &mut HashMap<String, SortInfo>) {
         self.sort_info = map.remove("score()");
     }
 

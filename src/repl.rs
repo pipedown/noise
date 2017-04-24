@@ -7,8 +7,8 @@ use std::mem;
 
 
 fn is_command(str: &str) -> bool {
-    let commands = ["find", "add", "create", "drop", "open",
-                    "pretty", "commit", "del", "load", "dumpkeys"];
+    let commands = ["find", "add", "create", "drop", "open", "pretty", "commit", "del", "load",
+                    "dumpkeys"];
     for command in commands.iter() {
         if str.starts_with(command) {
             return true;
@@ -102,10 +102,10 @@ pub fn repl(r: &mut BufRead, w: &mut Write, test_mode: bool) {
                     for key in keys {
                         write!(w, "{}\n", key).unwrap();
                     }
-                },
+                }
                 Err(reason) => {
                     write!(w, "{}\n", reason).unwrap();
-                },
+                }
             }
         } else if lines.starts_with("add") {
             match index.add(&lines[3..], &mut batch) {
@@ -147,7 +147,7 @@ pub fn repl(r: &mut BufRead, w: &mut Write, test_mode: bool) {
                             w.write_all(b"\n").unwrap();
                         }
                         w.write_all(b"]\n").unwrap();
-                    },
+                    }
                     Err(reason) => write!(w, "{}\n", reason).unwrap(),
                 }
             }
@@ -155,5 +155,3 @@ pub fn repl(r: &mut BufRead, w: &mut Write, test_mode: bool) {
         lines.clear();
     }
 }
-
-

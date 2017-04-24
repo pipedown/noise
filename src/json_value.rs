@@ -19,8 +19,8 @@ pub enum JsonValue {
 }
 
 impl JsonValue {
-    pub fn str_to_literal(string: &str) ->String {
-        let mut ret = String::with_capacity(string.len()*2+2);
+    pub fn str_to_literal(string: &str) -> String {
+        let mut ret = String::with_capacity(string.len() * 2 + 2);
         ret.push('"');
         for c in string.chars() {
             if c == '"' || c == '\\' {
@@ -48,10 +48,10 @@ impl JsonValue {
                 }
             } else {
                 panic!("cast error in cmp_f64");
-            } 
+            }
         } else {
             panic!("cast error in cmp_f64");
-        } 
+        }
     }
 
     fn cmp_string(a: &JsonValue, b: &JsonValue) -> Ordering {
@@ -61,10 +61,10 @@ impl JsonValue {
                 a_val.cmp(&b_val)
             } else {
                 panic!("cast error in cmp_string");
-            } 
+            }
         } else {
             panic!("cast error in cmp_string");
-        } 
+        }
     }
 
     fn cmp_array(a: &JsonValue, b: &JsonValue) -> Ordering {
@@ -81,12 +81,12 @@ impl JsonValue {
                 a_val.len().cmp(&b_val.len())
             } else {
                 panic!("cast error in cmp_array");
-            } 
+            }
         } else {
             panic!("cast error in cmp_array");
-        } 
+        }
     }
-    
+
     fn cmp_object(a: &JsonValue, b: &JsonValue) -> Ordering {
         if let &JsonValue::Object(ref a_val) = a {
             if let &JsonValue::Object(ref b_val) = b {
@@ -107,10 +107,10 @@ impl JsonValue {
                 a_val.len().cmp(&b_val.len())
             } else {
                 panic!("cast error in cmp_object");
-            } 
+            }
         } else {
             panic!("cast error in cmp_object");
-        } 
+        }
     }
 
     fn type_sort_order(&self) -> (usize, fn(&JsonValue, &JsonValue) -> Ordering) {
@@ -130,11 +130,11 @@ impl JsonValue {
             &JsonValue::Number(ref num) => {
                 try!(write.write_all(pretty.prefix()));
                 try!(write.write_all(num.to_string().as_bytes()));
-            },
+            }
             &JsonValue::String(ref string) => {
                 try!(write.write_all(pretty.prefix()));
                 try!(write.write_all(JsonValue::str_to_literal(&string).as_bytes()))
-            },
+            }
             &JsonValue::Array(ref array) => {
                 if array.is_empty() {
                     try!(write.write_all(pretty.prefix()));
@@ -149,9 +149,7 @@ impl JsonValue {
                 let mut iter = array.iter().peekable();
                 loop {
                     match iter.next() {
-                        Some(json) => {
-                            try!(json.render(write, pretty))
-                        },
+                        Some(json) => try!(json.render(write, pretty)),
                         None => break,
                     }
                     if iter.peek().is_some() {
@@ -162,7 +160,7 @@ impl JsonValue {
                 pretty.pop();
                 try!(write.write_all(pretty.prefix()));
                 try!(write.write_all("]".as_bytes()));
-            },
+            }
             &JsonValue::Object(ref object) => {
                 if object.is_empty() {
                     try!(write.write_all(pretty.prefix()));
@@ -194,19 +192,19 @@ impl JsonValue {
                 pretty.pop();
                 try!(write.write_all(pretty.prefix()));
                 try!(write.write_all("}".as_bytes()));
-            },
+            }
             &JsonValue::True => {
                 try!(write.write_all(pretty.prefix()));
                 try!(write.write_all("true".as_bytes()));
-            },
+            }
             &JsonValue::False => {
                 try!(write.write_all(pretty.prefix()));
                 try!(write.write_all("false".as_bytes()));
-            },
+            }
             &JsonValue::Null => {
                 try!(write.write_all(pretty.prefix()));
                 try!(write.write_all("null".as_bytes()))
-            },
+            }
         }
         Ok(())
     }
@@ -231,7 +229,7 @@ pub struct PrettyPrint {
     newline: String,
     spacing: String,
     buffer: String,
-    next_prefix_is_space: bool
+    next_prefix_is_space: bool,
 }
 
 impl PrettyPrint {
