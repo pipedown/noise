@@ -9,7 +9,7 @@ use error::Error;
 use key_builder::KeyBuilder;
 use stems::Stems;
 use json_value::JsonValue;
-use query::{Sort, SortInfo, SortField};
+use query::{Order, OrderInfo, OrderField};
 use aggregates::AggregateFun;
 use returnable::{Returnable, RetValue, RetObject, RetArray, RetLiteral, RetBind, RetScore,
                  ReturnPath};
@@ -865,20 +865,20 @@ impl<'a, 'c> Parser<'a, 'c> {
         self.consume_boost_and_wrap_filter(filter)
     }
 
-    pub fn sort_clause(&mut self) -> Result<HashMap<String, SortInfo>, Error> {
-        let mut sort_infos = HashMap::new();
-        if self.consume("sort") {
+    pub fn order_clause(&mut self) -> Result<HashMap<String, OrderInfo>, Error> {
+        let mut order_infos = HashMap::new();
+        if self.consume("order") {
             let mut n = 0;
             loop {
                 if let Some(rp) = try!(self.consume_keypath()) {
                     // doing the search for source 2x so user can order
                     // anyway they like. Yes it's a hack, but it simple.
-                    let mut sort = if self.consume("asc") {
-                        Sort::Asc
+                    let mut order = if self.consume("asc") {
+                        Order::Asc
                     } else if self.consume("desc") {
-                        Sort::Desc
+                        Order::Desc
                     } else {
-                        Sort::Asc
+                        Order::Asc
                     };
 
                     let default = if self.consume("default") {
@@ -892,21 +892,21 @@ impl<'a, 'c> Parser<'a, 'c> {
                         JsonValue::Null
                     };
 
-                    sort = if self.consume("asc") {
-                        Sort::Asc
+                    order = if self.consume("asc") {
+                        Order::Asc
                     } else if self.consume("desc") {
-                        Sort::Desc
+                        Order::Desc
                     } else {
-                        sort
+                        order
                     };
 
-                    sort_infos.insert(rp.to_key(),
-                                      SortInfo {
-                                          field: SortField::FetchValue(rp),
-                                          sort: sort,
-                                          order_to_apply: n,
-                                          default: default,
-                                      });
+                    order_infos.insert(rp.to_key(),
+                                       OrderInfo {
+                                           field: OrderField::FetchValue(rp),
+                                           order: order,
+                                           order_to_apply: n,
+                                           default: default,
+                                       });
                 } else {
                     try!(self.must_consume("score"));
                     try!(self.must_consume("("));
@@ -914,21 +914,21 @@ impl<'a, 'c> Parser<'a, 'c> {
 
                     self.needs_scoring = true;
 
-                    let sort = if self.consume("asc") {
-                        Sort::Asc
+                    let order = if self.consume("asc") {
+                        Order::Asc
                     } else if self.consume("desc") {
-                        Sort::Desc
+                        Order::Desc
                     } else {
-                        Sort::Asc
+                        Order::Asc
                     };
 
-                    sort_infos.insert("score()".to_string(),
-                                      SortInfo {
-                                          field: SortField::Score,
-                                          order_to_apply: n,
-                                          sort: sort,
-                                          default: JsonValue::Null,
-                                      });
+                    order_infos.insert("score()".to_string(),
+                                       OrderInfo {
+                                           field: OrderField::Score,
+                                           order_to_apply: n,
+                                           order: order,
+                                           default: JsonValue::Null,
+                                       });
                 }
 
                 if !self.consume(",") {
@@ -936,11 +936,11 @@ impl<'a, 'c> Parser<'a, 'c> {
                 }
                 n += 1;
             }
-            if sort_infos.is_empty() {
-                return Err(Error::Parse("Expected field path in sort expression.".to_string()));
+            if order_infos.is_empty() {
+                return Err(Error::Parse("Expected field path in order expression.".to_string()));
             }
         }
-        Ok(sort_infos)
+        Ok(order_infos)
     }
 
     pub fn return_clause(&mut self) -> Result<Box<Returnable>, Error> {
@@ -957,7 +957,7 @@ impl<'a, 'c> Parser<'a, 'c> {
                             rp: rp,
                             ag: None,
                             default: JsonValue::Null,
-                            sort_info: None,
+                            order_info: None,
                         }))
         }
     }
@@ -1016,7 +1016,7 @@ impl<'a, 'c> Parser<'a, 'c> {
             if self.consume("(") {
                 try!(self.must_consume(")"));
                 self.needs_scoring = true;
-                return Ok(Some(Box::new(RetScore { sort_info: None })));
+                return Ok(Some(Box::new(RetScore { order_info: None })));
             } else {
                 //wasn't the score, maybe it's a bind variable
                 self.offset = offset;
@@ -1035,14 +1035,14 @@ impl<'a, 'c> Parser<'a, 'c> {
                                      extra_rp: rp,
                                      ag: Some((ag, json)),
                                      default: default,
-                                     sort_info: None,
+                                     order_info: None,
                                  })))
             } else {
                 Ok(Some(Box::new(RetValue {
                                      rp: rp,
                                      ag: Some((ag, json)),
                                      default: default,
-                                     sort_info: None,
+                                     order_info: None,
                                  })))
             }
         } else if let Some(bind_name) = self.consume_field() {
@@ -1063,7 +1063,7 @@ impl<'a, 'c> Parser<'a, 'c> {
                                  extra_rp: rp,
                                  ag: None,
                                  default: default,
-                                 sort_info: None,
+                                 order_info: None,
                              })))
         } else if let Some(rp) = try!(self.consume_keypath()) {
             let default = if let Some(default) = try!(self.consume_default()) {
@@ -1076,7 +1076,7 @@ impl<'a, 'c> Parser<'a, 'c> {
                                  rp: rp,
                                  ag: None,
                                  default: default,
-                                 sort_info: None,
+                                 order_info: None,
                              })))
         } else if self.could_consume("{") {
             Ok(Some(try!(self.ret_object())))

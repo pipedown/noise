@@ -1,4 +1,4 @@
-# Sort expressions.
+# order expressions.
 
 drop target/tests/querytestjsoncollation;
 create target/tests/querytestjsoncollation;
@@ -39,7 +39,7 @@ add {"_id":"17", "foo":"coll", "bar": "string3"};
 "17"
 
 find {foo: =="coll"}
-sort .bar asc
+order .bar asc
 return .bar ;
 [
 null,
@@ -62,7 +62,7 @@ true,
 ]
 
 find {foo: =="coll"}
-sort .bar asc
+order .bar asc
 return .bar
 limit 5;
 [
@@ -74,7 +74,7 @@ true,
 ]
 
 find {foo: =="coll"}
-sort .bar asc
+order .bar asc
 return .bar
 limit 1;
 [
@@ -103,7 +103,7 @@ add {"_id":"29", "foo":"coll2", "bar":[5,5,5]};
 "29"
 
 find {foo: =="coll2"}
-sort .bar[0] asc, .bar[1] desc, .bar[2] desc
+order .bar[0] asc, .bar[1] desc, .bar[2] desc
 return [.bar[0], .bar[1], .bar[2]] ;
 [
 [1,2,2],
@@ -119,7 +119,7 @@ return [.bar[0], .bar[1], .bar[2]] ;
 ]
 
 find {foo: =="coll2"}
-sort .bar[0] asc, .bar[1] desc, .bar[2] desc
+order .bar[0] asc, .bar[1] desc, .bar[2] desc
 return [.bar[2], .bar[1], .bar[0]] ;
 [
 [2,2,1],
@@ -135,7 +135,7 @@ return [.bar[2], .bar[1], .bar[0]] ;
 ]
 
 find {foo: =="group2"}
-sort .baz asc, .bar desc
+order .baz asc, .bar desc
 return [.baz, .bar]
 limit 2;
 []
