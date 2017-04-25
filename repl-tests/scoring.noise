@@ -12,7 +12,7 @@ add {"_id":"3", "bar": "quick brown fox"};
 "3"
 
 find {bar: ~="fox" || bar: ~="brown" || bar: ~="quick"}
-sort score() desc
+order score() desc
 return ._id ;
 [
 "3",
@@ -21,7 +21,7 @@ return ._id ;
 ]
 
 find {bar: ~="quick brown fox"}
-sort score() desc
+order score() desc
 return ._id ;
 [
 "3"
@@ -64,7 +64,7 @@ return score() ;
 ]
 
 find {bar: ~="fox" || bar: ~="brown" || bar: ~="quick"}
-sort score() desc
+order score() desc
 return score() ;
 [
 0.5773501992225647,
@@ -73,7 +73,7 @@ return score() ;
 ]
 
 find ({bar: ~="fox" || bar: ~="brown" || bar: ~="quick"})^2
-sort score() desc
+order score() desc
 return score() ;
 [
 1.1547003984451294,
@@ -82,7 +82,7 @@ return score() ;
 ]
 
 find {bar: ~="fox" || bar: ~="brown" || bar: ~="quick"}
-sort score() desc
+order score() desc
 return score() ;
 [
 0.5773501992225647,
@@ -91,7 +91,7 @@ return score() ;
 ]
 
 find {bar: ~="fox" || bar: ~="brown" || bar: ~="quick"}^2
-sort score() desc
+order score() desc
 return score() ;
 [
 1.1547003984451294,
@@ -100,7 +100,7 @@ return score() ;
 ]
 
 find {bar: ~="fox" || bar: ~="brown" || bar: ~="quick"}
-sort score() desc
+order score() desc
 return score() ;
 [
 0.5773501992225647,
@@ -109,7 +109,7 @@ return score() ;
 ]
 
 find {bar: ~="fox"^2 || (bar: ~="brown" || bar: ~="quick")^2 }
-sort score() desc
+order score() desc
 return score() ;
 [
 1.1547003984451294,
@@ -118,7 +118,7 @@ return score() ;
 ]
 
 find {bar: ~="fox" || bar: ~="brown" || bar: ~="quick"}
-sort score() desc
+order score() desc
 return score() ;
 [
 0.5773501992225647,
@@ -127,7 +127,7 @@ return score() ;
 ]
 
 find {bar: ~="fox"}^2 || {bar: ~="brown" || bar: ~="quick"}^2
-sort score() desc
+order score() desc
 return score() ;
 [
 1.1547003984451294,
@@ -143,7 +143,7 @@ add {"_id":"6", "bar": ["quick brown fox"]};
 "6"
 
 find {bar:[ ~="fox" || ~="brown" || ~="quick"]}
-sort score() desc
+order score() desc
 return score() ;
 [
 0.5773501992225647,
@@ -152,7 +152,7 @@ return score() ;
 ]
 
 find {bar:[~="fox" || ~="brown" || ~="quick"]^2}
-sort score() desc
+order score() desc
 return score() ;
 [
 1.1547003984451294,
@@ -161,7 +161,7 @@ return score() ;
 ]
 
 find {bar:[ ~="fox" || ~="brown" || ~="quick"]}
-sort score() desc
+order score() desc
 return score() ;
 [
 0.5773501992225647,
@@ -170,7 +170,7 @@ return score() ;
 ]
 
 find {bar:[~="fox"]^2 || bar:[~="brown" || ~="quick"]^2}
-sort score() desc
+order score() desc
 return score() ;
 [
 1.1547003984451294,
@@ -179,7 +179,7 @@ return score() ;
 ]
 
 find {bar:[ ~="fox" || ~="brown" || ~="quick"]}
-sort score() desc
+order score() desc
 return score() ;
 [
 0.5773501992225647,
@@ -188,7 +188,7 @@ return score() ;
 ]
 
 find {bar:[~="fox"]^2 || (bar:[~="brown"] || bar:[~="quick"])^2}
-sort score() desc
+order score() desc
 return score() ;
 [
 1.1547003984451294,

@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 
 use key_builder::KeyBuilder;
 use json_value::JsonValue;
-use query::SortInfo;
+use query::OrderInfo;
 use snapshot::JsonFetcher;
 use aggregates::AggregateFun;
 
@@ -93,18 +93,18 @@ pub trait Returnable {
     /// aggregate function it's using and the default value.
     fn get_aggregate_funs(&self, funs: &mut Vec<Option<(AggregateFun, JsonValue)>>);
 
-    /// If a query has a sort clause then we want to match the fields being sorted with
-    /// fields being returned. We pass the sorting info by the path of the sorted fields
-    /// or scores and Returnables that have the same path will take the sort
+    /// If a query has a order clause then we want to match the fields being ordered with
+    /// fields being returned. We pass the ordering info by the path of the ordered fields
+    /// or scores and Returnables that have the same path will take the order
     /// information. Any fields not matching a returnable are then added to special hidden
-    /// Returnable (RetHidden) which fetches those fields for sorting but not rendered or
+    /// Returnable (RetHidden) which fetches those fields for ordering but not rendered or
     /// returned.
-    fn take_sort_for_matching_fields(&mut self, map: &mut HashMap<String, SortInfo>);
+    fn take_order_for_matching_fields(&mut self, map: &mut HashMap<String, OrderInfo>);
 
-    /// Each Returnable will return the sorting direction in the same slot as the returnable
-    /// so that later after fetching they will be sorted by QueryResults after fetching but
+    /// Each Returnable will return the ordering direction in the same slot as the returnable
+    /// so that later after fetching they will be ordered by QueryResults after fetching but
     /// converting to the final json result.
-    fn get_sorting(&mut self, sorts: &mut Vec<Option<SortInfo>>);
+    fn get_ordering(&mut self, orders: &mut Vec<Option<OrderInfo>>);
 
     /// This is the final step of a Returnable. The previous fetched JsonValues are now
     /// rendered with other ornamental json elements.
@@ -134,15 +134,15 @@ impl Returnable for RetObject {
         }
     }
 
-    fn take_sort_for_matching_fields(&mut self, map: &mut HashMap<String, SortInfo>) {
+    fn take_order_for_matching_fields(&mut self, map: &mut HashMap<String, OrderInfo>) {
         for &mut (ref _key, ref mut field) in self.fields.iter_mut() {
-            field.take_sort_for_matching_fields(map);
+            field.take_order_for_matching_fields(map);
         }
     }
 
-    fn get_sorting(&mut self, sorts: &mut Vec<Option<SortInfo>>) {
+    fn get_ordering(&mut self, orders: &mut Vec<Option<OrderInfo>>) {
         for &mut (ref mut _key, ref mut field) in self.fields.iter_mut() {
-            field.get_sorting(sorts);
+            field.get_ordering(orders);
         }
     }
 
@@ -178,15 +178,15 @@ impl Returnable for RetArray {
         }
     }
 
-    fn take_sort_for_matching_fields(&mut self, map: &mut HashMap<String, SortInfo>) {
+    fn take_order_for_matching_fields(&mut self, map: &mut HashMap<String, OrderInfo>) {
         for slot in self.slots.iter_mut() {
-            slot.take_sort_for_matching_fields(map);
+            slot.take_order_for_matching_fields(map);
         }
     }
 
-    fn get_sorting(&mut self, sorts: &mut Vec<Option<SortInfo>>) {
+    fn get_ordering(&mut self, orders: &mut Vec<Option<OrderInfo>>) {
         for ref mut slot in self.slots.iter_mut() {
-            slot.get_sorting(sorts);
+            slot.get_ordering(orders);
         }
     }
 
@@ -199,7 +199,7 @@ impl Returnable for RetArray {
     }
 }
 
-/// A special returnable that only fetches values for later sorting but never renders
+/// A special returnable that only fetches values for later ordering but never renders
 /// them back to the caller.
 pub struct RetHidden {
     pub unrendered: Vec<Box<Returnable>>,
@@ -225,21 +225,21 @@ impl Returnable for RetHidden {
         self.visible.get_aggregate_funs(funs);
     }
 
-    fn take_sort_for_matching_fields(&mut self, map: &mut HashMap<String, SortInfo>) {
-        self.visible.take_sort_for_matching_fields(map);
+    fn take_order_for_matching_fields(&mut self, map: &mut HashMap<String, OrderInfo>) {
+        self.visible.take_order_for_matching_fields(map);
     }
 
-    fn get_sorting(&mut self, sorts: &mut Vec<Option<SortInfo>>) {
+    fn get_ordering(&mut self, orders: &mut Vec<Option<OrderInfo>>) {
         for ref mut unrendered in self.unrendered.iter_mut() {
-            unrendered.get_sorting(sorts);
+            unrendered.get_ordering(orders);
         }
 
-        self.visible.get_sorting(sorts);
+        self.visible.get_ordering(orders);
     }
 
     fn json_result(&self, results: &mut VecDeque<JsonValue>) -> JsonValue {
         for _n in 0..self.unrendered.len() {
-            // we already sorted at this point, now discard the values
+            // we already ordered at this point, now discard the values
             results.pop_front();
         }
         self.visible.json_result(results)
@@ -265,11 +265,11 @@ impl Returnable for RetLiteral {
         //noop
     }
 
-    fn take_sort_for_matching_fields(&mut self, _map: &mut HashMap<String, SortInfo>) {
+    fn take_order_for_matching_fields(&mut self, _map: &mut HashMap<String, OrderInfo>) {
         //noop
     }
 
-    fn get_sorting(&mut self, _sorts: &mut Vec<Option<SortInfo>>) {
+    fn get_ordering(&mut self, _orders: &mut Vec<Option<OrderInfo>>) {
         //noop
     }
 
@@ -284,7 +284,7 @@ pub struct RetValue {
     pub rp: ReturnPath,
     pub ag: Option<(AggregateFun, JsonValue)>,
     pub default: JsonValue,
-    pub sort_info: Option<SortInfo>,
+    pub order_info: Option<OrderInfo>,
 }
 
 
@@ -312,12 +312,12 @@ impl Returnable for RetValue {
         funs.push(self.ag.clone());
     }
 
-    fn take_sort_for_matching_fields(&mut self, map: &mut HashMap<String, SortInfo>) {
-        self.sort_info = map.remove(&self.rp.to_key());
+    fn take_order_for_matching_fields(&mut self, map: &mut HashMap<String, OrderInfo>) {
+        self.order_info = map.remove(&self.rp.to_key());
     }
 
-    fn get_sorting(&mut self, sorts: &mut Vec<Option<SortInfo>>) {
-        sorts.push(self.sort_info.take());
+    fn get_ordering(&mut self, orders: &mut Vec<Option<OrderInfo>>) {
+        orders.push(self.order_info.take());
     }
 
     fn json_result(&self, results: &mut VecDeque<JsonValue>) -> JsonValue {
@@ -337,7 +337,7 @@ pub struct RetBind {
     pub extra_rp: ReturnPath,
     pub ag: Option<(AggregateFun, JsonValue)>,
     pub default: JsonValue,
-    pub sort_info: Option<SortInfo>,
+    pub order_info: Option<OrderInfo>,
 }
 
 impl Returnable for RetBind {
@@ -370,12 +370,12 @@ impl Returnable for RetBind {
         funs.push(self.ag.clone());
     }
 
-    fn take_sort_for_matching_fields(&mut self, map: &mut HashMap<String, SortInfo>) {
-        self.sort_info = map.remove(&(self.bind_name.to_string() + &self.extra_rp.to_key()));
+    fn take_order_for_matching_fields(&mut self, map: &mut HashMap<String, OrderInfo>) {
+        self.order_info = map.remove(&(self.bind_name.to_string() + &self.extra_rp.to_key()));
     }
 
-    fn get_sorting(&mut self, sorts: &mut Vec<Option<SortInfo>>) {
-        sorts.push(self.sort_info.take());
+    fn get_ordering(&mut self, orders: &mut Vec<Option<OrderInfo>>) {
+        orders.push(self.order_info.take());
     }
 
     fn json_result(&self, results: &mut VecDeque<JsonValue>) -> JsonValue {
@@ -389,7 +389,7 @@ impl Returnable for RetBind {
 
 /// Returns a relevency score for a match.
 pub struct RetScore {
-    pub sort_info: Option<SortInfo>,
+    pub order_info: Option<OrderInfo>,
 }
 
 impl Returnable for RetScore {
@@ -406,12 +406,12 @@ impl Returnable for RetScore {
         // noop
     }
 
-    fn take_sort_for_matching_fields(&mut self, map: &mut HashMap<String, SortInfo>) {
-        self.sort_info = map.remove("score()");
+    fn take_order_for_matching_fields(&mut self, map: &mut HashMap<String, OrderInfo>) {
+        self.order_info = map.remove("score()");
     }
 
-    fn get_sorting(&mut self, sorts: &mut Vec<Option<SortInfo>>) {
-        sorts.push(self.sort_info.take());
+    fn get_ordering(&mut self, orders: &mut Vec<Option<OrderInfo>>) {
+        orders.push(self.order_info.take());
     }
 
     fn json_result(&self, results: &mut VecDeque<JsonValue>) -> JsonValue {

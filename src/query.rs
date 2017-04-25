@@ -168,7 +168,7 @@ impl Query {
         let snapshot = index.new_snapshot();
         let mut parser = Parser::new(query, snapshot);
         let mut filter = try!(parser.build_filter());
-        let mut sorts = try!(parser.sort_clause());
+        let mut orders = try!(parser.order_clause());
         let mut returnable = try!(parser.return_clause());
         let limit = try!(parser.limit_clause());
         try!(parser.non_ws_left());
@@ -190,28 +190,28 @@ impl Query {
                 break;
             }
         }
-        let has_sorting = !sorts.is_empty();
+        let has_ordering = !orders.is_empty();
 
-        returnable = if has_sorting && has_ags {
-            return Err(Error::Parse("Cannot have aggregates and sorting in the same query"
+        returnable = if has_ordering && has_ags {
+            return Err(Error::Parse("Cannot have aggregates and ordering in the same query"
                                         .to_string()));
-        } else if has_sorting {
-            returnable.take_sort_for_matching_fields(&mut sorts);
-            if !sorts.is_empty() {
+        } else if has_ordering {
+            returnable.take_order_for_matching_fields(&mut orders);
+            if !orders.is_empty() {
                 let mut vec: Vec<Box<Returnable>> = Vec::new();
-                for (_key, sort_info) in sorts.into_iter() {
-                    let sort = sort_info.clone();
-                    match sort_info.field {
-                        SortField::FetchValue(rp) => {
+                for (_key, order_info) in orders.into_iter() {
+                    let order = order_info.clone();
+                    match order_info.field {
+                        OrderField::FetchValue(rp) => {
                             vec.push(Box::new(RetValue {
                                                   rp: rp,
                                                   ag: None,
-                                                  default: sort_info.default,
-                                                  sort_info: Some(sort),
+                                                  default: order_info.default,
+                                                  order_info: Some(order),
                                               }));
                         }
-                        SortField::Score => {
-                            vec.push(Box::new(RetScore { sort_info: Some(sort) }));
+                        OrderField::Score => {
+                            vec.push(Box::new(RetScore { order_info: Some(order) }));
                         }
                     }
                 }
@@ -237,30 +237,30 @@ impl Query {
             }
         }
 
-        let needs_sorting_and_ags = has_ags || has_sorting;
+        let needs_ordering_and_ags = has_ags || has_ordering;
 
-        // the input args for sorts and ags are vecs where the slot is the same slot as
+        // the input args for orders and ags are vecs where the slot is the same slot as
         // a result that the action needs to be applied to. We instead convert them
         // into several new fields with tuples of action and the slot to act on.
         // this way we don't needlesss loop over the actions where most are noops
 
 
-        let mut sorts = if has_sorting {
-            let mut sorts = Vec::new();
-            let mut sorting = Vec::new();
-            returnable.get_sorting(&mut sorting);
-            let mut n = sorting.len();
-            while let Some(option) = sorting.pop() {
+        let mut orders = if has_ordering {
+            let mut orders = Vec::new();
+            let mut ordering = Vec::new();
+            returnable.get_ordering(&mut ordering);
+            let mut n = ordering.len();
+            while let Some(option) = ordering.pop() {
                 n -= 1;
-                if let Some(sort_info) = option {
-                    sorts.push((sort_info, n));
+                if let Some(order_info) = option {
+                    orders.push((order_info, n));
                 }
             }
-            // order we process sorts is important
-            sorts.sort_by_key(|&(ref sort_info, ref _n)| sort_info.order_to_apply);
-            sorts
+            // order we process orders is important
+            orders.sort_by_key(|&(ref order_info, ref _n)| order_info.order_to_apply);
+            orders
                 .into_iter()
-                .map(|(sort_info, n)| (sort_info.sort, n))
+                .map(|(order_info, n)| (order_info.order, n))
                 .collect()
         } else {
             Vec::new()
@@ -277,9 +277,9 @@ impl Query {
             while let Some(Some((ag, user_arg))) = ags.pop() {
                 n -= 1;
                 if ag == AggregateFun::GroupAsc {
-                    sorts.push((Sort::Asc, n));
+                    orders.push((Order::Asc, n));
                 } else if ag == AggregateFun::GroupDesc {
-                    sorts.push((Sort::Desc, n));
+                    orders.push((Order::Desc, n));
                 } else {
                     let ag_impls = ag.get_fun_impls();
                     if let Some(init) = ag_impls.init {
@@ -292,7 +292,7 @@ impl Query {
                 }
             }
             // the order we process groups in important
-            sorts.reverse();
+            orders.reverse();
         }
 
         let mut qsi = QueryScoringInfo {
@@ -316,15 +316,15 @@ impl Query {
                fetcher: parser.snapshot.new_json_fetcher(),
                snapshot: parser.snapshot,
                returnable: returnable,
-               needs_sorting_and_ags: needs_sorting_and_ags,
-               done_with_sorting_and_ags: false,
+               needs_ordering_and_ags: needs_ordering_and_ags,
+               done_with_ordering_and_ags: false,
                does_group_or_aggr: does_group_or_aggr,
-               sorts: Some(sorts),
+               orders: Some(orders),
                aggr_inits: aggr_inits,
                aggr_actions: aggr_actions,
                aggr_finals: aggr_finals,
                in_buffer: Vec::new(),
-               sorted_buffer: Vec::new(),
+               ordered_buffer: Vec::new(),
                limit: limit,
                scoring_num_terms: qsi.num_terms,
                scoring_query_norm: query_norm,
@@ -339,15 +339,15 @@ pub struct QueryResults<'a> {
     snapshot: Snapshot<'a>,
     fetcher: JsonFetcher,
     returnable: Box<Returnable>,
-    needs_sorting_and_ags: bool,
-    done_with_sorting_and_ags: bool,
+    needs_ordering_and_ags: bool,
+    done_with_ordering_and_ags: bool,
     does_group_or_aggr: bool,
-    sorts: Option<Vec<(Sort, usize)>>,
+    orders: Option<Vec<(Order, usize)>>,
     aggr_inits: Vec<(fn(JsonValue) -> JsonValue, usize)>,
     aggr_actions: Vec<(fn(&mut JsonValue, JsonValue, &JsonValue), JsonValue, usize)>,
     aggr_finals: Vec<(fn(&mut JsonValue), usize)>,
     in_buffer: Vec<VecDeque<JsonValue>>,
-    sorted_buffer: Vec<VecDeque<JsonValue>>,
+    ordered_buffer: Vec<VecDeque<JsonValue>>,
     limit: usize,
     scoring_num_terms: usize,
     scoring_query_norm: f32,
@@ -371,7 +371,7 @@ impl<'a> QueryResults<'a> {
     }
 
     fn get_next_result(&mut self) -> Option<DocResult> {
-        if self.done_with_sorting_and_ags {
+        if self.done_with_ordering_and_ags {
             return None;
         }
         let result = self.filter.first_result(&self.doc_result_next);
@@ -408,9 +408,9 @@ impl<'a> QueryResults<'a> {
     }
 
     pub fn next_result(&mut self) -> Option<JsonValue> {
-        if self.needs_sorting_and_ags {
+        if self.needs_ordering_and_ags {
             loop {
-                let next = if self.done_with_sorting_and_ags {
+                let next = if self.done_with_ordering_and_ags {
                     None
                 } else {
                     self.get_next_result()
@@ -427,23 +427,23 @@ impl<'a> QueryResults<'a> {
                                           &mut results);
                         self.in_buffer.push(results);
                         if self.in_buffer.len() == self.limit {
-                            self.do_sorting_and_ags();
+                            self.do_ordering_and_ags();
                         }
                     }
                     None => {
-                        if !self.done_with_sorting_and_ags {
-                            self.do_sorting_and_ags();
-                            self.done_with_sorting_and_ags = true;
+                        if !self.done_with_ordering_and_ags {
+                            self.do_ordering_and_ags();
+                            self.done_with_ordering_and_ags = true;
                             if !self.aggr_finals.is_empty() {
                                 // need to finalize the values
-                                for end in self.sorted_buffer.iter_mut() {
+                                for end in self.ordered_buffer.iter_mut() {
                                     for &(ref finalize, n) in self.aggr_finals.iter() {
                                         (finalize)(&mut end[n]);
                                     }
                                 }
                             }
                         }
-                        if let Some(mut results) = self.sorted_buffer.pop() {
+                        if let Some(mut results) = self.ordered_buffer.pop() {
                             return Some(self.returnable.json_result(&mut results));
                         } else {
                             return None;
@@ -468,12 +468,12 @@ impl<'a> QueryResults<'a> {
         }
     }
 
-    fn cmp_results(sorts: &Vec<(Sort, usize)>,
+    fn cmp_results(orders: &Vec<(Order, usize)>,
                    a: &VecDeque<JsonValue>,
                    b: &VecDeque<JsonValue>)
                    -> Ordering {
-        for &(ref sort_dir, n) in sorts.iter() {
-            let cmp = if *sort_dir != Sort::Desc {
+        for &(ref order_dir, n) in orders.iter() {
+            let cmp = if *order_dir != Order::Desc {
                 b[n].cmp(&a[n])
             } else {
                 a[n].cmp(&b[n])
@@ -486,32 +486,32 @@ impl<'a> QueryResults<'a> {
         Ordering::Equal
     }
 
-    fn do_sorting_and_ags(&mut self) {
+    fn do_ordering_and_ags(&mut self) {
         // ugh borrow check madness means this is how this must happen.
         // we need to put it back before returning.
-        let sorts = self.sorts.take().unwrap();
-        if !sorts.is_empty() {
+        let orders = self.orders.take().unwrap();
+        if !orders.is_empty() {
             self.in_buffer
-                .sort_by(|a, b| QueryResults::cmp_results(&sorts, &a, &b));
+                .sort_by(|a, b| QueryResults::cmp_results(&orders, &a, &b));
         }
         // put back
-        self.sorts = Some(sorts);
+        self.orders = Some(orders);
 
         if !self.does_group_or_aggr {
-            if self.sorted_buffer.is_empty() {
-                swap(&mut self.sorted_buffer, &mut self.in_buffer);
+            if self.ordered_buffer.is_empty() {
+                swap(&mut self.ordered_buffer, &mut self.in_buffer);
             } else {
-                //merge the sorted buffers
-                let mut new_buffer = Vec::with_capacity(self.sorted_buffer.len() +
+                //merge the ordered buffers
+                let mut new_buffer = Vec::with_capacity(self.ordered_buffer.len() +
                                                         self.in_buffer.len());
-                let mut option_a = self.sorted_buffer.pop();
+                let mut option_a = self.ordered_buffer.pop();
                 let mut option_b = self.in_buffer.pop();
                 // take out for borrow check
-                let sorts = self.sorts.take().unwrap();
+                let orders = self.orders.take().unwrap();
                 loop {
                     match (option_a, option_b) {
                         (Some(a), Some(b)) => {
-                            match QueryResults::cmp_results(&sorts, &a, &b) {
+                            match QueryResults::cmp_results(&orders, &a, &b) {
                                 Ordering::Less => {
                                     new_buffer.push(b);
                                     option_a = Some(a);
@@ -519,19 +519,19 @@ impl<'a> QueryResults<'a> {
                                 }
                                 Ordering::Greater => {
                                     new_buffer.push(a);
-                                    option_a = self.sorted_buffer.pop();
+                                    option_a = self.ordered_buffer.pop();
                                     option_b = Some(b);
 
                                 }
                                 Ordering::Equal => {
                                     new_buffer.push(a);
                                     new_buffer.push(b);
-                                    option_a = self.sorted_buffer.pop();
+                                    option_a = self.ordered_buffer.pop();
                                     option_b = self.in_buffer.pop();
                                 }
                             }
                             if new_buffer.len() >= self.limit {
-                                self.sorted_buffer.clear();
+                                self.ordered_buffer.clear();
                                 self.in_buffer.clear();
                                 new_buffer.truncate(self.limit);
                                 break;
@@ -542,7 +542,7 @@ impl<'a> QueryResults<'a> {
                             if new_buffer.len() == self.limit {
                                 break;
                             }
-                            while let Some(a) = self.sorted_buffer.pop() {
+                            while let Some(a) = self.ordered_buffer.pop() {
                                 new_buffer.push(a);
                                 if new_buffer.len() == self.limit {
                                     break;
@@ -567,25 +567,25 @@ impl<'a> QueryResults<'a> {
                     }
                 }
                 // put back
-                self.sorts = Some(sorts);
+                self.orders = Some(orders);
 
                 new_buffer.reverse();
-                swap(&mut self.sorted_buffer, &mut new_buffer);
+                swap(&mut self.ordered_buffer, &mut new_buffer);
             }
             return;
         }
 
 
-        //merge the sorted buffers
-        let mut new_buffer = Vec::with_capacity(self.sorted_buffer.len() + self.in_buffer.len());
-        let mut option_old = self.sorted_buffer.pop();
+        //merge the ordered buffers
+        let mut new_buffer = Vec::with_capacity(self.ordered_buffer.len() + self.in_buffer.len());
+        let mut option_old = self.ordered_buffer.pop();
         let mut option_new = self.in_buffer.pop();
         // take out for borrow check
-        let sorts = self.sorts.take().unwrap();
+        let orders = self.orders.take().unwrap();
         loop {
             match (option_old, option_new) {
                 (Some(mut old), Some(mut new)) => {
-                    match QueryResults::cmp_results(&sorts, &old, &new) {
+                    match QueryResults::cmp_results(&orders, &old, &new) {
                         Ordering::Less => {
                             for &(ref init, n) in self.aggr_inits.iter() {
                                 // we can't swap out a value of new directly, so this lets us
@@ -595,15 +595,15 @@ impl<'a> QueryResults<'a> {
                                 swap(&mut new_n, &mut new[n]);
                                 new[n] = (init)(new_n);
                             }
-                            //push back old value into sorted_buffer,
+                            //push back old value into ordered_buffer,
                             //then use new value as old value.
-                            self.sorted_buffer.push(old);
+                            self.ordered_buffer.push(old);
                             option_old = Some(new);
                             option_new = self.in_buffer.pop();
                         }
                         Ordering::Greater => {
                             new_buffer.push(old);
-                            option_old = self.sorted_buffer.pop();
+                            option_old = self.ordered_buffer.pop();
                             option_new = Some(new);
                         }
                         Ordering::Equal => {
@@ -620,7 +620,7 @@ impl<'a> QueryResults<'a> {
                         }
                     }
                     if new_buffer.len() == self.limit {
-                        self.sorted_buffer.clear();
+                        self.ordered_buffer.clear();
                         self.in_buffer.clear();
                         break;
                     }
@@ -630,7 +630,7 @@ impl<'a> QueryResults<'a> {
                     if new_buffer.len() == self.limit {
                         break;
                     }
-                    while let Some(old) = self.sorted_buffer.pop() {
+                    while let Some(old) = self.ordered_buffer.pop() {
                         new_buffer.push(old);
                         if new_buffer.len() == self.limit {
                             break;
@@ -654,10 +654,10 @@ impl<'a> QueryResults<'a> {
             }
         }
         // put back
-        self.sorts = Some(sorts);
+        self.orders = Some(orders);
 
         new_buffer.reverse();
-        swap(&mut self.sorted_buffer, &mut new_buffer);
+        swap(&mut self.ordered_buffer, &mut new_buffer);
     }
 }
 
@@ -670,22 +670,22 @@ impl<'a> Iterator for QueryResults<'a> {
 }
 
 #[derive(PartialEq, Eq, Clone)]
-pub enum Sort {
+pub enum Order {
     Asc,
     Desc,
 }
 
 #[derive(Clone)]
-pub enum SortField {
+pub enum OrderField {
     FetchValue(ReturnPath),
     Score,
 }
 
 #[derive(Clone)]
-pub struct SortInfo {
-    pub field: SortField,
+pub struct OrderInfo {
+    pub field: OrderField,
     pub order_to_apply: usize,
-    pub sort: Sort,
+    pub order: Order,
     pub default: JsonValue,
 }
 
