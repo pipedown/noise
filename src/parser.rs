@@ -322,7 +322,7 @@ impl<'a, 'c> Parser<'a, 'c> {
                 if let Some(c) = chars.next() {
                     c
                 } else {
-                    return Ok(None);
+                    return Err(Error::Parse("Expected digits after sign (-).".to_string()));
                 }
             } else {
                 c
@@ -336,14 +336,14 @@ impl<'a, 'c> Parser<'a, 'c> {
                 if let Some(c) = chars.next() {
                     c
                 } else {
-                    return Ok(None);
+                    break 'outer;
                 }
             } else if c >= '1' && c <= '9' {
                 result.push(c);
                 if let Some(c) = chars.next() {
                     c
                 } else {
-                    return Ok(None);
+                    break 'outer;
                 }
             } else if result.is_empty() {
                 // no sign or digits found. not a number
