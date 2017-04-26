@@ -4,7 +4,7 @@
 SCRIPTPATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 DIRNAME="$(dirname ${SCRIPTPATH})"
 
-NOISE="${DIRNAME}/target/debug/noise"
+NOISE="${DIRNAME}/target/debug/noise_search"
 REPL_TEST_DIR="${DIRNAME}/repl-tests"
 
 if [[ ! -f "${NOISE}" ]]; then
