@@ -220,6 +220,24 @@ return {foo: .B default={bar:"bar"}};
 {"foo":{"bar":"bar"}}
 ]
 
+find {A:[ == "foo"]}
+return .B default=0;
+[
+0
+]
+
+find {A:[ == "foo"]}
+return .B default=1;
+[
+1
+]
+
+find {A:[ == "foo"]}
+return .B default=-1;
+[
+-1
+]
+
 # return every kind of element
 
 find {A:[ == "foo"]}
