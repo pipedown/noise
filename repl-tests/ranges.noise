@@ -138,3 +138,123 @@ find {boolarray: [==true]};
 "nine",
 "ten"
 ]
+
+# scoring
+
+find {A: ==true}
+return score();
+[
+1
+]
+
+find {A: ==false}
+return score();
+[
+1
+]
+
+find {A: ==null}
+return score();
+[
+1
+]
+
+find {boolarray: [==true]}
+return score();
+[
+1,
+1
+]
+
+
+
+find {A: >10, A: <20}
+return score();
+[
+1
+]
+
+find {A: >-10, A: <20}
+return score();
+[
+1,
+1
+]
+
+find {A: <-1}
+return score();
+[
+1
+]
+
+find {A: <20}
+return score();
+[
+1,
+1
+]
+
+find {numberarray: [<70]}
+return score();
+[
+1
+]
+
+find {A: <-3}
+return score();
+[]
+
+find {A: <=-3}
+return score();
+[
+1
+]
+
+
+
+find {A: >20}
+return score();
+[
+1
+]
+
+find {A: >-5}
+return score();
+[
+1,
+1,
+1
+]
+
+find {numberarray: [>40]}
+return score();
+[
+1
+]
+
+find {A: >35}
+return score();
+[]
+
+find {A: >=35 || NotAField: ==50}
+return score();
+[
+0.25
+]
+
+find {A: >=35 && NotAField: ==50}
+return score();
+[]
+
+
+find {A: ==12}
+return score();
+[
+1
+]
+
+find {numberarray: [==60]}
+return score();
+[
+1
+]
