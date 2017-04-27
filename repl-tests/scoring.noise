@@ -42,13 +42,13 @@ return score() ;
 find {bar: =="quick brown fox"}
 return score() ;
 [
-0.05966803431510925
+1
 ]
 
 find {bar: =="quick brown fox"^2}
 return score() ;
 [
-0.1193360686302185
+1
 ]
 
 find {bar: ~2="quick brown fox"}

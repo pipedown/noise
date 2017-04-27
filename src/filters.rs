@@ -242,6 +242,7 @@ pub struct ExactMatchFilter {
     kb: KeyBuilder,
     phrase: String,
     case_sensitive: bool,
+    term_ordinal: Option<usize>,
 }
 
 impl ExactMatchFilter {
@@ -261,6 +262,7 @@ impl ExactMatchFilter {
                 phrase.to_lowercase()
             },
             case_sensitive: case_sensitive,
+            term_ordinal: None,
         }
     }
 
@@ -280,6 +282,9 @@ impl ExactMatchFilter {
                         self.phrase == string.to_lowercase()
                     };
                     if matches {
+                        if self.term_ordinal.is_some() {
+                            dr.add_score(self.term_ordinal.unwrap(), 1.0);
+                        }
                         return Some(dr);
                     } else {
                         if let Some(next) = self.filter.next_result() {
@@ -317,7 +322,10 @@ impl QueryRuntimeFilter for ExactMatchFilter {
     }
 
     fn prepare_relevancy_scoring(&mut self, mut qsi: &mut QueryScoringInfo) {
-        self.filter.prepare_relevancy_scoring(&mut qsi);
+        // we score these as binary. Either they have a value of 1 or nothing.
+        self.term_ordinal = Some(qsi.num_terms);
+        qsi.num_terms += 1;
+        qsi.sum_of_idt_sqs += 1.0;
     }
 
     fn check_double_not(&self, parent_is_neg: bool) -> Result<(), Error> {
@@ -335,6 +343,7 @@ pub struct RangeFilter {
     min: Option<RangeOperator>,
     max: Option<RangeOperator>,
     keypath: String,
+    term_ordinal: Option<usize>,
 }
 
 impl RangeFilter {
@@ -350,6 +359,7 @@ impl RangeFilter {
             max: max,
             // The keypath we use to seek to the correct key within RocksDB
             keypath: String::new(),
+            term_ordinal: None,
         }
     }
 }
@@ -388,7 +398,10 @@ impl QueryRuntimeFilter for RangeFilter {
             // The key already matched, hence it's a valid doc result. Return it.
             if self.min == Some(RangeOperator::True) || self.min == Some(RangeOperator::False) ||
                self.min == Some(RangeOperator::Null) {
-                let dr = KeyBuilder::parse_doc_result_from_key(&key_str);
+                let mut dr = KeyBuilder::parse_doc_result_from_key(&key_str);
+                if self.term_ordinal.is_some() {
+                    dr.add_score(self.term_ordinal.unwrap(), 1.0);
+                }
                 return Some(dr);
             }
             // Else it's a range query on numbers
@@ -414,7 +427,10 @@ impl QueryRuntimeFilter for RangeFilter {
             };
 
             if min_condition && max_condition {
-                let dr = KeyBuilder::parse_doc_result_from_key(&key_str);
+                let mut dr = KeyBuilder::parse_doc_result_from_key(&key_str);
+                if self.term_ordinal.is_some() {
+                    dr.add_score(self.term_ordinal.unwrap(), 1.0);
+                }
                 return Some(dr);
             }
             // Else: No match => KKeep looping and move on to the next key
@@ -423,7 +439,12 @@ impl QueryRuntimeFilter for RangeFilter {
     }
 
     // TODO vmx 2017-04-13: Scoring is not implemented yet
-    fn prepare_relevancy_scoring(&mut self, _qsi: &mut QueryScoringInfo) {}
+    fn prepare_relevancy_scoring(&mut self, qsi: &mut QueryScoringInfo) {
+        // we score these as binary. Either they have a value of 1 or nothing.
+        self.term_ordinal = Some(qsi.num_terms);
+        qsi.num_terms += 1;
+        qsi.sum_of_idt_sqs += 1.0;
+    }
 
     fn check_double_not(&self, _parent_is_neg: bool) -> Result<(), Error> {
         Ok(())
