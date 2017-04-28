@@ -457,4 +457,24 @@ mod tests {
                             ("V1#.foo".to_string(), JsonValue::String("array".to_string()))];
         assert_eq!(results, expected);
     }
+
+    #[test]
+    fn test_empty_doc() {
+        let dbname = "target/tests/testemptydoc";
+        let _ = Index::drop(dbname);
+
+        let mut index = Index::new();
+        index.open(dbname, Some(OpenOptions::Create)).unwrap();
+
+        let mut batch = Batch::new();
+        let id = index.add("{}", &mut batch).unwrap();
+
+        index.flush(batch).unwrap();
+        let query = r#"find {_id:==""#.to_string() + &id + "\"} return .";
+        let mut results = Query::get_matches(&query, &index).unwrap();
+        let json = results.next().unwrap();
+        assert_eq!(json,
+                   JsonValue::Object(vec![("_id".to_string(), JsonValue::String(id))]));
+
+    }
 }
