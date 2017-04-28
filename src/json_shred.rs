@@ -362,9 +362,11 @@ impl Shredder {
                 }
                 Some(JsonEvent::ObjectEnd) => {
                     self.kb.pop_object_key();
-                    if !self.object_keys_indexed.pop().unwrap() {
+                    if self.kb.keypath_segments_len() > 0 &&
+                       !self.object_keys_indexed.pop().unwrap() {
                         // this means we never wrote a key because the object was empty.
                         // So preserve the empty object by writing a special value.
+                        // but not for the root object. it will always have _id field added.
                         try!(self.maybe_add_value(&parser, 'o', &[]));
                     }
                     self.kb.inc_top_array_offset();
