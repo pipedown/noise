@@ -234,6 +234,20 @@ impl KeyBuilder {
         }
     }
 
+    // Returns true if the prefix str is a prefix of the true keypath
+    pub fn is_keypath_prefix(prefix: &str, keypath: &str) -> bool {
+        if keypath.starts_with(prefix) {
+            match keypath[prefix.len()..].chars().next() {
+                Some('.') => true,
+                Some('$') => true,
+                Some(_) => false,
+                None => true,
+            }
+        } else {
+            false
+        }
+    }
+
     // returns the unescaped segment as Segment and the escaped segment as a slice
     pub fn parse_first_key_value_segment(keypath: &str) -> Option<(Segment, String)> {
 

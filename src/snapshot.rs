@@ -281,12 +281,17 @@ impl JsonFetcher {
             None => return None,
         };
 
-        if !key.starts_with(value_key.as_bytes()) {
+        if !KeyBuilder::is_keypath_prefix(&value_key, unsafe { str::from_utf8_unchecked(&key) }) {
             return None;
         }
         Some(JsonFetcher::do_fetch(&mut iter.peekable(), &value_key, key, value))
     }
 
+    /// When do_fetch is called it means we know we are going to find a value because
+    /// we prefix matched the keypath. What we are doing here is parsing the remaining
+    /// keypath to figure out the nested structure of the remaining keypath. So we
+    /// depth first recursively parse the keypath and return the value and inserting into
+    /// containers (arrays or objects) then iterate keys until the keypath no longer matches.
     fn do_fetch(iter: &mut Peekable<&mut DBIterator>,
                 value_key: &str,
                 mut key: Box<[u8]>,
@@ -314,7 +319,8 @@ impl JsonFetcher {
 
                     let segment = match iter.peek() {
                         Some(&(ref k, ref _v)) => {
-                            if !k.starts_with(value_key.as_bytes()) {
+                            let key = unsafe { str::from_utf8_unchecked(k) };
+                            if !KeyBuilder::is_keypath_prefix(value_key, key) {
                                 return JsonValue::Object(object);
                             }
 
@@ -355,7 +361,8 @@ impl JsonFetcher {
 
                     let segment = match iter.peek() {
                         Some(&(ref k, ref _v)) => {
-                            if !k.starts_with(value_key.as_bytes()) {
+                            let key = unsafe { str::from_utf8_unchecked(k) };
+                            if !KeyBuilder::is_keypath_prefix(value_key, key) {
                                 return JsonFetcher::return_array(array);
                             }
 
