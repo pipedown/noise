@@ -452,6 +452,10 @@ impl<'a> QueryResults<'a> {
                 }
             }
         } else {
+            if self.limit == 0 {
+                return None;
+            }
+            self.limit -= 1;
             let dr = match self.get_next_result() {
                 Some(dr) => dr,
                 None => return None,
