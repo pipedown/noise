@@ -272,4 +272,21 @@ return .a[*].b[*].c;
 [[2],[4,5,6]]
 ]
 
+# prefix bug
+
+add {"_id":"1", "prefix": true, "pre": "foo"};
+"1"
+
+find {prefix: == true}
+return .pre;
+[
+"foo"
+]
+
+find {prefix: == true}
+return .pref;
+[
+null
+]
+
 
