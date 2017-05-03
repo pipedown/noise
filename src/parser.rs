@@ -57,6 +57,15 @@ impl<'a, 'c> Parser<'a, 'c> {
         }
     }
 
+    fn consume_no_ws(&mut self, token: &str) -> bool {
+        if self.could_consume(token) {
+            self.offset += token.len();
+            true
+        } else {
+            false
+        }
+    }
+
 
     fn must_consume(&mut self, token: &str) -> Result<(), Error> {
         if self.could_consume(token) {
@@ -227,7 +236,7 @@ impl<'a, 'c> Parser<'a, 'c> {
     }
 
     fn consume_keypath(&mut self) -> Result<Option<ReturnPath>, Error> {
-        let key: String = if self.consume(".") {
+        let key: String = if self.consume_no_ws(".") {
             if self.consume("[") {
                 let key = try!(self.must_consume_string_literal());
                 try!(self.must_consume("]"));

@@ -1,0 +1,132 @@
+# limit clause tests
+
+drop target/tests/querytestlimit;
+create target/tests/querytestlimit;
+
+
+add {"_id":"1", "A": 6};
+"1"
+add {"_id":"2", "A": 6};
+"2"
+add {"_id":"3", "A": 4};
+"3"
+add {"_id":"4", "A": 4};
+"4"
+add {"_id":"5", "A": 1};
+"5"
+
+# "limit" tests with find clause only
+
+find {A: >= 1};
+[
+"1",
+"2",
+"3",
+"4",
+"5"
+]
+
+find {A: >= 1}
+limit 1;
+[
+"1"
+]
+
+find {A: >= 1}
+limit 3;
+[
+"1",
+"2",
+"3"
+]
+
+find {A: < 5};
+[
+"3",
+"4",
+"5"
+]
+
+find {A: < 5}
+limit 2;
+[
+"3",
+"4"
+]
+
+# "limit" tests with ordering
+
+find {A: > 3}
+order .A;
+[
+"4",
+"3",
+"2",
+"1"
+]
+
+find {A: > 3}
+order .A
+limit 1;
+[
+"3"
+]
+
+# "limit" tests with return
+
+find {A: >= 1}
+return .;
+[
+{"A":6,"_id":"1"},
+{"A":6,"_id":"2"},
+{"A":4,"_id":"3"},
+{"A":4,"_id":"4"},
+{"A":1,"_id":"5"}
+]
+
+find {A: >= 1}
+return .
+limit 1;
+[
+{"A":6,"_id":"1"}
+]
+
+find {A: >= 1}
+return .A;
+[
+6,
+6,
+4,
+4,
+1
+]
+
+find {A: >= 1}
+return .A
+limit 1;
+[
+6
+]
+
+# "limit" tests with return and ordering
+
+find {A: >= 1}
+order .A
+return .A;
+[
+1,
+4,
+4,
+6,
+6
+]
+
+find {A: >= 1}
+order .A
+return .A
+limit 3;
+[
+1,
+4,
+4
+]
