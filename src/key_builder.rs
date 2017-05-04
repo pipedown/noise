@@ -61,11 +61,27 @@ impl KeyBuilder {
         string
     }
 
-    pub fn id_to_seq_key(&self, id: &str) -> String {
+    pub fn id_to_seq_key(id: &str) -> String {
         let mut str = String::with_capacity(id.len() + 1);
         str.push('I');
         str.push_str(&id);
         str
+    }
+
+    pub fn seq_key(seq: u64) -> String {
+        let seq = seq.to_string();
+        let mut str = String::with_capacity(seq.len() + 1);
+        str.push('S');
+        str.push_str(&seq);
+        str
+    }
+
+    pub fn parse_seq_key(key: &str) -> Option<u64> {
+        if key.starts_with("S") {
+            Some(key[1..].parse().unwrap())
+        } else {
+            None
+        }
     }
 
     /// Build the index key that corresponds to a number primitive
