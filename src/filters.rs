@@ -7,7 +7,7 @@ use error::Error;
 use key_builder::KeyBuilder;
 use query::{DocResult, QueryScoringInfo};
 use json_value::JsonValue;
-use snapshot::{Snapshot, DocResultIterator, Scorer, JsonFetcher};
+use snapshot::{Snapshot, DocResultIterator, Scorer, JsonFetcher, AllDocsIterator};
 use rocksdb::{self, DBIterator, IteratorMode};
 
 pub trait QueryRuntimeFilter {
@@ -32,6 +32,46 @@ pub enum RangeOperator {
     True,
     False,
     Null,
+}
+
+
+
+pub struct AllDocsFilter {
+    iter: AllDocsIterator,
+}
+
+impl AllDocsFilter {
+    pub fn new(snapshot: &Snapshot) -> AllDocsFilter {
+        AllDocsFilter { iter: snapshot.new_all_docs_iterator() }
+    }
+}
+
+impl QueryRuntimeFilter for AllDocsFilter {
+    fn first_result(&mut self, _start: &DocResult) -> Option<DocResult> {
+        self.next_result()
+    }
+
+    fn next_result(&mut self) -> Option<DocResult> {
+        if let Some(mut dr) = self.iter.next() {
+            dr.add_score(1, 1.0);
+            Some(dr)
+        } else {
+            None
+        }
+    }
+
+    fn prepare_relevancy_scoring(&mut self, mut qsi: &mut QueryScoringInfo) {
+        qsi.num_terms += 1;
+        qsi.sum_of_idt_sqs += 1.0;
+    }
+
+    fn check_double_not(&self, _parent_is_neg: bool) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn is_all_not(&self) -> bool {
+        false
+    }
 }
 
 pub struct StemmedWordFilter {

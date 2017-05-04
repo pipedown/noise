@@ -55,6 +55,12 @@ impl<'a> Snapshot<'a> {
     pub fn new_iterator(&self) -> DBIterator {
         self.rocks.iterator(IteratorMode::Start)
     }
+
+    pub fn new_all_docs_iterator(&self) -> AllDocsIterator {
+        let mut iter = self.rocks.iterator(IteratorMode::Start);
+        iter.set_mode(IteratorMode::From(b"S", rocksdb::Direction::Forward));
+        AllDocsIterator { iter: iter }
+    }
 }
 
 pub struct DocResultIterator {
@@ -397,6 +403,28 @@ impl JsonFetcher {
                        value_key,
                        key_str);
             }
+        }
+    }
+}
+
+pub struct AllDocsIterator {
+    iter: DBIterator,
+}
+
+impl AllDocsIterator {
+    pub fn next(&mut self) -> Option<DocResult> {
+        match self.iter.next() {
+            Some((k, _v)) => {
+                let key = unsafe { str::from_utf8_unchecked(&k) };
+                if let Some(seq) = KeyBuilder::parse_seq_key(key) {
+                    let mut dr = DocResult::new();
+                    dr.seq = seq;
+                    Some(dr)
+                } else {
+                    None
+                }
+            }
+            None => None,
         }
     }
 }
