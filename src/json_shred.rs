@@ -274,8 +274,11 @@ impl Shredder {
         }
         self.shredded_key_values = BTreeMap::new();
 
-        let key = self.kb.id_to_seq_key(self.doc_id.as_ref().unwrap());
+        let key = KeyBuilder::id_to_seq_key(self.doc_id.as_ref().unwrap());
         try!(batch.put(&key.into_bytes(), &seq.to_string().as_bytes()));
+
+        let key = KeyBuilder::seq_key(seq);
+        try!(batch.put(&key.into_bytes(), b""));
 
         Ok(())
     }
@@ -310,7 +313,10 @@ impl Shredder {
             }
             try!(batch.delete(&key.as_bytes()));
         }
-        let key = self.kb.id_to_seq_key(self.doc_id.as_ref().unwrap());
+        let key = KeyBuilder::id_to_seq_key(self.doc_id.as_ref().unwrap());
+        try!(batch.delete(&key.into_bytes()));
+
+        let key = KeyBuilder::seq_key(seq);
         try!(batch.delete(&key.into_bytes()));
         Ok(())
     }

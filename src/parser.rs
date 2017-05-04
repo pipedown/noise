@@ -15,7 +15,7 @@ use returnable::{Returnable, RetValue, RetObject, RetArray, RetLiteral, RetBind,
                  ReturnPath};
 use filters::{QueryRuntimeFilter, ExactMatchFilter, StemmedWordFilter, StemmedWordPosFilter,
               StemmedPhraseFilter, DistanceFilter, AndFilter, OrFilter, BindFilter, BoostFilter,
-              NotFilter, RangeFilter, RangeOperator};
+              NotFilter, RangeFilter, RangeOperator, AllDocsFilter};
 use snapshot::Snapshot;
 
 
@@ -558,6 +558,9 @@ impl<'a, 'c> Parser<'a, 'c> {
     fn find<'b>(&'b mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
         if !self.consume("find") {
             return Err(Error::Parse("Missing 'find' keyword".to_string()));
+        }
+        if self.consume("*") {
+            return Ok(Box::new(AllDocsFilter::new(&self.snapshot)));
         }
         self.not_object()
     }
