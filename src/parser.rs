@@ -260,14 +260,14 @@ impl<'a, 'c> Parser<'a, 'c> {
             if self.consume("[") {
                 if let Some(index) = try!(self.consume_integer()) {
                     ret_path.push_array(index as u64);
+                    try!(self.must_consume("]"));
                 } else {
-                    if self.consume("*") {
+                    if self.consume("]") {
                         ret_path.push_array_all();
                     } else {
                         return Err(Error::Parse("Expected array index integer or *.".to_string()));
                     }
                 }
-                try!(self.must_consume("]"));
             } else if self.consume(".") {
                 if let Some(key) = self.consume_field() {
                     ret_path.push_object_key(key);
@@ -559,9 +559,6 @@ impl<'a, 'c> Parser<'a, 'c> {
         if !self.consume("find") {
             return Err(Error::Parse("Missing 'find' keyword".to_string()));
         }
-        if self.consume("*") {
-            return Ok(Box::new(AllDocsFilter::new(&self.snapshot)));
-        }
         self.not_object()
     }
 
@@ -575,6 +572,9 @@ impl<'a, 'c> Parser<'a, 'c> {
 
     fn object<'b>(&'b mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
         if self.consume("{") {
+            if self.consume("}") {
+                return Ok(Box::new(AllDocsFilter::new(&self.snapshot)));
+            }
             let mut left = try!(self.obool());
             try!(self.must_consume("}"));
 
