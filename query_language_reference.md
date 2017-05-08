@@ -569,7 +569,7 @@ Results:
 Query:
 
 ```
-find {foo: =="group1"}
+find {foo: == "group1"}
 return {baz: group(.baz), concat: concat(.baz sep="|")}
 ```
 
@@ -586,7 +586,7 @@ Results:
 Query:
 
 ```
-find {foo: =="group1"}
+find {foo: == "group1"}
 return {max: max(.bar)}
 ```
 Results:
@@ -598,7 +598,7 @@ Results:
 Query:
 
 ```
-find {foo: =="group1"}
+find {foo: == "group1"}
 return {max: max(.baz)}
 ```
 
@@ -613,7 +613,7 @@ Results:
 Query:
 
 ```
-find {foo: =="group1"}
+find {foo: == "group1"}
 return {min: min(.bar)}
 ```
 
@@ -628,7 +628,7 @@ Results:
 Query:
 
 ```
-find {foo: =="group2"}
+find {foo: == "group2"}
 return [group(.baz order=asc), group(.bar order=desc), count()]
 ```
 
@@ -683,7 +683,7 @@ We have documents like this:
 Query:
 
 ```
-find {foo: =="array1"}
+find {foo: == "array1"}
 return array(.baz)
 ```
 
@@ -696,7 +696,7 @@ Results:
 Query:
 
 ```
-find {foo: =="array1"}
+find {foo: == "array1"}
 return array_flat(.baz)
 ```
 
@@ -709,7 +709,7 @@ Results:
 Query:
 
 ```
-find {foo: =="array1"}
+find {foo: == "array1"}
 return max(.baz)
 ```
 
@@ -721,8 +721,8 @@ Results:
 
 Query:
 
-```json
-find {foo: =="array1"}
+```
+find {foo: == "array1"}
 return max_array(.baz)
 ```
 
@@ -735,7 +735,7 @@ Results:
 Query:
 
 ```
-find {foo: =="array1"}
+find {foo: == "array1"}
 return min_array(.baz)
 ```
 
