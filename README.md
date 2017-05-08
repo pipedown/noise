@@ -13,6 +13,8 @@ nature of JSON, and will allow:
  * Case sensitive exact word and sentence match
  * Arbitrary boolean nesting
  * Greater than/less Than matching
+ 
+[Query Langauge Reference here](https://github.com/pipedown/noise/blob/master/query_language_reference.md)
 
 
 Installation
