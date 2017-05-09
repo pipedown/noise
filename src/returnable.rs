@@ -299,6 +299,7 @@ impl Returnable for RetValue {
         if Some((AggregateFun::Count, JsonValue::Null)) == self.ag {
             //don't fetch anything for count(). just stick in a null
             result.push_back(JsonValue::Null);
+            return;
         }
         let mut kb = KeyBuilder::new();
         if let Some(json) = fetcher.fetch(seq, &mut kb, &self.rp) {
