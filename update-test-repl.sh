@@ -6,7 +6,11 @@ DIRNAME="$(dirname ${SCRIPTPATH})"
 
 NOISE="${DIRNAME}/target/debug/noise_search"
 REPL_TEST_DIR="${DIRNAME}/repl-tests"
-
+cargo build
+exit_status=$?
+if [ $exit_status -ne 0 ]; then
+  exit $exit_status
+fi
 if [[ ! -f "${NOISE}" ]]; then
   echo "Can't find noise binary, looked at ${NOISE}"
   exit 1
