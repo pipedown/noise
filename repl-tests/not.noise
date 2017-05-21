@@ -22,6 +22,12 @@ add {"_id":"8", "baz": ["quick","fox"]};
 "8"
 add {"_id":"9", "baz": ["quick","brown","fox"]};
 "9"
+add {"_id":"10", "baz": [["quick"],["brown"],["fox"]]};
+"10"
+add {"_id":"11", "baz": [["brown"],["fox"]]};
+"11"
+add {"_id":"12", "baz": [["fox"]]};
+"12"
 
 find {(bar: ~="fox" || bar: ~="brown") && (bar: !~="quick")}
 return ._id ;
@@ -80,6 +86,56 @@ return ._id ;
 [
 "7"
 ]
+
+find {baz: [~="fox" || ~="brown"] && baz: [!~="fox"]}
+return ._id ;
+[
+"8",
+"9"
+]
+
+find {baz: [~="fox" || ~="brown"] && baz: [!="fox"]}
+return ._id ;
+[
+"8",
+"9"
+]
+
+# not a field that doesn't exist.
+find {baz: [~="fox" || ~="brown"] && missing: ![~="fox"]}
+return ._id ;
+[
+"7",
+"8",
+"9"
+]
+
+find {baz: [[~="brown"]] || baz: [[!~="fox"]]}
+return ._id ;
+[
+"1",
+"2",
+"3",
+"4",
+"5",
+"6",
+"7",
+"8",
+"9",
+"10",
+"11"
+]
+
+find {baz: [[~="brown"]] && baz: [[!~="fox"]]}
+return ._id ;
+[
+"10",
+"11"
+]
+
+find {_id: == "12" && baz: [[!="fox"]]}
+return ._id ;
+[]
 
 # Test for unallowable expressions
 

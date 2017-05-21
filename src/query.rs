@@ -138,6 +138,16 @@ impl DocResult {
             }
         }
     }
+
+    pub fn last_segment_array_index(&self) -> Option<&u64> {
+        self.arraypath.last()
+    }
+
+    pub fn increment_first(&mut self, array_depth: usize) {
+        self.seq += 1;
+        self.arraypath.clear();
+        self.arraypath.resize(array_depth, 0);
+    }
 }
 
 impl PartialEq for DocResult {

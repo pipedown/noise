@@ -890,17 +890,67 @@ impl<'a> QueryRuntimeFilter for OrFilter<'a> {
 
 
 pub struct NotFilter<'a> {
+    iter: DBIterator,
     filter: Box<QueryRuntimeFilter + 'a>,
     last_doc_returned: Option<DocResult>,
-    array_depth: usize,
+    kb: KeyBuilder,
 }
 
 impl<'a> NotFilter<'a> {
-    pub fn new(filter: Box<QueryRuntimeFilter + 'a>, array_depth: usize) -> NotFilter {
+    pub fn new(snapshot: &Snapshot,
+               filter: Box<QueryRuntimeFilter + 'a>,
+               kb: KeyBuilder)
+               -> NotFilter<'a> {
         NotFilter {
+            iter: snapshot.new_iterator(),
             filter: filter,
             last_doc_returned: Some(DocResult::new()),
-            array_depth: array_depth,
+            kb: kb,
+        }
+    }
+
+    fn is_a_not_match(&mut self, dr: &DocResult) -> bool {
+        let ret = match dr.last_segment_array_index() {
+            Some(&0) => {
+                // if we got a (not) match on the first array element, it's always a match
+                // but only if the document actually exists.
+                true
+            } 
+            Some(_) => {
+                // if we got a (not) match on any other element, check to make sure the key exists.
+                // if not, it means other elements did a regular match and skipped them, then we
+                // ran off the end of the array.
+                let value_key = self.kb.value_key_from_doc_result(&dr);
+                self.iter
+                    .set_mode(IteratorMode::From(value_key.as_bytes(),
+                                                 rocksdb::Direction::Forward));
+                if let Some((key, _value)) = self.iter.next() {
+                    let key_str = unsafe { str::from_utf8_unchecked(&key) };
+                    KeyBuilder::is_keypath_prefix(&value_key, &key_str)
+                } else {
+                    false
+                }
+            }
+            None => {
+                //not an array. always a (not) match.
+                true
+            }
+        };
+        if ret {
+            // make sure we actually have a document. It's possible we matched a non-existent seq.
+            let mut kb = KeyBuilder::new();
+            kb.push_object_key("_id");
+            let value_key = kb.value_key_from_doc_result(dr);
+            self.iter
+                .set_mode(IteratorMode::From(value_key.as_bytes(), rocksdb::Direction::Forward));
+            if let Some((key, _value)) = self.iter.next() {
+                let key_str = unsafe { str::from_utf8_unchecked(&key) };
+                value_key == key_str
+            } else {
+                false
+            }
+        } else {
+            false
         }
     }
 }
@@ -908,26 +958,34 @@ impl<'a> NotFilter<'a> {
 impl<'a> QueryRuntimeFilter for NotFilter<'a> {
     fn first_result(&mut self, start: &DocResult) -> Option<DocResult> {
         let mut start = start.clone_only_seq_and_arraypath();
+        start.arraypath.resize(self.kb.arraypath_len(), 0);
         while let Some(dr) = self.filter.first_result(&start) {
-            if start.less(&dr, self.array_depth) {
-                self.last_doc_returned = Some(start.clone_only_seq_and_arraypath());
-                return Some(start.clone_only_seq_and_arraypath());
+            if start.less(&dr, self.kb.arraypath_len()) {
+                if self.is_a_not_match(&start) {
+                    self.last_doc_returned = Some(start.clone_only_seq_and_arraypath());
+                    return Some(start.clone_only_seq_and_arraypath());
+                } else {
+                    start.increment_first(self.kb.arraypath_len());
+                }
+            } else {
+                start.increment_last(self.kb.arraypath_len());
             }
-            start.increment_last(self.array_depth);
         }
         self.last_doc_returned = None;
-        Some(start)
+        if self.is_a_not_match(&start) {
+            Some(start)
+        } else {
+            None
+        }
     }
 
     fn next_result(&mut self) -> Option<DocResult> {
-        let next = if let Some(ref last_doc_returned) = self.last_doc_returned {
-            let mut next = last_doc_returned.clone_only_seq_and_arraypath();
-            next.increment_last(self.array_depth);
-            next
+        if let Some(mut next) = self.last_doc_returned.take() {
+            next.increment_last(self.kb.arraypath_len());
+            self.first_result(&next)
         } else {
-            return None;
-        };
-        self.first_result(&next)
+            None
+        }
     }
 
     fn prepare_relevancy_scoring(&mut self, _qsi: &mut QueryScoringInfo) {
