@@ -158,9 +158,12 @@ impl<'a, 'c> Parser<'a, 'c> {
         }
     }
 
-    fn consume_aggregate
-        (&mut self)
-         -> Result<Option<(AggregateFun, Option<String>, ReturnPath, JsonValue)>, Error> {
+    fn consume_aggregate(&mut self)
+                         -> Result<Option<(AggregateFun,
+                                           Option<String>, /*optional bind var name*/
+                                           ReturnPath,
+                                           JsonValue)>,
+                                   Error> {
         let offset = self.offset;
         let mut aggregate_fun = if self.consume("group") {
             AggregateFun::GroupAsc
@@ -564,7 +567,8 @@ impl<'a, 'c> Parser<'a, 'c> {
 
     fn not_object<'b>(&'b mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
         if self.consume("!") {
-            Ok(Box::new(NotFilter::new(try!(self.object()), self.kb.arraypath_len())))
+            let filter = try!(self.object());
+            Ok(Box::new(NotFilter::new(&self.snapshot, filter, self.kb.clone())))
         } else {
             self.object()
         }
@@ -597,7 +601,8 @@ impl<'a, 'c> Parser<'a, 'c> {
 
     fn parens<'b>(&'b mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
         if self.consume("!") {
-            return Ok(Box::new(NotFilter::new(try!(self.parens()), self.kb.arraypath_len())));
+            let filter = try!(self.parens());
+            return Ok(Box::new(NotFilter::new(&self.snapshot, filter, self.kb.clone())));
         }
         try!(self.must_consume("("));
         let filter = try!(self.object());
@@ -645,7 +650,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         let offset = self.offset;
         if self.consume("!") {
             if let Some(f) = try!(self.oparens()) {
-                return Ok(Some(Box::new(NotFilter::new(f, self.kb.arraypath_len()))));
+                return Ok(Some(Box::new(NotFilter::new(&self.snapshot, f, self.kb.clone()))));
             } else {
                 self.offset = offset;
                 return Ok(None);
@@ -675,10 +680,28 @@ impl<'a, 'c> Parser<'a, 'c> {
     }
 
     fn compare<'b>(&'b mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
-        if self.consume("!") {
-            return Ok(Box::new(NotFilter::new(try!(self.compare()), self.kb.arraypath_len())));
+        if let Some(filter) = try!(self.equal()) {
+            Ok(filter)
+        } else if let Some(filter) = try!(self.stemmed()) {
+            Ok(filter)
+        } else {
+            if self.consume(">") {
+                let min = try!(self.consume_range_operator());
+                let filter = RangeFilter::new(&self.snapshot, self.kb.clone(), Some(min), None);
+                Ok(Box::new(filter))
+            } else if self.consume("<") {
+                let max = try!(self.consume_range_operator());
+                let filter = RangeFilter::new(&self.snapshot, self.kb.clone(), None, Some(max));
+                Ok(Box::new(filter))
+            } else {
+                Err(Error::Parse("Expected comparison operator".to_string()))
+            }
         }
-        if self.consume("==") {
+    }
+
+    fn equal<'b>(&'b mut self) -> Result<Option<Box<QueryRuntimeFilter + 'a>>, Error> {
+        let not_equal = self.consume("!=");
+        if not_equal || self.consume("==") {
             let json = try!(self.must_consume_json_primitive());
             let boost = try!(self.consume_boost());
             let filter: Box<QueryRuntimeFilter> = match json {
@@ -726,21 +749,32 @@ impl<'a, 'c> Parser<'a, 'c> {
                 }
                 _ => panic!("Exact match on other JSON types is not yet implemented!"),
             };
-            Ok(filter)
-        } else if self.consume("~=") {
+            if not_equal {
+                Ok(Some(Box::new(NotFilter::new(&self.snapshot, filter, self.kb.clone()))))
+            } else {
+                Ok(Some(filter))
+            }
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn stemmed<'b>(&'b mut self) -> Result<Option<Box<QueryRuntimeFilter + 'a>>, Error> {
+        let not_stemmed = self.consume("!~=");
+        if not_stemmed || self.consume("~=") {
             // regular search
             let literal = try!(self.must_consume_string_literal());
             let boost = try!(self.consume_boost());
             let stems = Stems::new(&literal);
             let stemmed_words: Vec<String> = stems.map(|stem| stem.stemmed).collect();
 
-            match stemmed_words.len() {
+            let filter: Box<QueryRuntimeFilter> = match stemmed_words.len() {
                 0 => panic!("Cannot create a StemmedWordFilter"),
                 1 => {
-                    Ok(Box::new(StemmedWordFilter::new(&self.snapshot,
-                                                       &stemmed_words[0],
-                                                       &self.kb,
-                                                       boost)))
+                    Box::new(StemmedWordFilter::new(&self.snapshot,
+                                                    &stemmed_words[0],
+                                                    &self.kb,
+                                                    boost))
                 }
                 _ => {
                     let mut filters: Vec<StemmedWordPosFilter> = Vec::new();
@@ -751,10 +785,15 @@ impl<'a, 'c> Parser<'a, 'c> {
                                                                boost);
                         filters.push(filter);
                     }
-                    Ok(Box::new(StemmedPhraseFilter::new(filters)))
+                    Box::new(StemmedPhraseFilter::new(filters))
                 }
+            };
+            if not_stemmed {
+                Ok(Some(Box::new(NotFilter::new(&self.snapshot, filter, self.kb.clone()))))
+            } else {
+                Ok(Some(filter))
             }
-        } else if self.consume("~") {
+        } else if not_stemmed || self.consume("~") {
             let word_distance = match try!(self.consume_integer()) {
                 Some(int) => int,
                 None => {
@@ -777,18 +816,17 @@ impl<'a, 'c> Parser<'a, 'c> {
             }
             match filters.len() {
                 0 => panic!("Cannot create a DistanceFilter"),
-                _ => Ok(Box::new(DistanceFilter::new(filters, word_distance as u32))),
+                _ => {
+                    let filter = Box::new(DistanceFilter::new(filters, word_distance as u32));
+                    if not_stemmed {
+                        Ok(Some(Box::new(NotFilter::new(&self.snapshot, filter, self.kb.clone()))))
+                    } else {
+                        Ok(Some(filter))
+                    }
+                }
             }
-        } else if self.consume(">") {
-            let min = try!(self.consume_range_operator());
-            let filter = RangeFilter::new(&self.snapshot, self.kb.clone(), Some(min), None);
-            Ok(Box::new(filter))
-        } else if self.consume("<") {
-            let max = try!(self.consume_range_operator());
-            let filter = RangeFilter::new(&self.snapshot, self.kb.clone(), None, Some(max));
-            Ok(Box::new(filter))
         } else {
-            Err(Error::Parse("Expected comparison operator".to_string()))
+            Ok(None)
         }
     }
 
@@ -820,7 +858,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         let offset = self.offset;
         if self.consume("!") {
             if let Some(f) = try!(self.aparens()) {
-                return Ok(Some(Box::new(NotFilter::new(f, self.kb.arraypath_len()))));
+                return Ok(Some(Box::new(NotFilter::new(&self.snapshot, f, self.kb.clone()))));
             } else {
                 self.offset = offset;
                 return Ok(None);

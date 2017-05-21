@@ -125,7 +125,7 @@ Use the `!` (logical NOT) to exclude matching criteria.
 Find docs where `foo` has value `"bar"` and `fab` does not have value `"baz"`:
 
 ```
-find {foo: == "bar", fab: !== "baz"}
+find {foo: == "bar", fab: != "baz"}
 ```
 
 You can use logical not with parentheses to negate everything enclosed. This example finds docs where `foo` has value `"bar"` and `fab` does not have value `"baz"` or `"biz"`':
