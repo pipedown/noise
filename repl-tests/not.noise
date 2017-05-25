@@ -4,29 +4,29 @@ drop target/tests/querytestnot;
 create target/tests/querytestnot;
 
 
-add {"_id":"1", "bar": "fox"};
+add {"_id":"1", "alwaystrue": true, "bar": "fox"};
 "1"
-add {"_id":"2", "bar": "quick fox"};
+add {"_id":"2", "alwaystrue": true, "bar": "quick fox"};
 "2"
-add {"_id":"3", "bar": "quick brown fox"};
+add {"_id":"3", "alwaystrue": true, "bar": "quick brown fox"};
 "3"
-add {"_id":"4", "bar": ["fox"]};
+add {"_id":"4", "alwaystrue": true, "bar": ["fox"]};
 "4"
-add {"_id":"5", "bar": ["quick fox"]};
+add {"_id":"5", "alwaystrue": true, "bar": ["quick fox"]};
 "5"
-add {"_id":"6", "bar": ["quick brown fox"]};
+add {"_id":"6", "alwaystrue": true, "bar": ["quick brown fox"]};
 "6"
-add {"_id":"7", "baz": ["fox"]};
+add {"_id":"7", "alwaystrue": true, "baz": ["fox"]};
 "7"
-add {"_id":"8", "baz": ["quick","fox"]};
+add {"_id":"8", "alwaystrue": true, "baz": ["quick","fox"]};
 "8"
-add {"_id":"9", "baz": ["quick","brown","fox"]};
+add {"_id":"9", "alwaystrue": true, "baz": ["quick","brown","fox"]};
 "9"
-add {"_id":"10", "baz": [["quick"],["brown"],["fox"]]};
+add {"_id":"10", "alwaystrue": true, "baz": [["quick"],["brown"],["fox"]]};
 "10"
-add {"_id":"11", "baz": [["brown"],["fox"]]};
+add {"_id":"11", "alwaystrue": true, "baz": [["brown"],["fox"]]};
 "11"
-add {"_id":"12", "baz": [["fox"]]};
+add {"_id":"12", "alwaystrue": true, "baz": [["fox"]]};
 "12"
 
 find {(bar: ~="fox" || bar: ~="brown") && (bar: !~="quick")}
@@ -143,6 +143,10 @@ find !{baz: [~="fox"]}
 return ._id ;
 Parse error: query cannot be made up of only logical not. Must have at least one match clause not negated.
 
+find {!(bar: ~="quick" || bar: [~="quick"] || baz: [~="quick"] || baz: [[~="quick"]])}
+return ._id ;
+Parse error: query cannot be made up of only logical not. Must have at least one match clause not negated.
+
 find !{baz: ~="fox"} && !{baz: =="foo"}
 return ._id ;
 Parse error: Logical not ("!") is nested inside of another logical not. This is not allowed.
@@ -150,3 +154,15 @@ Parse error: Logical not ("!") is nested inside of another logical not. This is 
 find {foo: =="bar"} && !{baz: !~="fox"}
 return ._id ;
 Parse error: Logical not ("!") is nested inside of another logical not. This is not allowed.
+
+# Workaround for unallowable expressions
+
+find {!(bar: ~="quick" || bar: [~="quick"] || baz: [~="quick"] || baz: [[~="quick"]]), alwaystrue: == true}
+return ._id ;
+[
+"1",
+"4",
+"7",
+"11",
+"12"
+]
