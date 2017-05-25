@@ -69,7 +69,7 @@ find {A: > 3}
 order .A
 limit 1;
 [
-"3"
+"4"
 ]
 
 # "limit" tests with return
