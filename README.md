@@ -12,9 +12,9 @@ nature of JSON, and will allow:
  * Stemmed word/fuzzy match
  * Case sensitive exact word and sentence match
  * Arbitrary boolean nesting
- * Greater than/less Than matching
+ * Greater than/less than matching
  
-[Query Langauge Reference here](https://github.com/pipedown/noise/blob/master/query_language_reference.md)
+[Query Language Reference here](https://github.com/pipedown/noise/blob/master/query_language_reference.md)
 
 
 Installation
