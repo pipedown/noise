@@ -17,7 +17,7 @@ pub use rocksdb::WriteBatch;
 
 use error::Error;
 use json_shred::Shredder;
-use key_builder::KeyBuilder;
+use key_builder::{self, KeyBuilder};
 use snapshot::Snapshot;
 
 const NOISE_HEADER_VERSION: u64 = 1;
@@ -181,7 +181,7 @@ impl Index {
         if let Some(seq) = try!(self.fetch_seq(&docid)) {
             // collect up all the fields for the existing doc
             let kb = KeyBuilder::new();
-            let value_key = kb.value_key(seq);
+            let value_key = kb.kp_value_key(seq);
             let mut key_values = BTreeMap::new();
 
             let mut iter = self.rocks
@@ -299,7 +299,11 @@ impl Index {
     }
 
     fn compare_keys(a: &[u8], b: &[u8]) -> Ordering {
-        let value_prefixes = ['W', 'f', 'T', 'F', 'N'];
+        let value_prefixes = [key_builder::KEY_PREFIX_WORD,
+                              key_builder::KEY_PREFIX_NUMBER,
+                              key_builder::KEY_PREFIX_TRUE,
+                              key_builder::KEY_PREFIX_FALSE,
+                              key_builder::KEY_PREFIX_NULL];
         if value_prefixes.contains(&(a[0] as char)) && value_prefixes.contains(&(b[0] as char)) {
             let astr = unsafe { str::from_utf8_unchecked(&a) };
             let bstr = unsafe { str::from_utf8_unchecked(&b) };
@@ -313,7 +317,8 @@ impl Index {
                  existing_val: Option<&[u8]>,
                  operands: &mut MergeOperands)
                  -> Vec<u8> {
-        if !(new_key[0] as char == 'C' || new_key[0] as char == 'K') {
+        if !(new_key[0] as char == key_builder::KEY_PREFIX_FIELD_COUNT ||
+             new_key[0] as char == key_builder::KEY_PREFIX_WORD_COUNT) {
             panic!("unknown key type to merge!");
         }
 
