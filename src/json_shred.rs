@@ -117,28 +117,28 @@ impl Shredder {
         }
 
         for (stemmed, (word_positions, count)) in word_to_word_positions {
-            let key = kb.stemmed_word_key(&stemmed, docseq);
+            let key = kb.kp_word_key(&stemmed, docseq);
             if delete {
                 try!(batch.delete(&key.into_bytes()));
             } else {
                 try!(batch.put(&key.into_bytes(), &word_positions.into_inner()));
             }
 
-            let key = kb.field_length_key(docseq);
+            let key = kb.kp_field_length_key(docseq);
             if delete {
                 try!(batch.delete(&key.into_bytes()));
             } else {
                 try!(batch.put(&key.into_bytes(), &Index::convert_i32_to_bytes(total_words)));
             }
 
-            let key = kb.keypathword_count_key(&stemmed);
+            let key = kb.kp_word_count_key(&stemmed);
             if delete {
                 try!(batch.merge(&key.into_bytes(), &Index::convert_i32_to_bytes(-count)));
             } else {
                 try!(batch.merge(&key.into_bytes(), &Index::convert_i32_to_bytes(count)));
             }
 
-            let key = kb.keypath_count_key();
+            let key = kb.kp_field_count_key();
             try!(batch.merge(&key.into_bytes(), one_enc_bytes.get_ref()));
         }
 
@@ -146,7 +146,7 @@ impl Shredder {
     }
 
     fn add_value(&mut self, code: char, value: &[u8]) -> Result<(), Error> {
-        let key = self.kb.value_key_path_only();
+        let key = self.kb.kp_value_no_seq();
         let mut buffer = Vec::with_capacity(value.len() + 1);
         buffer.push(code as u8);
         try!((&mut buffer as &mut Write).write_all(value));
@@ -161,7 +161,7 @@ impl Shredder {
                        -> Result<(), Error> {
         match self.extract_key(parser.stack().top()) {
             ObjectKeyTypes::Id => {
-                if code != 's' && self.kb.keypath_segments_len() == 1 {
+                if code != 's' && self.kb.kp_segments_len() == 1 {
                     //nested fields can be _id, not root fields
                     return Err(Error::Shred("Expected string for `_id` field, got another type"
                                                 .to_string()));
@@ -182,7 +182,7 @@ impl Shredder {
             }
             ObjectKeyTypes::NoKey => {
                 try!(self.add_value(code, &value));
-                self.kb.inc_top_array_offset();
+                self.kb.inc_top_array_index();
             }
         }
         Ok(())
@@ -192,7 +192,7 @@ impl Shredder {
     fn extract_key(&mut self, stack_element: Option<StackElement>) -> ObjectKeyTypes {
         match stack_element {
             Some(StackElement::Key(key)) => {
-                if self.kb.keypath_segments_len() == 1 && key == "_id" {
+                if self.kb.kp_segments_len() == 1 && key == "_id" {
                     ObjectKeyTypes::Id
                 } else {
                     ObjectKeyTypes::Key(key.to_string())
@@ -206,7 +206,7 @@ impl Shredder {
     // Don't push them if they are reserved fields (starting with underscore)
     fn maybe_push_key(&mut self, stack_element: Option<StackElement>) -> Result<(), Error> {
         if let Some(StackElement::Key(key)) = stack_element {
-            if self.kb.keypath_segments_len() == 1 && key == "_id" {
+            if self.kb.kp_segments_len() == 1 && key == "_id" {
                 return Err(Error::Shred("Expected string for `_id` field, got another type"
                                             .to_string()));
             } else {
@@ -227,7 +227,7 @@ impl Shredder {
         for (key, value) in &self.existing_key_value_to_delete {
             self.kb.clear();
             self.kb
-                .parse_value_key_path_only(KeyBuilder::value_key_path_only_from_str(&key));
+                .parse_kp_value_no_seq(KeyBuilder::kp_value_no_seq_from_str(&key));
             match value[0] as char {
                 's' => {
                     let text = unsafe { str::from_utf8_unchecked(&value[1..]) };
@@ -251,7 +251,7 @@ impl Shredder {
 
         for (key, value) in &self.shredded_key_values {
             self.kb.clear();
-            self.kb.parse_value_key_path_only(&key);
+            self.kb.parse_kp_value_no_seq(&key);
             match value[0] as char {
                 's' => {
                     let text = unsafe { str::from_utf8_unchecked(&value[1..]) };
@@ -269,7 +269,7 @@ impl Shredder {
                 }
                 _ => {}
             }
-            let key = self.kb.value_key(seq);
+            let key = self.kb.kp_value_key(seq);
             try!(batch.put(&key.as_bytes(), &value.as_ref()));
         }
         self.shredded_key_values = BTreeMap::new();
@@ -293,7 +293,7 @@ impl Shredder {
         for (key, value) in existing.into_iter() {
             self.kb.clear();
             self.kb
-                .parse_value_key_path_only(KeyBuilder::value_key_path_only_from_str(&key));
+                .parse_kp_value_no_seq(KeyBuilder::kp_value_no_seq_from_str(&key));
             match value[0] as char {
                 's' => {
                     let text = unsafe { str::from_utf8_unchecked(&value[1..]) };
@@ -327,7 +327,7 @@ impl Shredder {
         // and don't even need to reindex.
         for (existing_key, existing_value) in existing {
             let matches = {
-                let key = KeyBuilder::value_key_path_only_from_str(&existing_key);
+                let key = KeyBuilder::kp_value_no_seq_from_str(&existing_key);
                 if let Some(new_value) = self.shredded_key_values.get(key) {
                     *new_value == existing_value
                 } else {
@@ -336,7 +336,7 @@ impl Shredder {
             };
             if matches {
                 // we don't need to write or index these values, they already exist!
-                let key = KeyBuilder::value_key_path_only_from_str(&existing_key);
+                let key = KeyBuilder::kp_value_no_seq_from_str(&existing_key);
                 self.shredded_key_values.remove(key).unwrap();
             } else {
                 // we need to delete these keys and the index keys assocaited with the valuess
@@ -368,21 +368,21 @@ impl Shredder {
                 }
                 Some(JsonEvent::ObjectEnd) => {
                     self.kb.pop_object_key();
-                    if self.kb.keypath_segments_len() > 0 &&
+                    if self.kb.kp_segments_len() > 0 &&
                        !self.object_keys_indexed.pop().unwrap() {
                         // this means we never wrote a key because the object was empty.
                         // So preserve the empty object by writing a special value.
                         // but not for the root object. it will always have _id field added.
                         try!(self.maybe_add_value(&parser, 'o', &[]));
                     }
-                    self.kb.inc_top_array_offset();
+                    self.kb.inc_top_array_index();
                 }
                 Some(JsonEvent::ArrayStart) => {
                     try!(self.maybe_push_key(parser.stack().top()));
                     self.kb.push_array();
                 }
                 Some(JsonEvent::ArrayEnd) => {
-                    if self.kb.peek_array_offset() == 0 {
+                    if self.kb.peek_array_index() == 0 {
                         // this means we never wrote a value because the object was empty.
                         // So preserve the empty array by writing a special value.
                         self.kb.pop_array();
@@ -390,7 +390,7 @@ impl Shredder {
                     } else {
                         self.kb.pop_array();
                     }
-                    self.kb.inc_top_array_offset();
+                    self.kb.inc_top_array_index();
                 }
                 Some(JsonEvent::StringValue(value)) => {
                     try!(self.maybe_add_value(&parser, 's', &value.as_bytes()));

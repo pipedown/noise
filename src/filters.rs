@@ -308,7 +308,7 @@ impl ExactMatchFilter {
 
     fn check_exact(&mut self, mut dr: DocResult) -> Option<DocResult> {
         loop {
-            let value_key = self.kb.value_key_from_doc_result(&dr);
+            let value_key = self.kb.kp_value_key_from_doc_result(&dr);
 
             self.iter
                 .set_mode(IteratorMode::From(value_key.as_bytes(), rocksdb::Direction::Forward));
@@ -421,7 +421,7 @@ impl QueryRuntimeFilter for RangeFilter {
         // `DocResultIterator` in `snapshot.rs`. It should probablly be unified.
         self.iter
             .set_mode(IteratorMode::From(value_key.as_bytes(), rocksdb::Direction::Forward));
-        KeyBuilder::truncate_to_keypathword(&mut value_key);
+        KeyBuilder::truncate_to_kp_word(&mut value_key);
         self.keypath = value_key;
         self.next_result()
     }
@@ -438,7 +438,7 @@ impl QueryRuntimeFilter for RangeFilter {
             // The key already matched, hence it's a valid doc result. Return it.
             if self.min == Some(RangeOperator::True) || self.min == Some(RangeOperator::False) ||
                self.min == Some(RangeOperator::Null) {
-                let mut dr = KeyBuilder::parse_doc_result_from_key(&key_str);
+                let mut dr = KeyBuilder::parse_doc_result_from_kp_word_key(&key_str);
                 if self.term_ordinal.is_some() {
                     dr.add_score(self.term_ordinal.unwrap(), 1.0);
                 }
@@ -467,7 +467,7 @@ impl QueryRuntimeFilter for RangeFilter {
             };
 
             if min_condition && max_condition {
-                let mut dr = KeyBuilder::parse_doc_result_from_key(&key_str);
+                let mut dr = KeyBuilder::parse_doc_result_from_kp_word_key(&key_str);
                 if self.term_ordinal.is_some() {
                     dr.add_score(self.term_ordinal.unwrap(), 1.0);
                 }
@@ -920,13 +920,13 @@ impl<'a> NotFilter<'a> {
                 // if we got a (not) match on any other element, check to make sure the key exists.
                 // if not, it means other elements did a regular match and skipped them, then we
                 // ran off the end of the array.
-                let value_key = self.kb.value_key_from_doc_result(&dr);
+                let value_key = self.kb.kp_value_key_from_doc_result(&dr);
                 self.iter
                     .set_mode(IteratorMode::From(value_key.as_bytes(),
                                                  rocksdb::Direction::Forward));
                 if let Some((key, _value)) = self.iter.next() {
                     let key_str = unsafe { str::from_utf8_unchecked(&key) };
-                    KeyBuilder::is_keypath_prefix(&value_key, &key_str)
+                    KeyBuilder::is_kp_value_key_prefix(&value_key, &key_str)
                 } else {
                     false
                 }
@@ -940,7 +940,7 @@ impl<'a> NotFilter<'a> {
             // make sure we actually have a document. It's possible we matched a non-existent seq.
             let mut kb = KeyBuilder::new();
             kb.push_object_key("_id");
-            let value_key = kb.value_key_from_doc_result(dr);
+            let value_key = kb.kp_value_key_from_doc_result(dr);
             self.iter
                 .set_mode(IteratorMode::From(value_key.as_bytes(), rocksdb::Direction::Forward));
             if let Some((key, _value)) = self.iter.next() {
@@ -1030,12 +1030,12 @@ impl<'a> BindFilter<'a> {
     }
 
     fn collect_results(&mut self, mut first: DocResult) -> Option<DocResult> {
-        let value_key = self.kb.value_key_from_doc_result(&first);
+        let value_key = self.kb.kp_value_key_from_doc_result(&first);
         first.add_bind_name_result(&self.bind_var_name, value_key);
 
         while let Some(next) = self.filter.next_result() {
             if next.seq == first.seq {
-                let value_key = self.kb.value_key_from_doc_result(&next);
+                let value_key = self.kb.kp_value_key_from_doc_result(&next);
                 first.add_bind_name_result(&self.bind_var_name, value_key);
             } else {
                 self.option_next = Some(next);

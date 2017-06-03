@@ -4,6 +4,34 @@ use query::DocResult;
 use std::str;
 use std::cmp::Ordering;
 
+
+/// For index header. This constant isn't actually used in the code, but provided here for
+/// completeness.
+pub const _KEY_PREFIX_HEADER: char = 'H';
+/// for looking up words in fields.
+pub const KEY_PREFIX_WORD: char = 'W';
+/// for getting the total count of a word in the index. Used for relevancy scoring.
+pub const KEY_PREFIX_WORD_COUNT: char = 'C';
+/// for getting the total number of field instances in the index. Used for relevancy scoring.
+pub const KEY_PREFIX_FIELD_COUNT: char = 'K';
+/// for specific field length. Used for relevancy scoring
+pub const KEY_PREFIX_FIELD_LENGTH: char = 'L';
+/// for getting the doc seq from it's id.
+pub const KEY_PREFIX_ID_TO_SEQ: char = 'I';
+/// for getting/scanning the all the seqs
+pub const KEY_PREFIX_SEQ: char = 'S';
+/// number values index
+pub const KEY_PREFIX_NUMBER: char = 'f';
+/// for true values index
+pub const KEY_PREFIX_TRUE: char = 'T';
+/// for false value index
+pub const KEY_PREFIX_FALSE: char = 'F';
+/// for null values index
+pub const KEY_PREFIX_NULL: char = 'N';
+/// for orignal doc values for retrieving results
+pub const KEY_PREFIX_VALUE: char = 'V';
+
+
 pub enum Segment {
     ObjectKey(String),
     Array(u64),
@@ -29,9 +57,19 @@ impl KeyBuilder {
         self.arraypath.clear();
     }
 
-    pub fn get_keypathword_only(&self, word: &str) -> String {
+    /// Builds a stemmed word key for the input word and seq, using the key_path and arraypath
+    /// built up internally.
+    pub fn kp_word_key(&self, word: &str, seq: u64) -> String {
+        let mut string = self.get_kp_word_only(&word);
+        string.push_str(seq.to_string().as_str());
+
+        KeyBuilder::add_arraypath(&mut string, &self.arraypath);
+        string
+    }
+
+    pub fn get_kp_word_only(&self, word: &str) -> String {
         let mut string = String::with_capacity(100);
-        string.push('W');
+        string.push(KEY_PREFIX_WORD);
         for segment in &self.keypath {
             string.push_str(&segment);
         }
@@ -41,9 +79,9 @@ impl KeyBuilder {
         string
     }
 
-    pub fn keypathword_count_key(&self, word: &str) -> String {
+    pub fn kp_word_count_key(&self, word: &str) -> String {
         let mut string = String::with_capacity(100);
-        string.push('C');
+        string.push(KEY_PREFIX_WORD_COUNT);
         for segment in &self.keypath {
             string.push_str(&segment);
         }
@@ -52,9 +90,9 @@ impl KeyBuilder {
         string
     }
 
-    pub fn keypath_count_key(&self) -> String {
+    pub fn kp_field_count_key(&self) -> String {
         let mut string = String::with_capacity(100);
-        string.push('K');
+        string.push(KEY_PREFIX_FIELD_COUNT);
         for segment in &self.keypath {
             string.push_str(&segment);
         }
@@ -63,7 +101,7 @@ impl KeyBuilder {
 
     pub fn id_to_seq_key(id: &str) -> String {
         let mut str = String::with_capacity(id.len() + 1);
-        str.push('I');
+        str.push(KEY_PREFIX_ID_TO_SEQ);
         str.push_str(&id);
         str
     }
@@ -71,7 +109,7 @@ impl KeyBuilder {
     pub fn seq_key(seq: u64) -> String {
         let seq = seq.to_string();
         let mut str = String::with_capacity(seq.len() + 1);
-        str.push('S');
+        str.push(KEY_PREFIX_SEQ);
         str.push_str(&seq);
         str
     }
@@ -87,7 +125,7 @@ impl KeyBuilder {
     /// Build the index key that corresponds to a number primitive
     pub fn number_key(&self, seq: u64) -> String {
         let mut string = String::with_capacity(100);
-        string.push('f');
+        string.push(KEY_PREFIX_NUMBER);
         for segment in &self.keypath {
             string.push_str(&segment);
         }
@@ -98,7 +136,7 @@ impl KeyBuilder {
         string
     }
 
-    /// Build the index key that corresponds to a true, false or nulla primitive
+    /// Build the index key that corresponds to a true, false or null primitive
     pub fn bool_null_key(&self, prefix: char, seq: u64) -> String {
         let mut string = String::with_capacity(100);
         string.push(prefix);
@@ -112,22 +150,11 @@ impl KeyBuilder {
         string
     }
 
-
-    /// Builds a stemmed word key for the input word and seq, using the key_path and arraypath
-    /// built up internally.
-    pub fn stemmed_word_key(&self, word: &str, seq: u64) -> String {
-        let mut string = self.get_keypathword_only(&word);
-        string.push_str(seq.to_string().as_str());
-
-        KeyBuilder::add_arraypath(&mut string, &self.arraypath);
-        string
-    }
-
     /// Builds a field length key for the seq, using the key_path and arraypath
     /// built up internally.
-    pub fn field_length_key(&self, seq: u64) -> String {
+    pub fn kp_field_length_key(&self, seq: u64) -> String {
         let mut string = String::with_capacity(100);
-        string.push('L');
+        string.push(KEY_PREFIX_FIELD_LENGTH);
         for segment in &self.keypath {
             string.push_str(&segment);
         }
@@ -140,9 +167,9 @@ impl KeyBuilder {
 
     /// Builds a field length key for the DocResult, using the key_path
     /// built up internally and the arraypath from the DocResult.
-    pub fn field_length_key_from_doc_result(&self, dr: &DocResult) -> String {
+    pub fn kp_field_length_key_from_doc_result(&self, dr: &DocResult) -> String {
         let mut string = String::with_capacity(100);
-        string.push('L');
+        string.push(KEY_PREFIX_FIELD_LENGTH);
         for segment in &self.keypath {
             string.push_str(&segment);
         }
@@ -153,17 +180,14 @@ impl KeyBuilder {
         string
     }
 
-    /// Adds DocResult seq and array path an already created keypathword.
-    pub fn add_doc_result_to_keypathword(keypathword: &mut String, dr: &DocResult) {
+    /// Adds DocResult seq and array path an already created kp_word.
+    pub fn add_doc_result_to_kp_word(keypathword: &mut String, dr: &DocResult) {
         keypathword.push_str(dr.seq.to_string().as_str());
         KeyBuilder::add_arraypath(keypathword, &dr.arraypath);
     }
 
-    // NOTE vmx 2017-04-13: I find `keypathword` not really descriptive. I would call the
-    // path without the Internal Id simply "keypath" and the one with and Internal Id
-    // "keypath_iid".
     /// Truncates key to keypath only
-    pub fn truncate_to_keypathword(stemmed_word_key: &mut String) {
+    pub fn truncate_to_kp_word(stemmed_word_key: &mut String) {
         let n = stemmed_word_key.rfind("#").unwrap();
         stemmed_word_key.truncate(n + 1);
     }
@@ -171,9 +195,9 @@ impl KeyBuilder {
 
     /// Builds a value key for seq (value keys are the original json terminal value with
     /// keyed on keypath and arraypath built up internally).
-    pub fn value_key(&self, seq: u64) -> String {
+    pub fn kp_value_key(&self, seq: u64) -> String {
         let mut string = String::with_capacity(100);
-        string.push('V');
+        string.push(KEY_PREFIX_VALUE);
         string.push_str(&seq.to_string());
         string.push('#');
         let mut i = 0;
@@ -188,7 +212,7 @@ impl KeyBuilder {
     }
 
     /// Returns a value key without the doc seq prepended.
-    pub fn value_key_path_only(&self) -> String {
+    pub fn kp_value_no_seq(&self) -> String {
         let mut string = String::with_capacity(100);
         let mut i = 0;
         for segment in &self.keypath {
@@ -202,13 +226,13 @@ impl KeyBuilder {
     }
 
     /// Returns a value key without the doc seq prepended.
-    pub fn value_key_path_only_from_str(str: &str) -> &str {
+    pub fn kp_value_no_seq_from_str(str: &str) -> &str {
         &str[str.find('#').unwrap() + 1..]
     }
 
-    /// parses a value_key_path_only and sets the internally elements appropriately
-    pub fn parse_value_key_path_only(&mut self, mut str: &str) {
-        while let Some(tuple) = KeyBuilder::parse_first_key_value_segment(str) {
+    /// parses a kp_value_key and sets the internally elements appropriately
+    pub fn parse_kp_value_no_seq(&mut self, mut str: &str) {
+        while let Some(tuple) = KeyBuilder::parse_first_kp_value_segment(str) {
             match tuple {
                 (Segment::ObjectKey(_key), unescaped) => {
                     str = &str[unescaped.len()..];
@@ -223,9 +247,10 @@ impl KeyBuilder {
         }
     }
 
-    pub fn value_key_from_doc_result(&self, dr: &DocResult) -> String {
+    /// Build a key to a value from a DocResult
+    pub fn kp_value_key_from_doc_result(&self, dr: &DocResult) -> String {
         let mut string = String::with_capacity(100);
-        string.push('V');
+        string.push(KEY_PREFIX_VALUE);
         string.push_str(&dr.seq.to_string());
         string.push('#');
         let mut i = 0;
@@ -251,7 +276,7 @@ impl KeyBuilder {
     }
 
     // Returns true if the prefix str is a prefix of the true keypath
-    pub fn is_keypath_prefix(prefix: &str, keypath: &str) -> bool {
+    pub fn is_kp_value_key_prefix(prefix: &str, keypath: &str) -> bool {
         if keypath.starts_with(prefix) {
             match keypath[prefix.len()..].chars().next() {
                 Some('.') => true,
@@ -265,7 +290,7 @@ impl KeyBuilder {
     }
 
     // returns the unescaped segment as Segment and the escaped segment as a slice
-    pub fn parse_first_key_value_segment(keypath: &str) -> Option<(Segment, String)> {
+    pub fn parse_first_kp_value_segment(keypath: &str) -> Option<(Segment, String)> {
 
         let mut unescaped = String::with_capacity(50);
         let mut len_bytes = 1;
@@ -314,6 +339,7 @@ impl KeyBuilder {
         }
     }
 
+    /// Adds objet key to keypath
     pub fn push_object_key(&mut self, key: &str) {
         let mut escaped_key = String::with_capacity((key.len() * 2) + 1); // max expansion
         escaped_key.push('.');
@@ -328,49 +354,57 @@ impl KeyBuilder {
         self.keypath.push(escaped_key);
     }
 
+    /// adds array to keypath
     pub fn push_array(&mut self) {
         self.keypath.push("$".to_string());
         self.arraypath.push(0);
     }
 
+    /// adds array with index to keypath
     pub fn push_array_index(&mut self, index: u64) {
         self.keypath.push("$".to_string());
         self.arraypath.push(index);
     }
 
+    /// pops last object key `{"foo":..."}` from keypath. Last segment must be object key
     pub fn pop_object_key(&mut self) {
         debug_assert!(self.keypath.last().unwrap().starts_with("."));
         self.keypath.pop();
     }
 
-    pub fn peek_array_offset(&self) -> u64 {
+    /// Returns the last array offset in the keypath. Last segment must be an array.
+    pub fn peek_array_index(&self) -> u64 {
         debug_assert!(self.keypath.last().unwrap().starts_with("$"));
         self.arraypath.last().unwrap().clone()
     }
 
+    /// pops last array segment `[N]` from keypath. Last segment must be array.
     pub fn pop_array(&mut self) {
         debug_assert!(self.keypath.last().unwrap() == "$");
         self.arraypath.pop();
         self.keypath.pop();
     }
 
-    pub fn inc_top_array_offset(&mut self) {
+    /// increments the last array segment by 1. LAst segment must be array,
+    pub fn inc_top_array_index(&mut self) {
         if self.keypath.len() > 0 && self.keypath.last().unwrap() == "$" {
             *self.arraypath.last_mut().unwrap() += 1;
         }
     }
 
+    /// Returns the number of arrays in the keypath
     pub fn arraypath_len(&self) -> usize {
         self.arraypath.len()
     }
 
-    pub fn keypath_segments_len(&self) -> usize {
+    /// returns the number of segments in the keypath
+    pub fn kp_segments_len(&self) -> usize {
         self.keypath.len()
     }
 
     /// splits key into key path, seq and array path
     /// ex "W.foo$.bar$.baz!word#123,0,0" -> ("W.foo$.bar$.bar!word", "123", "0,0")
-    fn split_keypath_seq_arraypath_from_key(str: &str) -> (&str, &str, &str) {
+    fn split_seq_arraypath_from_kp_word_key(str: &str) -> (&str, &str, &str) {
         let n = str.rfind("#").unwrap();
         assert!(n != 0);
         assert!(n != str.len() - 1);
@@ -381,10 +415,10 @@ impl KeyBuilder {
     }
 
     /// parses a seq and array path portion (ex "123,0,0,10) of a key into a doc result
-    pub fn parse_doc_result_from_key(str: &str) -> DocResult {
+    pub fn parse_doc_result_from_kp_word_key(str: &str) -> DocResult {
         let mut dr = DocResult::new();
         let (_path_str, seq_str, arraypath_str) =
-            KeyBuilder::split_keypath_seq_arraypath_from_key(&str);
+            KeyBuilder::split_seq_arraypath_from_kp_word_key(&str);
         dr.seq = seq_str.parse().unwrap();
         if !arraypath_str.is_empty() {
             for numstr in arraypath_str.split(",") {
@@ -394,17 +428,20 @@ impl KeyBuilder {
         dr
     }
 
+    /// used to collate relevant keys that need specific sorting.
     pub fn compare_keys(akey: &str, bkey: &str) -> Ordering {
-        debug_assert!(akey.starts_with('W') || akey.starts_with('f') || akey.starts_with('T') ||
-                      akey.starts_with('F') ||
-                      akey.starts_with('N'));
-        debug_assert!(bkey.starts_with('W') || bkey.starts_with('f') || bkey.starts_with('T') ||
-                      bkey.starts_with('F') ||
-                      bkey.starts_with('N'));
+        debug_assert!(akey.starts_with(KEY_PREFIX_WORD) || akey.starts_with(KEY_PREFIX_NUMBER) ||
+                      akey.starts_with(KEY_PREFIX_TRUE) ||
+                      akey.starts_with(KEY_PREFIX_FALSE) ||
+                      akey.starts_with(KEY_PREFIX_NULL));
+        debug_assert!(bkey.starts_with(KEY_PREFIX_WORD) || bkey.starts_with(KEY_PREFIX_NUMBER) ||
+                      bkey.starts_with(KEY_PREFIX_TRUE) ||
+                      bkey.starts_with(KEY_PREFIX_FALSE) ||
+                      bkey.starts_with(KEY_PREFIX_NULL));
         let (apath_str, aseq_str, aarraypath_str) =
-            KeyBuilder::split_keypath_seq_arraypath_from_key(&akey);
+            KeyBuilder::split_seq_arraypath_from_kp_word_key(&akey);
         let (bpath_str, bseq_str, barraypath_str) =
-            KeyBuilder::split_keypath_seq_arraypath_from_key(&bkey);
+            KeyBuilder::split_seq_arraypath_from_kp_word_key(&bkey);
 
         match apath_str[0..].cmp(&bpath_str[0..]) {
             Ordering::Less => Ordering::Less,
@@ -464,16 +501,16 @@ mod tests {
     #[test]
     fn test_segments_push() {
         let mut kb = KeyBuilder::new();
-        assert_eq!(kb.keypath_segments_len(), 0, "No segments so far");
+        assert_eq!(kb.kp_segments_len(), 0, "No segments so far");
 
         kb.push_object_key("first");
-        assert_eq!(kb.keypath_segments_len(), 1, "One segment");
+        assert_eq!(kb.kp_segments_len(), 1, "One segment");
 
         kb.push_object_key("second");
-        assert_eq!(kb.keypath_segments_len(), 2, "Two segments");
+        assert_eq!(kb.kp_segments_len(), 2, "Two segments");
 
         kb.push_array();
-        assert_eq!(kb.keypath_segments_len(), 3, "Three segments ");
+        assert_eq!(kb.kp_segments_len(), 3, "Three segments ");
     }
 
     #[test]
@@ -483,27 +520,27 @@ mod tests {
         kb.push_object_key("second");
         kb.push_array();
 
-        assert_eq!(kb.keypath_segments_len(), 3, "three segments");
-        assert_eq!(kb.stemmed_word_key("astemmedword", 123),
+        assert_eq!(kb.kp_segments_len(), 3, "three segments");
+        assert_eq!(kb.kp_word_key("astemmedword", 123),
                    "W.first.second$!astemmedword#123,0",
                    "Key for six segments is correct");
 
 
         kb.pop_array();
-        assert_eq!(kb.keypath_segments_len(), 2, "Two segments");
+        assert_eq!(kb.kp_segments_len(), 2, "Two segments");
 
         kb.pop_object_key();
-        assert_eq!(kb.keypath_segments_len(), 1, "One segment");
+        assert_eq!(kb.kp_segments_len(), 1, "One segment");
 
         kb.pop_object_key();
-        assert_eq!(kb.keypath_segments_len(), 0, "No segments so far");
+        assert_eq!(kb.kp_segments_len(), 0, "No segments so far");
     }
 
     #[test]
     fn test_doc_result_parse() {
         let key = "W.foo$.bar$!word#123,1,0".to_string();
         let (keypathstr, seqstr, arraypathstr) =
-            KeyBuilder::split_keypath_seq_arraypath_from_key(&key);
+            KeyBuilder::split_seq_arraypath_from_kp_word_key(&key);
         assert_eq!(keypathstr, "W.foo$.bar$!word");
         assert_eq!(seqstr, "123");
         assert_eq!(arraypathstr, "1,0");
@@ -511,7 +548,7 @@ mod tests {
         // make sure escaped commas and # in key path don't cause problems
         let key1 = "W.foo\\#$.bar\\,$!word#123,2,0".to_string();
         let (keypathstr1, seqstr1, arraypathstr1) =
-            KeyBuilder::split_keypath_seq_arraypath_from_key(&key1);
+            KeyBuilder::split_seq_arraypath_from_kp_word_key(&key1);
         assert_eq!(keypathstr1, "W.foo\\#$.bar\\,$!word");
         assert_eq!(seqstr1, "123");
         assert_eq!(arraypathstr1, "2,0");
@@ -520,6 +557,6 @@ mod tests {
         dr.seq = 123;
         dr.arraypath = vec![1, 0];
 
-        assert!(dr == KeyBuilder::parse_doc_result_from_key(&key));
+        assert!(dr == KeyBuilder::parse_doc_result_from_kp_word_key(&key));
     }
 }
