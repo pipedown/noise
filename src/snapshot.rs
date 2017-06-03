@@ -28,7 +28,7 @@ impl<'a> Snapshot<'a> {
     pub fn new_term_doc_result_iterator(&self, term: &str, kb: &KeyBuilder) -> DocResultIterator {
         DocResultIterator {
             iter: self.rocks.iterator(IteratorMode::Start),
-            keypathword: kb.get_keypathword_only(&term),
+            keypathword: kb.get_kp_word_only(&term),
         }
 
     }
@@ -70,11 +70,11 @@ pub struct DocResultIterator {
 
 impl DocResultIterator {
     pub fn advance_gte(&mut self, start: &DocResult) {
-        KeyBuilder::add_doc_result_to_keypathword(&mut self.keypathword, &start);
+        KeyBuilder::add_doc_result_to_kp_word(&mut self.keypathword, &start);
         // Seek in index to >= entry
         self.iter
             .set_mode(IteratorMode::From(self.keypathword.as_bytes(), rocksdb::Direction::Forward));
-        KeyBuilder::truncate_to_keypathword(&mut self.keypathword);
+        KeyBuilder::truncate_to_kp_word(&mut self.keypathword);
     }
 
     pub fn next(&mut self) -> Option<(DocResult, TermPositions)> {
@@ -85,7 +85,7 @@ impl DocResultIterator {
             }
 
             let key_str = unsafe { str::from_utf8_unchecked(&key) };
-            let dr = KeyBuilder::parse_doc_result_from_key(&key_str);
+            let dr = KeyBuilder::parse_doc_result_from_kp_word_key(&key_str);
 
             Some((dr, TermPositions { pos: value.into_vec() }))
         } else {
@@ -121,14 +121,14 @@ pub struct Scorer {
 
 impl Scorer {
     pub fn init(&mut self, qsi: &mut QueryScoringInfo) {
-        let key = self.kb.keypathword_count_key(&self.term);
+        let key = self.kb.kp_word_count_key(&self.term);
         let doc_freq = if let Some(bytes) = self.get_value(&key) {
             Index::convert_bytes_to_i32(bytes.as_ref()) as f32
         } else {
             0.0
         };
 
-        let key = self.kb.keypath_count_key();
+        let key = self.kb.kp_field_count_key();
         let num_docs = if let Some(bytes) = self.get_value(&key) {
             Index::convert_bytes_to_i32(bytes.as_ref()) as f32
         } else {
@@ -157,7 +157,7 @@ impl Scorer {
 
     pub fn add_match_score(&mut self, num_matches: u32, dr: &mut DocResult) {
         if self.should_score() {
-            let key = self.kb.field_length_key_from_doc_result(dr);
+            let key = self.kb.kp_field_length_key_from_doc_result(dr);
             let total_field_words = if let Some(bytes) = self.get_value(&key) {
                 Index::convert_bytes_to_i32(bytes.as_ref()) as f32
             } else {
@@ -249,7 +249,7 @@ impl JsonFetcher {
                             // we didn't get a value, is it because the array ends or the
                             // full path isn't there? check as there might be more array elements
                             // with a full path that does match.
-                            let value_key = kb.value_key(seq);
+                            let value_key = kb.kp_value_key(seq);
                             kb.pop_array();
 
                             // Seek in index to >= entry
@@ -277,7 +277,7 @@ impl JsonFetcher {
             }
         }
 
-        let value_key = kb.value_key(seq);
+        let value_key = kb.kp_value_key(seq);
 
         // Seek in index to >= entry
         iter.set_mode(IteratorMode::From(value_key.as_bytes(), rocksdb::Direction::Forward));
@@ -287,7 +287,7 @@ impl JsonFetcher {
             None => return None,
         };
 
-        if !KeyBuilder::is_keypath_prefix(&value_key, unsafe { str::from_utf8_unchecked(&key) }) {
+        if !KeyBuilder::is_kp_value_key_prefix(&value_key, unsafe { str::from_utf8_unchecked(&key) }) {
             return None;
         }
         Some(JsonFetcher::do_fetch(&mut iter.peekable(), &value_key, key, value))
@@ -311,7 +311,7 @@ impl JsonFetcher {
         let segment = {
             let key_str = unsafe { str::from_utf8_unchecked(&key) };
             let remaining = &key_str[value_key.len()..];
-            KeyBuilder::parse_first_key_value_segment(&remaining)
+            KeyBuilder::parse_first_kp_value_segment(&remaining)
         };
 
         match segment {
@@ -326,14 +326,14 @@ impl JsonFetcher {
                     let segment = match iter.peek() {
                         Some(&(ref k, ref _v)) => {
                             let key = unsafe { str::from_utf8_unchecked(k) };
-                            if !KeyBuilder::is_keypath_prefix(value_key, key) {
+                            if !KeyBuilder::is_kp_value_key_prefix(value_key, key) {
                                 return JsonValue::Object(object);
                             }
 
                             let key_str = unsafe { str::from_utf8_unchecked(&k) };
                             let remaining = &key_str[value_key.len()..];
 
-                            KeyBuilder::parse_first_key_value_segment(&remaining)
+                            KeyBuilder::parse_first_kp_value_segment(&remaining)
                         }
                         None => return JsonValue::Object(object),
                     };
@@ -368,14 +368,14 @@ impl JsonFetcher {
                     let segment = match iter.peek() {
                         Some(&(ref k, ref _v)) => {
                             let key = unsafe { str::from_utf8_unchecked(k) };
-                            if !KeyBuilder::is_keypath_prefix(value_key, key) {
+                            if !KeyBuilder::is_kp_value_key_prefix(value_key, key) {
                                 return JsonFetcher::return_array(array);
                             }
 
                             let key_str = unsafe { str::from_utf8_unchecked(&k) };
                             let remaining = &key_str[value_key.len()..];
 
-                            KeyBuilder::parse_first_key_value_segment(&remaining)
+                            KeyBuilder::parse_first_kp_value_segment(&remaining)
                         }
                         None => return JsonFetcher::return_array(array),
                     };

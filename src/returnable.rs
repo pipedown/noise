@@ -353,7 +353,7 @@ impl Returnable for RetBind {
             let mut array = Vec::with_capacity(value_keys.len());
             for base_key in value_keys {
                 let mut kb = KeyBuilder::new();
-                kb.parse_value_key_path_only(KeyBuilder::value_key_path_only_from_str(&base_key));
+                kb.parse_kp_value_no_seq(KeyBuilder::kp_value_no_seq_from_str(&base_key));
 
                 if let Some(json) = fetcher.fetch(seq, &mut kb, &self.extra_rp) {
                     array.push(json);
