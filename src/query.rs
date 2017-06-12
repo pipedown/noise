@@ -1,4 +1,6 @@
 
+extern crate rustc_serialize;
+
 use std::str;
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -8,13 +10,13 @@ use std::iter::Iterator;
 use std::usize;
 
 use error::Error;
-use index::Index;
 use parser::Parser;
 use json_value::JsonValue;
 use filters::QueryRuntimeFilter;
 use aggregates::AggregateFun;
 use returnable::{Returnable, RetValue, RetScore, RetHidden, ReturnPath};
 use snapshot::{Snapshot, JsonFetcher};
+use self::rustc_serialize::json::{JsonEvent, Parser as JsonParser, StackElement};
 
 
 
@@ -167,16 +169,38 @@ pub struct QueryScoringInfo {
     pub sum_of_idt_sqs: f32,
 }
 
-pub struct Query {}
+pub struct QueryResults<'a> {
+    filter: Box<QueryRuntimeFilter + 'a>,
+    doc_result_next: DocResult,
+    snapshot: Snapshot<'a>,
+    fetcher: JsonFetcher,
+    returnable: Box<Returnable>,
+    needs_ordering_and_ags: bool,
+    done_with_ordering_and_ags: bool,
+    does_group_or_aggr: bool,
+    orders: Option<Vec<(Order, usize)>>,
+    aggr_inits: Vec<(fn(JsonValue) -> JsonValue, usize)>,
+    aggr_actions: Vec<(fn(&mut JsonValue, JsonValue, &JsonValue), JsonValue, usize)>,
+    aggr_finals: Vec<(fn(&mut JsonValue), usize)>,
+    in_buffer: Vec<VecDeque<JsonValue>>,
+    ordered_buffer: Vec<VecDeque<JsonValue>>,
+    limit: usize,
+    scoring_num_terms: usize,
+    scoring_query_norm: f32,
+}
 
-impl Query {
-    pub fn get_matches<'a>(query: &str, index: &'a Index) -> Result<QueryResults<'a>, Error> {
-        if index.rocks.is_none() {
-            return Err(Error::Parse("You must open the index first".to_string()));
-        }
+impl<'a> QueryResults<'a> {
+    pub fn new_query_results(query: &str,
+                             parameters: Option<String>,
+                             snapshot: Snapshot<'a>)
+                             -> Result<QueryResults<'a>, Error> {
 
-        let snapshot = index.new_snapshot();
-        let mut parser = Parser::new(query, snapshot);
+        let params = if let Some(param_str) = parameters {
+            try!(QueryResults::parse_parameters(&param_str))
+        } else {
+            HashMap::new()
+        };
+        let mut parser = Parser::new(query, params, snapshot);
         let mut filter = try!(parser.build_filter());
         let mut orders = try!(parser.order_clause());
         let mut returnable = try!(parser.return_clause());
@@ -340,30 +364,85 @@ impl Query {
                scoring_query_norm: query_norm,
            })
     }
-}
 
+    fn parse_parameters(params: &str) -> Result<HashMap<String, JsonValue>, Error> {
+        let mut parser = JsonParser::new(params.chars());
+        let err_msg: String = "Parameterized query values must be String, Number, /
+        True, False, or Null"
+                .to_string();
+        if parser.next().take() != Some(JsonEvent::ObjectStart) {
+            return Err(Error::Parse("Parameters must be json object".to_string()));
+        }
+        let mut map: HashMap<String, JsonValue> = HashMap::new();
+        loop {
+            // Get the next token, so that in case of an `ObjectStart` the key is already
+            // on the stack.
+            match parser.next().take() {
+                Some(JsonEvent::ObjectStart) => return Err(Error::Parse(err_msg)),
+                Some(JsonEvent::ObjectEnd) => (),
+                Some(JsonEvent::ArrayStart) => return Err(Error::Parse(err_msg)),
+                Some(JsonEvent::ArrayEnd) => (),
+                Some(JsonEvent::StringValue(value)) => {
+                    if let Some(StackElement::Key(key)) = parser.stack().top() {
+                        map.insert(key.to_string(), JsonValue::String(value));
+                    } else {
+                        panic!("Top of stack isn't a key!");
+                    }
+                }
+                Some(JsonEvent::BooleanValue(tf)) => {
+                    if let Some(StackElement::Key(key)) = parser.stack().top() {
+                        map.insert(key.to_string(),
+                                   if tf {
+                                       JsonValue::True
+                                   } else {
+                                       JsonValue::False
+                                   });
+                    } else {
+                        panic!("Top of stack isn't a key!");
+                    }
+                }
+                Some(JsonEvent::I64Value(i)) => {
+                    let f = i as f64;
+                    if let Some(StackElement::Key(key)) = parser.stack().top() {
+                        map.insert(key.to_string(), JsonValue::Number(f));
+                    } else {
+                        panic!("Top of stack isn't a key!");
+                    }
+                }
+                Some(JsonEvent::U64Value(u)) => {
+                    let f = u as f64;
+                    if let Some(StackElement::Key(key)) = parser.stack().top() {
+                        map.insert(key.to_string(), JsonValue::Number(f));
+                    } else {
+                        panic!("Top of stack isn't a key!");
+                    }
+                }
+                Some(JsonEvent::F64Value(f)) => {
+                    if let Some(StackElement::Key(key)) = parser.stack().top() {
+                        map.insert(key.to_string(), JsonValue::Number(f));
+                    } else {
+                        panic!("Top of stack isn't a key!");
+                    }
+                }
+                Some(JsonEvent::NullValue) => {
+                    if let Some(StackElement::Key(key)) = parser.stack().top() {
+                        map.insert(key.to_string(), JsonValue::Null);
+                    } else {
+                        panic!("Top of stack isn't a key!");
+                    }
+                }
+                Some(JsonEvent::Error(error)) => {
+                    return Err(Error::Parse(format!("Error parsing parameters: {}",
+                                                    error.to_string())));
+                }
+                None => {
+                    break;
+                }
+            };
+        }
+        Ok(map)
+    }
 
-pub struct QueryResults<'a> {
-    filter: Box<QueryRuntimeFilter + 'a>,
-    doc_result_next: DocResult,
-    snapshot: Snapshot<'a>,
-    fetcher: JsonFetcher,
-    returnable: Box<Returnable>,
-    needs_ordering_and_ags: bool,
-    done_with_ordering_and_ags: bool,
-    does_group_or_aggr: bool,
-    orders: Option<Vec<(Order, usize)>>,
-    aggr_inits: Vec<(fn(JsonValue) -> JsonValue, usize)>,
-    aggr_actions: Vec<(fn(&mut JsonValue, JsonValue, &JsonValue), JsonValue, usize)>,
-    aggr_finals: Vec<(fn(&mut JsonValue), usize)>,
-    in_buffer: Vec<VecDeque<JsonValue>>,
-    ordered_buffer: Vec<VecDeque<JsonValue>>,
-    limit: usize,
-    scoring_num_terms: usize,
-    scoring_query_norm: f32,
-}
-
-impl<'a> QueryResults<'a> {
     fn compute_relevancy_score(&self, dr: &DocResult) -> f32 {
         if self.scoring_num_terms == 0 {
             return 0.0;
@@ -709,8 +788,6 @@ pub struct OrderInfo {
 mod tests {
     extern crate rustc_serialize;
 
-    use super::Query;
-
     use index::{Index, OpenOptions, Batch};
 
     #[test]
@@ -725,7 +802,7 @@ mod tests {
         let _ = index.add(r#"{"_id": "foo", "hello": "world"}"#, &mut batch);
         index.flush(batch).unwrap();
 
-        let mut query_results = Query::get_matches(r#"find {hello:=="world"}"#, &index).unwrap();
+        let mut query_results = index.query(r#"find {hello:=="world"}"#, None).unwrap();
         println!("query results: {:?}", query_results.get_next_id());
     }
 
@@ -744,7 +821,7 @@ mod tests {
         }
         index.flush(batch).unwrap();
 
-        let mut query_results = Query::get_matches(r#"find {data: == "u"}"#, &index).unwrap();
+        let mut query_results = index.query(r#"find {data: == "u"}"#, None).unwrap();
         loop {
             match query_results.get_next_id() {
                 Some(result) => println!("result: {}", result),

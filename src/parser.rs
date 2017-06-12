@@ -22,16 +22,21 @@ use snapshot::Snapshot;
 pub struct Parser<'a, 'c> {
     query: &'c str,
     offset: usize,
+    params: HashMap<String, JsonValue>,
     kb: KeyBuilder,
     pub snapshot: Snapshot<'a>,
     pub needs_scoring: bool,
 }
 
 impl<'a, 'c> Parser<'a, 'c> {
-    pub fn new(query: &'c str, snapshot: Snapshot<'a>) -> Parser<'a, 'c> {
+    pub fn new(query: &'c str,
+               params: HashMap<String, JsonValue>,
+               snapshot: Snapshot<'a>)
+               -> Parser<'a, 'c> {
         Parser {
             query: query,
             offset: 0,
+            params: params,
             kb: KeyBuilder::new(),
             snapshot: snapshot,
             needs_scoring: false,
@@ -124,6 +129,42 @@ impl<'a, 'c> Parser<'a, 'c> {
             Some(result)
         } else {
             None
+        }
+    }
+
+    fn consume_param(&mut self) -> Result<Option<JsonValue>, Error> {
+        if self.consume_no_ws("@") {
+            if let Some(field) = self.consume_field() {
+                if let Some(param) = self.params.get(&field) {
+                    Ok(Some(param.clone()))
+                } else {
+                    Err(Error::Parse(format!("No matching parameter for @{}.", field)))
+                }
+            } else {
+                Err(Error::Parse("No parameter name after @.".to_string()))
+            }
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn consume_param_string(&mut self) -> Result<Option<String>, Error> {
+        if self.consume_no_ws("@") {
+            if let Some(field) = self.consume_field() {
+                if let Some(param) = self.params.get(&field) {
+                    if let &JsonValue::String(ref string) = param {
+                        Ok(Some(string.to_string()))
+                    } else {
+                        Err(Error::Parse(format!("Parameter @{} must be a string.", field)))
+                    }
+                } else {
+                    Err(Error::Parse(format!("No matching parameter for @{}.", field)))
+                }
+            } else {
+                Err(Error::Parse("No parameter name after @.".to_string()))
+            }
+        } else {
+            Ok(None)
         }
     }
 
@@ -554,7 +595,10 @@ impl<'a, 'c> Parser<'a, 'c> {
                     Ok(RangeOperator::Exclusive(num))
                 }
             }
-            _ => panic!("Range operator on other JSON types is not yet implemented!"),
+            _ => {
+                Err(Error::Parse("Range operator on non-number JSON types is not yet implemented!"
+                                     .to_string()))
+            }
         }
     }
 
@@ -763,7 +807,11 @@ impl<'a, 'c> Parser<'a, 'c> {
         let not_stemmed = self.consume("!~=");
         if not_stemmed || self.consume("~=") {
             // regular search
-            let literal = try!(self.must_consume_string_literal());
+            let literal = if let Some(string) = try!(self.consume_param_string()) {
+                string
+            } else {
+                try!(self.must_consume_string_literal())
+            };
             let boost = try!(self.consume_boost());
             let stems = Stems::new(&literal);
             let stemmed_words: Vec<String> = stems.map(|stem| stem.stemmed).collect();
@@ -802,7 +850,11 @@ impl<'a, 'c> Parser<'a, 'c> {
             };
             try!(self.must_consume("="));
 
-            let literal = try!(self.must_consume_string_literal());
+            let literal = if let Some(string) = try!(self.consume_param_string()) {
+                string
+            } else {
+                try!(self.must_consume_string_literal())
+            };
             let boost = try!(self.consume_boost());
             let stems = Stems::new(&literal);
             let mut filters: Vec<StemmedWordPosFilter> = Vec::new();
@@ -1189,6 +1241,8 @@ impl<'a, 'c> Parser<'a, 'c> {
                 Ok(Some(JsonValue::Null))
             } else if let Some(num) = try!(self.consume_number()) {
                 Ok(Some(JsonValue::Number(num)))
+            } else if let Some(json) = try!(self.consume_param()) {
+                Ok(Some(json))
             } else {
                 Ok(None)
             }
@@ -1262,6 +1316,7 @@ mod tests {
 
     use super::Parser;
 
+    use std::collections::HashMap;
     use index::{Index, OpenOptions};
 
     #[test]
@@ -1274,13 +1329,13 @@ mod tests {
         let mut snapshot = index.new_snapshot();
 
         let query = " \n \t test";
-        let mut parser = Parser::new(query, snapshot);
+        let mut parser = Parser::new(query, HashMap::new(), snapshot);
         parser.ws();
         assert_eq!(parser.offset, 5);
 
         snapshot = index.new_snapshot();
         let query = "test".to_string();
-        let mut parser = Parser::new(&query, snapshot);
+        let mut parser = Parser::new(&query, HashMap::new(), snapshot);
         parser.ws();
         assert_eq!(parser.offset, 0);
     }
@@ -1295,7 +1350,7 @@ mod tests {
         let snapshot = index.new_snapshot();
 
         let query = r#"" \n \t test""#.to_string();
-        let mut parser = Parser::new(&query, snapshot);
+        let mut parser = Parser::new(&query, HashMap::new(), snapshot);
         assert_eq!(parser.must_consume_string_literal().unwrap(),
                    " \n \t test".to_string());
     }
@@ -1310,7 +1365,7 @@ mod tests {
         let snapshot = index.new_snapshot();
 
         let query = r#"find {foo: =="bar""#.to_string();
-        let mut parser = Parser::new(&query, snapshot);
+        let mut parser = Parser::new(&query, HashMap::new(), snapshot);
         assert!(parser.find().is_err());
     }
 }
