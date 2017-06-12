@@ -1,5 +1,4 @@
 use index::{Index, OpenOptions, Batch};
-use query::Query;
 use json_value::{JsonValue, PrettyPrint};
 
 use std::io::{Write, BufRead};
@@ -8,7 +7,7 @@ use std::mem;
 
 fn is_command(str: &str) -> bool {
     let commands = ["find", "add", "create", "drop", "open", "pretty", "commit", "del", "load",
-                    "dumpkeys"];
+                    "dumpkeys", "params"];
     for command in commands.iter() {
         if str.starts_with(command) {
             return true;
@@ -22,6 +21,7 @@ pub fn repl(r: &mut BufRead, w: &mut Write, test_mode: bool) {
     let mut batch = Batch::new();
     let mut lines = String::new();
     let mut pretty = PrettyPrint::new("", "", "");
+    let mut params = None;
     loop {
         // read in command until we get to a end semi-colon
         if r.read_line(&mut lines).unwrap() > 0 {
@@ -71,8 +71,9 @@ pub fn repl(r: &mut BufRead, w: &mut Write, test_mode: bool) {
         } else {
             write!(w, "Unterminated command, no semi-colon (;) {}\n", lines).unwrap();
         }
-
-        if lines.starts_with("pretty") {
+        if lines.starts_with("params") {
+            params = Some(lines[6..].trim_left().to_string());
+        } else if lines.starts_with("pretty") {
             if lines[6..].trim_left().starts_with("on") {
                 pretty = PrettyPrint::new("  ", "\n", " ");
             } else {
@@ -130,7 +131,7 @@ pub fn repl(r: &mut BufRead, w: &mut Write, test_mode: bool) {
             if let Err(reason) = index.flush(batch2) {
                 write!(w, "{}\n", reason).unwrap();
             } else {
-                match Query::get_matches(&lines, &index) {
+                match index.query(&lines, params.take()) {
                     Ok(results) => {
                         let mut results = results.peekable();
 

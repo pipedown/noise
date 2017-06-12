@@ -19,6 +19,7 @@ use error::Error;
 use json_shred::Shredder;
 use key_builder::{self, KeyBuilder};
 use snapshot::Snapshot;
+use query::QueryResults;
 
 const NOISE_HEADER_VERSION: u64 = 1;
 
@@ -173,6 +174,14 @@ impl Index {
         } else {
             Ok(false)
         }
+    }
+
+    /// Query the index with the string and use the parameters for values if passed.
+    pub fn query(&self, query: &str, parameters: Option<String>) -> Result<QueryResults, Error> {
+        if self.rocks.is_none() {
+            return Err(Error::Parse("Index isn't open.".to_string()));
+        }
+        QueryResults::new_query_results(query, parameters, self.new_snapshot())
     }
 
     fn gather_doc_fields(&self,
@@ -341,7 +350,6 @@ impl Index {
 mod tests {
     extern crate rocksdb;
     use super::{Index, OpenOptions, Batch};
-    use query::Query;
     use std::str;
     use snapshot::JsonFetcher;
     use json_value::JsonValue;
@@ -370,7 +378,7 @@ mod tests {
 
         index.flush(batch).unwrap();
 
-        let mut results = Query::get_matches(r#"find {foo:=="bar"}"#, &index).unwrap();
+        let mut results = index.query(r#"find {foo:=="bar"}"#, None).unwrap();
         let query_id = results.get_next_id().unwrap();
         assert!(query_id.len() == 32);
         assert_eq!(query_id, id);
@@ -477,7 +485,7 @@ mod tests {
 
         index.flush(batch).unwrap();
         let query = r#"find {_id:==""#.to_string() + &id + "\"} return .";
-        let mut results = Query::get_matches(&query, &index).unwrap();
+        let mut results = index.query(&query, None).unwrap();
         let json = results.next().unwrap();
         assert_eq!(json,
                    JsonValue::Object(vec![("_id".to_string(), JsonValue::String(id))]));

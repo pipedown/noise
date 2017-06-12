@@ -1,0 +1,285 @@
+# parameterized queries test
+
+drop target/tests/querytestparameters;
+create target/tests/querytestparameters;
+
+
+add {"_id":"1", "A":[{"B":"B2","C":"C2"},{"B": "b1","C":"C2"}]};
+"1"
+add {"_id":"2", "A":[{"B":"B2","C":[{"D":"D"}]},{"B": "b1","C":"C2"}]};
+"2"
+add {"_id":"3", "A":"Multi word sentence"};
+"3"
+add {"_id":"4", "A":"%&%}{}@);€"};
+"4"
+add {"_id":"5", "A":"{}€52 deeply \\n\\v "};
+"5"
+add {"_id":"6", "A":[{"B":"B3"},{"B": "B3"}]};
+"6"
+add {"_id":"7", "A":[{"B":"B3"},{"B": "B4"}]};
+"7"
+add {"_id":"8", "A":["A1", "A1"]};
+"8"
+add {"_id":"9", "A":["A1", "A2"]};
+"9"
+add {"_id":"10", "A":"a bunch of words in this sentence"};
+"10"
+add {"_id":"11", "A":""};
+"11"
+add {"_id":"12", "A":["1","2","3","4","5","6","7","8","9","10","11","12"]};
+"12"
+add {"_id":"13", "A":["foo",1,true,false,null,{},[]]};
+"13"
+add {"_id":"14", "A":{"B":true}};
+"14"
+
+
+# Exact match object fields in arrays
+
+params {"f1": "B2", "f2": "D"};
+find {A:[{B: ==@f1, C: [{D: ==@f2} ]}]};
+[
+"2"
+]
+
+params {"f1": "B2", "f2": "C2"};
+find {A:[{B: == @f1, C: == @f2}]};
+[
+"1"
+]
+
+params {"f1": "B2", "f2": "C8"};
+find {A:[{B: == @f1, C: == @f2}]};
+[]
+
+params {"f1": "b1", "f2": "C2"};
+find {A:[{B: == @f1, C: == @f2}]};
+[
+"1",
+"2"
+]
+
+# exact match stuff in fields
+
+params {"f1": "Multi word sentence"};
+find {A: == @f1};
+[
+"3"
+]
+
+
+# exact match strings in arrays
+
+
+params {"f1": "A1", "f2": "A2"};
+find {A:[ == @f1 || == @f2]};
+[
+"8",
+"9"
+]
+
+# full text search fields
+
+
+params {"f1": "Multi"};
+find {A: ~= @f1};
+[
+"3"
+]
+
+# phrase match
+params {"f1": "multi word"};
+find {A: ~= @f1};
+[
+"3"
+]
+
+
+# proximity match. Number indicates how many word away terms can be.
+
+params {"f1": "multi sentence"};
+find {A: ~1= @f1};
+[
+"3"
+]
+
+params {"f1": ""};
+find {A: == @f1};
+[
+"11"
+]
+
+
+add {"_id":"one", "A":12};
+"one"
+add {"_id":"two", "A":12};
+"two"
+add {"_id":"three", "numberarray": [30, 60, 90]};
+"three"
+add {"_id":"four", "A":-3};
+"four"
+add {"_id":"five", "A":35};
+"five"
+add {"_id":"six", "A":true};
+"six"
+add {"_id":"seven", "A":false};
+"seven"
+add {"_id":"eight", "A":null};
+"eight"
+add {"_id":"nine", "boolarray":[true, true]};
+"nine"
+add {"_id":"ten", "boolarray":[false, true]};
+"ten"
+
+
+# Exact match number
+
+params {"f1": 12};
+find {A: == @f1};
+[
+"one",
+"two"
+]
+
+params {"f1": 60};
+find {numberarray: [==@f1]};
+[
+"three"
+]
+
+del one;
+ok
+
+params {"f1": 12};
+find {A: ==@f1};
+[
+"two"
+]
+
+
+# Greater than (equal) on number
+
+params {"f1": 20};
+find {A: >@f1};
+[
+"five"
+]
+
+params {"f1": -5};
+find {A: >@f1};
+[
+"two",
+"four",
+"five"
+]
+
+params {"f1": 40};
+find {numberarray: [>@f1]};
+[
+"three"
+]
+
+params {"f1": 35};
+find {A: >@f1};
+[]
+
+params {"f1": 35};
+find {A: >=@f1};
+[
+"five"
+]
+
+
+# Less than (equal) on number
+
+params {"f1": -1};
+find {A: <@f1};
+[
+"four"
+]
+
+params {"f1": 20};
+find {A: <@f1};
+[
+"two",
+"four"
+]
+
+params {"f1": 70};
+find {numberarray: [<@f1]};
+[
+"three"
+]
+
+params {"f1": -3};
+find {A: <@f1};
+[]
+
+params {"f1": -3};
+find {A: <=@f1};
+[
+"four"
+]
+
+
+# Range on number
+
+params {"f1": 10, "f2": 20};
+find {A: >@f1, A: <@f2};
+[
+"two"
+]
+
+params {"f1": -10, "f2": 20};
+find {A: >@f1, A: <@f2};
+[
+"two",
+"four"
+]
+
+
+# Exact match boolean
+
+params {"f1": true};
+find {A: ==@f1};
+[
+"six"
+]
+
+params {"f1": false};
+find {A: ==@f1};
+[
+"seven"
+]
+
+params {"f1": null};
+find {A: ==@f1};
+[
+"eight"
+]
+
+params {"f1": true};
+find {boolarray: [==@f1]};
+[
+"nine",
+"ten"
+]
+
+# errors
+
+find {A: == @f1};
+Parse error: No matching parameter for @f1.
+
+params {"f1": "foo"};
+find {A: > @f1};
+Parse error: Range operator on non-number JSON types is not yet implemented!
+
+params {"f1": 1};
+find {A: ~= @f1};
+Parse error: Parameter @f1 must be a string.
+
+find {A: > @};
+Parse error: No parameter name after @.
+
+
+
