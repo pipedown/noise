@@ -2,9 +2,7 @@
 
 # add before opening
 add {"_id":"1", "A":[{"B":"B2","C":"C2"},{"B": "b1","C":"C2"}]};
-Write error: Index isn't open.
-
-drop target/tests/updatedeletion;
+Index isn't open
 create target/tests/updatedeletion;
 
 add {"_id":"1", "A":[{"B":"B2","C":"C2"},{"B": "b1","C":"C2"}]};

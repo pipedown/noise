@@ -26,7 +26,7 @@ const NOISE_HEADER_VERSION: u64 = 1;
 pub struct Index {
     name: String,
     high_doc_seq: u64,
-    pub rocks: Option<rocksdb::DB>,
+    pub rocks: rocksdb::DB,
 }
 
 pub struct Batch {
@@ -48,18 +48,7 @@ pub enum OpenOptions {
 }
 
 impl Index {
-    pub fn new() -> Index {
-        Index {
-            name: String::new(),
-            high_doc_seq: 0,
-            rocks: None,
-        }
-    }
-    // NOTE vmx 2016-10-13: Perhpas the name should be specified on `new()` as it is bound
-    // to a single instance. The next question would then be if `open()` really makes sense
-    // or if it should be combined with `new()`.
-    //fn open(&mut self, name: &str, open_options: Option<OpenOptions>) -> Result<DB, String> {
-    pub fn open(&mut self, name: &str, open_options: Option<OpenOptions>) -> Result<(), Error> {
+    pub fn open(name: &str, open_options: Option<OpenOptions>) -> Result<Index, Error> {
         let mut rocks_options = rocksdb::Options::default();
         rocks_options.set_comparator("noise_cmp", Index::compare_keys);
         rocks_options.set_merge_operator("noise_merge", Index::sum_merge);
@@ -90,19 +79,17 @@ impl Index {
 
         // validate header is there
         let value = try!(rocks.get(b"HDB")).unwrap();
-        self.rocks = Some(rocks);
         assert_eq!(value.len(), 8 * 2);
         // first 8 is version
         assert_eq!(Index::convert_bytes_to_u64(&value[..8]),
                    NOISE_HEADER_VERSION);
         // next 8 is high seq
-        self.high_doc_seq = Index::convert_bytes_to_u64(&value[8..]);
-        self.name = name.to_string();
-        Ok(())
-    }
 
-    pub fn is_open(&self) -> bool {
-        self.rocks.is_some()
+        Ok(Index {
+               name: name.to_string(),
+               high_doc_seq: Index::convert_bytes_to_u64(&value[8..]),
+               rocks: rocks,
+           })
     }
 
     pub fn get_name(&self) -> &str {
@@ -110,7 +97,7 @@ impl Index {
     }
 
     pub fn new_snapshot(&self) -> Snapshot {
-        Snapshot::new(RocksSnapshot::new(self.rocks.as_ref().unwrap()))
+        Snapshot::new(RocksSnapshot::new(&self.rocks))
     }
 
     //This deletes the Rockdbs instance from disk
@@ -120,9 +107,6 @@ impl Index {
     }
 
     pub fn add(&mut self, json: &str, mut batch: &mut Batch) -> Result<String, Error> {
-        if !self.is_open() {
-            return Err(Error::Write("Index isn't open.".to_string()));
-        }
         let mut shredder = Shredder::new();
         let (seq, docid) = if let Some(docid) = try!(shredder.shred(json)) {
             // user supplied doc id, see if we have an existing one.
@@ -158,9 +142,6 @@ impl Index {
 
     /// Returns Ok(true) if the document was found and deleted, Ok(false) if it could not be found
     pub fn delete(&mut self, docid: &str, mut batch: &mut Batch) -> Result<bool, Error> {
-        if !self.is_open() {
-            return Err(Error::Write("Index isn't open.".to_string()));
-        }
         if batch.id_str_in_batch.contains(docid) {
             // oops use trying to delete a doc that's in the batch. Can't happen,
             return Err(Error::Write("Attempt to delete doc with same _id added earlier"
@@ -178,9 +159,6 @@ impl Index {
 
     /// Query the index with the string and use the parameters for values if passed.
     pub fn query(&self, query: &str, parameters: Option<String>) -> Result<QueryResults, Error> {
-        if self.rocks.is_none() {
-            return Err(Error::Parse("Index isn't open.".to_string()));
-        }
         QueryResults::new_query_results(query, parameters, self.new_snapshot())
     }
 
@@ -193,10 +171,7 @@ impl Index {
             let value_key = kb.kp_value_key(seq);
             let mut key_values = BTreeMap::new();
 
-            let mut iter = self.rocks
-                .as_ref()
-                .unwrap()
-                .iterator(IteratorMode::Start);
+            let mut iter = self.rocks.iterator(IteratorMode::Start);
             // Seek in index to >= entry
             iter.set_mode(IteratorMode::From(value_key.as_bytes(), rocksdb::Direction::Forward));
             loop {
@@ -221,10 +196,6 @@ impl Index {
     // Store the current batch
     pub fn flush(&mut self, mut batch: Batch) -> Result<(), Error> {
         // Flush can only be called if the index is open
-        if !self.is_open() {
-            return Err(Error::Write("Index isn't open.".to_string()));
-        }
-        let rocks = self.rocks.as_ref().unwrap();
 
         let mut bytes = Vec::with_capacity(8 * 2);
         bytes
@@ -235,17 +206,13 @@ impl Index {
             .unwrap();
         try!(batch.wb.put(b"HDB", &bytes));
 
-        let status = try!(rocks.write(batch.wb));
+        let status = try!(self.rocks.write(batch.wb));
         Ok(status)
     }
 
     pub fn all_keys(&self) -> Result<Vec<String>, Error> {
-        if !self.is_open() {
-            return Err(Error::Write("Index isn't open.".to_string()));
-        }
-        let rocks = self.rocks.as_ref().unwrap();
         let mut results = Vec::new();
-        for (key, _value) in rocks.iterator(rocksdb::IteratorMode::Start) {
+        for (key, _value) in self.rocks.iterator(rocksdb::IteratorMode::Start) {
             let key_string = unsafe { str::from_utf8_unchecked((&key)) }.to_string();
             results.push(key_string);
         }
@@ -283,13 +250,9 @@ impl Index {
     }
 
     pub fn fetch_seq(&self, id: &str) -> Result<Option<u64>, Error> {
-        // Fetching an seq is only possible if the index is open
-        // NOTE vmx 2016-10-17: Perhaps that shouldn't panic?
-        assert!(&self.rocks.is_some());
-        let rocks = self.rocks.as_ref().unwrap();
 
         let key = format!("{}{}", key_builder::KEY_PREFIX_ID_TO_SEQ, id);
-        match try!(rocks.get(&key.as_bytes())) {
+        match try!(self.rocks.get(&key.as_bytes())) {
             // If there is an id, it's UTF-8
             Some(bytes) => Ok(Some(bytes.to_utf8().unwrap().parse().unwrap())),
             None => Ok(None),
@@ -359,9 +322,7 @@ mod tests {
         let dbname = "target/tests/firstnoisedb";
         let _ = Index::drop(dbname);
 
-        let mut index = Index::new();
-        //let db = super::Index::open("firstnoisedb", Option::None).unwrap();
-        index.open(dbname, Some(OpenOptions::Create)).unwrap();
+        let mut index = Index::open(dbname, Some(OpenOptions::Create)).unwrap();
         index.flush(Batch::new()).unwrap();
     }
 
@@ -371,8 +332,7 @@ mod tests {
         let _ = Index::drop(dbname);
         let mut batch = Batch::new();
 
-        let mut index = Index::new();
-        index.open(dbname, Some(OpenOptions::Create)).unwrap();
+        let mut index = Index::open(dbname, Some(OpenOptions::Create)).unwrap();
 
         let id = index.add(r#"{"foo":"bar"}"#, &mut batch).unwrap();
 
@@ -390,8 +350,7 @@ mod tests {
         let _ = Index::drop(dbname);
         let mut batch = Batch::new();
 
-        let mut index = Index::new();
-        index.open(dbname, Some(OpenOptions::Create)).unwrap();
+        let mut index = Index::open(dbname, Some(OpenOptions::Create)).unwrap();
 
         let id = index.add(r#"{"foo":"bar"}"#, &mut batch).unwrap();
         index.flush(batch).unwrap();
@@ -400,7 +359,7 @@ mod tests {
         index.delete(&id, &mut batch).unwrap();
         index.flush(batch).unwrap();
 
-        let rocks = index.rocks.as_mut().unwrap();
+        let rocks = &index.rocks;
 
         // apparently you need to do compaction twice when there are merges
         // first one lets the merges happen, the second lets them be collected.
@@ -420,8 +379,7 @@ mod tests {
         let dbname = "target/tests/testupdates";
         let _ = Index::drop(dbname);
 
-        let mut index = Index::new();
-        index.open(dbname, Some(OpenOptions::Create)).unwrap();
+        let mut index = Index::open(dbname, Some(OpenOptions::Create)).unwrap();
 
         let mut batch = Batch::new();
         let _ = index
@@ -431,10 +389,9 @@ mod tests {
 
         index.flush(batch).unwrap();
         {
-            let rocks = index.rocks.as_mut().unwrap();
 
             let mut results = Vec::new();
-            for (key, value) in rocks.iterator(rocksdb::IteratorMode::Start) {
+            for (key, value) in index.rocks.iterator(rocksdb::IteratorMode::Start) {
                 if key[0] as char == 'V' {
                     let key_string = unsafe { str::from_utf8_unchecked((&key)) }.to_string();
                     results.push((key_string, JsonFetcher::bytes_to_json_value(&*value)));
@@ -457,10 +414,8 @@ mod tests {
             .unwrap();
         index.flush(batch).unwrap();
 
-        let rocks = index.rocks.as_mut().unwrap();
-
         let mut results = Vec::new();
-        for (key, value) in rocks.iterator(rocksdb::IteratorMode::Start) {
+        for (key, value) in index.rocks.iterator(rocksdb::IteratorMode::Start) {
             if key[0] as char == 'V' {
                 let key_string = unsafe { str::from_utf8_unchecked((&key)) }.to_string();
                 results.push((key_string, JsonFetcher::bytes_to_json_value(&*value)));
@@ -477,8 +432,7 @@ mod tests {
         let dbname = "target/tests/testemptydoc";
         let _ = Index::drop(dbname);
 
-        let mut index = Index::new();
-        index.open(dbname, Some(OpenOptions::Create)).unwrap();
+        let mut index = Index::open(dbname, Some(OpenOptions::Create)).unwrap();
 
         let mut batch = Batch::new();
         let id = index.add("{}", &mut batch).unwrap();

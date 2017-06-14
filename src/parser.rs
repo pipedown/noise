@@ -1324,8 +1324,7 @@ mod tests {
         let dbname = "target/tests/test_whitespace";
         let _ = Index::drop(dbname);
 
-        let mut index = Index::new();
-        index.open(dbname, Some(OpenOptions::Create)).unwrap();
+        let index = Index::open(dbname, Some(OpenOptions::Create)).unwrap();
         let mut snapshot = index.new_snapshot();
 
         let query = " \n \t test";
@@ -1345,8 +1344,7 @@ mod tests {
         let dbname = "target/tests/test_must_consume_string_literal";
         let _ = Index::drop(dbname);
 
-        let mut index = Index::new();
-        index.open(dbname, Some(OpenOptions::Create)).unwrap();
+        let index = Index::open(dbname, Some(OpenOptions::Create)).unwrap();
         let snapshot = index.new_snapshot();
 
         let query = r#"" \n \t test""#.to_string();
@@ -1360,8 +1358,7 @@ mod tests {
         let dbname = "target/tests/test_bad_query_syntax";
         let _ = Index::drop(dbname);
 
-        let mut index = Index::new();
-        index.open(dbname, Some(OpenOptions::Create)).unwrap();
+        let index = Index::open(dbname, Some(OpenOptions::Create)).unwrap();
         let snapshot = index.new_snapshot();
 
         let query = r#"find {foo: =="bar""#.to_string();

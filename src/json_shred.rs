@@ -368,8 +368,7 @@ impl Shredder {
                 }
                 Some(JsonEvent::ObjectEnd) => {
                     self.kb.pop_object_key();
-                    if self.kb.kp_segments_len() > 0 &&
-                       !self.object_keys_indexed.pop().unwrap() {
+                    if self.kb.kp_segments_len() > 0 && !self.object_keys_indexed.pop().unwrap() {
                         // this means we never wrote a key because the object was empty.
                         // So preserve the empty object by writing a special value.
                         // but not for the root object. it will always have _id field added.
@@ -485,12 +484,10 @@ mod tests {
         let dbname = "target/tests/test_shred_nested";
         let _ = Index::drop(dbname);
 
-        let mut index = Index::new();
-        index.open(dbname, Some(OpenOptions::Create)).unwrap();
-        let rocks = &index.rocks.unwrap();
+        let index = Index::open(dbname, Some(OpenOptions::Create)).unwrap();
 
-        rocks.write(batch).unwrap();
-        let result = positions_from_rocks(&rocks);
+        index.rocks.write(batch).unwrap();
+        let result = positions_from_rocks(&index.rocks);
 
         let expected = vec![("W._id!foo#123,".to_string(), vec![0]),
                             ("W.some$!array#123,0".to_string(), vec![0]),
@@ -513,12 +510,10 @@ mod tests {
         let dbname = "target/tests/test_shred_double_nested";
         let _ = Index::drop(dbname);
 
-        let mut index = Index::new();
-        index.open(dbname, Some(OpenOptions::Create)).unwrap();
-        let rocks = &index.rocks.unwrap();
+        let index = Index::open(dbname, Some(OpenOptions::Create)).unwrap();
 
-        rocks.write(batch).unwrap();
-        let result = values_from_rocks(&rocks);
+        index.rocks.write(batch).unwrap();
+        let result = values_from_rocks(&index.rocks);
 
         let expected = vec![("V123#._id".to_string(), JsonValue::String("foo".to_string())),
                             ("V123#.a.a".to_string(), JsonValue::String("b".to_string()))];
@@ -542,12 +537,10 @@ mod tests {
         let dbname = "target/tests/test_shred_objects";
         let _ = Index::drop(dbname);
 
-        let mut index = Index::new();
-        index.open(dbname, Some(OpenOptions::Create)).unwrap();
-        let rocks = &index.rocks.unwrap();
+        let index = Index::open(dbname, Some(OpenOptions::Create)).unwrap();
 
-        rocks.write(batch).unwrap();
-        let result = positions_from_rocks(&rocks);
+        index.rocks.write(batch).unwrap();
+        let result = positions_from_rocks(&index.rocks);
         let expected = vec![("W.A$.B!b1#1234,1".to_string(), vec![0]),
                             ("W.A$.B!b2vmx#1234,0".to_string(), vec![0]),
                             ("W.A$.B!three#1234,0".to_string(), vec![10]),
@@ -572,13 +565,10 @@ mod tests {
         let dbname = "target/tests/test_shred_empty_object";
         let _ = Index::drop(dbname);
 
-        let mut index = Index::new();
-        index.open(dbname, Some(OpenOptions::Create)).unwrap();
+        let index = Index::open(dbname, Some(OpenOptions::Create)).unwrap();
 
-        let rocks = &index.rocks.unwrap();
-
-        rocks.write(batch).unwrap();
-        let result = positions_from_rocks(&rocks);
+        index.rocks.write(batch).unwrap();
+        let result = positions_from_rocks(&index.rocks);
         let expected = vec![("W._id!foo#123,".to_string(), vec![0])];
         assert_eq!(result, expected);
     }
