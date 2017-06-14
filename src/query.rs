@@ -795,8 +795,7 @@ mod tests {
         let dbname = "target/tests/querytestdbhelloworld";
         let _ = Index::drop(dbname);
 
-        let mut index = Index::new();
-        index.open(dbname, Some(OpenOptions::Create)).unwrap();
+        let mut index = Index::open(dbname, Some(OpenOptions::Create)).unwrap();
 
         let mut batch = Batch::new();
         let _ = index.add(r#"{"_id": "foo", "hello": "world"}"#, &mut batch);
@@ -811,8 +810,7 @@ mod tests {
         let dbname = "target/tests/querytestdbmoredocs";
         let _ = Index::drop(dbname);
 
-        let mut index = Index::new();
-        index.open(dbname, Some(OpenOptions::Create)).unwrap();
+        let mut index = Index::open(dbname, Some(OpenOptions::Create)).unwrap();
         let mut batch = Batch::new();
         for ii in 1..100 {
             let data = ((ii % 25) + 97) as u8 as char;
