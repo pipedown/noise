@@ -5,8 +5,9 @@ use std::io::{Write, BufRead};
 use std::mem;
 
 
+
 fn is_command(str: &str) -> bool {
-    let commands = ["find", "add", "create", "drop", "open", "pretty", "commit", "del", "load",
+    let commands = ["find", "add", "create", "drop", "open", "pretty", "commit", "del",
                     "dumpkeys", "params"];
     for command in commands.iter() {
         if str.starts_with(command) {
@@ -16,12 +17,9 @@ fn is_command(str: &str) -> bool {
     false
 }
 
-pub fn repl(r: &mut BufRead, w: &mut Write, test_mode: bool) {
-    let mut index: Option<Index> = None;
-    let mut batch = Batch::new();
+
+fn next_command(r: &mut BufRead, w: &mut Write, test_mode: bool) -> Option<String> {
     let mut lines = String::new();
-    let mut pretty = PrettyPrint::new("", "", "");
-    let mut params = None;
     loop {
         // read in command until we get to a end semi-colon
         if r.read_line(&mut lines).unwrap() > 0 {
@@ -50,132 +48,164 @@ pub fn repl(r: &mut BufRead, w: &mut Write, test_mode: bool) {
                 }
             }
         } else {
-            // commit anything written
-            if index.is_some() {
-                let mut batch2 = Batch::new();
-                mem::swap(&mut batch, &mut batch2);
-                if let Err(reason) = index.as_mut().unwrap().flush(batch2) {
-                    write!(w, "{}\n", reason).unwrap();
-                }
-            }
-            return;
+            return None;
         }
+
         if test_mode {
             // echo the command
             w.write_all(lines.as_bytes()).unwrap();
         }
+
         lines = lines.trim_right().to_string();
         if lines.ends_with(";") {
             // strip the semi-colon off
             lines.pop();
+            return Some(lines);
         } else {
-            write!(w, "Unterminated command, no semi-colon (;) {}\n", lines).unwrap();
+            panic!("Unterminated command, no semi-colon (;) {}\n", lines);
         }
-        if lines.starts_with("params") {
-            params = Some(lines[6..].trim_left().to_string());
-        } else if lines.starts_with("pretty") {
-            if lines[6..].trim_left().starts_with("on") {
+    }
+}
+
+pub fn repl(r: &mut BufRead, w: &mut Write, test_mode: bool) {
+    let mut pretty = PrettyPrint::new("", "", "");
+    loop {
+        if let Some(cmd) = next_command(r, w, test_mode) {
+            if cmd.starts_with("open") {
+                let dbname = cmd[4..].trim_left();
+                match Index::open(dbname, None) {
+                    Ok(index) => {
+                        repl_opened(index, r, w, test_mode, pretty);
+                        return;
+                    }
+                    Err(reason) => write!(w, "{}\n", reason).unwrap(),
+                }
+            } else if cmd.starts_with("create") {
+                let dbname = cmd[6..].trim_left();
+                match Index::open(dbname, Some(OpenOptions::Create)) {
+                    Ok(index) => {
+                        repl_opened(index, r, w, test_mode, pretty);
+                        return;
+                    }
+                    Err(reason) => write!(w, "{}\n", reason).unwrap(),
+                }
+            } else if cmd.starts_with("pretty") {
+                if cmd[6..].trim_left().starts_with("on") {
+                    pretty = PrettyPrint::new("  ", "\n", " ");
+                } else {
+                    pretty = PrettyPrint::new("", "", "");
+                }
+            } else if cmd.starts_with("drop") {
+                let dbname = cmd[4..].trim_left();
+                match Index::drop(dbname) {
+                    Ok(()) => (),
+                    Err(reason) => write!(w, "{}\n", reason).unwrap(),
+                }
+            } else {
+                write!(w, "Index isn't open\n").unwrap();
+            }
+        } else {
+            break;
+        }
+    }
+}
+
+fn flush_batch(index: &mut Index, batch: &mut Batch, w: &mut Write) {
+    let mut batch2 = Batch::new();
+    mem::swap(batch, &mut batch2);
+    if let Err(reason) = index.flush(batch2) {
+        write!(w, "{}\n", reason).unwrap();
+    }
+}
+
+fn repl_opened(mut index: Index,
+               r: &mut BufRead,
+               w: &mut Write,
+               test_mode: bool,
+               mut pretty: PrettyPrint) {
+    let mut batch = Batch::new();
+    let mut params = None;
+    loop {
+        let cmd = if let Some(cmd) = next_command(r, w, test_mode) {
+            cmd
+        } else {
+            flush_batch(&mut index, &mut batch, w);
+            return;
+        };
+        if cmd.starts_with("params") {
+            params = Some(cmd[6..].trim_left().to_string());
+        } else if cmd.starts_with("pretty") {
+            if cmd[6..].trim_left().starts_with("on") {
                 pretty = PrettyPrint::new("  ", "\n", " ");
             } else {
                 pretty = PrettyPrint::new("", "", "");
             }
-        } else if lines.starts_with("create") {
-            let dbname = lines[6..].trim_left();
+        } else if cmd.starts_with("create") {
+            flush_batch(&mut index, &mut batch, w);
+            let dbname = cmd[6..].trim_left();
             match Index::open(dbname, Some(OpenOptions::Create)) {
-                Ok(index_new) => index = Some(index_new),
+                Ok(index_new) => index = index_new,
                 Err(reason) => write!(w, "{}\n", reason).unwrap(),
             }
-        } else if lines.starts_with("drop") {
-            let dbname = lines[4..].trim_left();
+        } else if cmd.starts_with("drop") {
+            let dbname = cmd[4..].trim_left();
             match Index::drop(dbname) {
                 Ok(()) => (),
                 Err(reason) => write!(w, "{}\n", reason).unwrap(),
             }
-        } else if lines.starts_with("open") {
-            let dbname = lines[4..].trim_left();
+        } else if cmd.starts_with("open") {
+            let dbname = cmd[4..].trim_left();
             match Index::open(dbname, None) {
-                Ok(index_new) => index = Some(index_new),
+                Ok(index_new) => index = index_new,
                 Err(reason) => write!(w, "{}\n", reason).unwrap(),
             }
-        } else if lines.starts_with("dumpkeys") {
-            if index.is_some() {
-                match index.as_mut().unwrap().all_keys() {
-                    Ok(keys) => {
-                        for key in keys {
-                            write!(w, "{}\n", key).unwrap();
-                        }
-                    }
-                    Err(reason) => {
-                        write!(w, "{}\n", reason).unwrap();
+        } else if cmd.starts_with("dumpkeys") {
+            flush_batch(&mut index, &mut batch, w);
+            match index.all_keys() {
+                Ok(keys) => {
+                    for key in keys {
+                        write!(w, "{}\n", key).unwrap();
                     }
                 }
-            } else {
-                write!(w, "Index isn't open\n").unwrap();
-            }
-        } else if lines.starts_with("add") {
-            if index.is_some() {
-                match index.as_mut().unwrap().add(&lines[3..], &mut batch) {
-                    Ok(id) => write!(w, "{}\n", JsonValue::str_to_literal(&id)).unwrap(),
-                    Err(reason) => write!(w, "{}\n", reason).unwrap(),
-                }
-            } else {
-                write!(w, "Index isn't open\n").unwrap();
-            }
-        } else if lines.starts_with("del") {
-            if index.is_some() {
-                match index
-                          .as_mut()
-                          .unwrap()
-                          .delete(&lines[3..].trim_left(), &mut batch) {
-                    Ok(true) => write!(w, "ok\n").unwrap(),
-                    Ok(false) => write!(w, "not found\n").unwrap(),
-                    Err(reason) => write!(w, "{}\n", reason).unwrap(),
-                }
-            } else {
-                write!(w, "Index isn't open\n").unwrap();
-            }
-        } else if lines.starts_with("commit") {
-            if index.is_some() {
-                let mut batch2 = Batch::new();
-                mem::swap(&mut batch, &mut batch2);
-                if let Err(reason) = index.as_mut().unwrap().flush(batch2) {
+                Err(reason) => {
                     write!(w, "{}\n", reason).unwrap();
                 }
-            } else {
-                write!(w, "Index isn't open\n").unwrap();
             }
-        } else if lines.starts_with("find") {
-            if index.is_some() {
-                let mut batch2 = Batch::new();
-                mem::swap(&mut batch, &mut batch2);
-                if let Err(reason) = index.as_mut().unwrap().flush(batch2) {
-                    write!(w, "{}\n", reason).unwrap();
-                } else {
-                    match index.as_ref().unwrap().query(&lines, params.take()) {
-                        Ok(results) => {
-                            let mut results = results.peekable();
+        } else if cmd.starts_with("add") {
+            match index.add(&cmd[3..], &mut batch) {
+                Ok(id) => write!(w, "{}\n", JsonValue::str_to_literal(&id)).unwrap(),
+                Err(reason) => write!(w, "{}\n", reason).unwrap(),
+            }
+        } else if cmd.starts_with("del") {
+            match index.delete(&cmd[3..].trim_left(), &mut batch) {
+                Ok(true) => write!(w, "ok\n").unwrap(),
+                Ok(false) => write!(w, "not found\n").unwrap(),
+                Err(reason) => write!(w, "{}\n", reason).unwrap(),
+            }
+        } else if cmd.starts_with("commit") {
+            flush_batch(&mut index, &mut batch, w);
+        } else if cmd.starts_with("find") {
+            flush_batch(&mut index, &mut batch, w);
+            match index.query(&cmd, params.take()) {
+                Ok(results) => {
+                    let mut results = results.peekable();
 
-                            w.write_all(b"[").unwrap();
-                            if results.peek().is_some() {
-                                w.write_all(b"\n").unwrap();
-                            }
-                            pretty.push();
-                            while let Some(json) = results.next() {
-                                json.render(w, &mut pretty).unwrap();
-                                if results.peek().is_some() {
-                                    w.write_all(b",").unwrap();
-                                }
-                                w.write_all(b"\n").unwrap();
-                            }
-                            w.write_all(b"]\n").unwrap();
-                        }
-                        Err(reason) => write!(w, "{}\n", reason).unwrap(),
+                    w.write_all(b"[").unwrap();
+                    if results.peek().is_some() {
+                        w.write_all(b"\n").unwrap();
                     }
+                    pretty.push();
+                    while let Some(json) = results.next() {
+                        json.render(w, &mut pretty).unwrap();
+                        if results.peek().is_some() {
+                            w.write_all(b",").unwrap();
+                        }
+                        w.write_all(b"\n").unwrap();
+                    }
+                    w.write_all(b"]\n").unwrap();
                 }
-            } else {
-                write!(w, "Index isn't open\n").unwrap();
+                Err(reason) => write!(w, "{}\n", reason).unwrap(),
             }
         }
-        lines.clear();
     }
 }
