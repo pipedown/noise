@@ -310,15 +310,15 @@ impl Index {
     }
 }
 
-pub struct IndexRWLock {
+pub struct IndexRwLock {
     raw: *const Index,
     lock: Mutex<Box<Index>>,
 }
 
-impl IndexRWLock {
-    pub fn new(index: Index) -> IndexRWLock {
+impl IndexRwLock {
+    pub fn new(index: Index) -> IndexRwLock {
         let index = Box::new(index);
-        IndexRWLock {
+        IndexRwLock {
             raw: index.as_ref() as *const Index,
             lock: Mutex::new(index),
         }
@@ -333,13 +333,13 @@ impl IndexRWLock {
     }
 }
 
-unsafe impl Send for IndexRWLock {}
-unsafe impl Sync for IndexRWLock {}
+unsafe impl Send for IndexRwLock {}
+unsafe impl Sync for IndexRwLock {}
 
 #[cfg(test)]
 mod tests {
     extern crate rocksdb;
-    use super::{Index, OpenOptions, Batch, IndexRWLock};
+    use super::{Index, OpenOptions, Batch, IndexRwLock};
     use std::str;
     use std::sync::Arc;
     use snapshot::JsonFetcher;
@@ -483,7 +483,7 @@ mod tests {
 
         let index = Index::open(dbname, Some(OpenOptions::Create)).unwrap();
 
-        let index = Arc::new(IndexRWLock::new(index));
+        let index = Arc::new(IndexRwLock::new(index));
         let index_write = index.clone();
 
         let (sender_w, receiver_r) = channel();
