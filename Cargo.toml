@@ -1,6 +1,6 @@
 [package]
 name = "noise_search"
-version = "0.6.1"
+version = "0.6.2"
 authors = ["Damien Katz <me@damienkatz.com>", "Volker Mische <volker.mische@gmail.com>"]
 repository = "https://github.com/pipedown/noise.git"
 homepage = "http:/noisesearch.org"
