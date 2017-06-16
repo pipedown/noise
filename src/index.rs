@@ -310,36 +310,38 @@ impl Index {
     }
 }
 
-pub struct IndexRwLock {
-    raw: *const Index,
-    lock: Mutex<Box<Index>>,
+/// Used for types where a single writer is allowed to be concurrent with multiple
+/// readers. Unlike RwLock, where a writer gets exlusive access to and blocks readers.
+pub struct MvccRwLock<T> {
+    raw: *const T,
+    lock: Mutex<Box<T>>,
 }
 
-impl IndexRwLock {
-    pub fn new(index: Index) -> IndexRwLock {
-        let index = Box::new(index);
-        IndexRwLock {
-            raw: index.as_ref() as *const Index,
-            lock: Mutex::new(index),
+impl<T> MvccRwLock<T> {
+    pub fn new(t: T) -> MvccRwLock<T> {
+        let t = Box::new(t);
+        MvccRwLock {
+            raw: t.as_ref() as *const T,
+            lock: Mutex::new(t),
         }
     }
 
-    pub fn read(&self) -> &Index {
+    pub fn read(&self) -> &T {
         unsafe { &*self.raw }
     }
 
-    pub fn write(&self) -> LockResult<MutexGuard<Box<Index>>> {
+    pub fn write(&self) -> LockResult<MutexGuard<Box<T>>> {
         self.lock.lock()
     }
 }
 
-unsafe impl Send for IndexRwLock {}
-unsafe impl Sync for IndexRwLock {}
+unsafe impl<T> Send for MvccRwLock<T> {}
+unsafe impl<T> Sync for MvccRwLock<T> {}
 
 #[cfg(test)]
 mod tests {
     extern crate rocksdb;
-    use super::{Index, OpenOptions, Batch, IndexRwLock};
+    use super::{Index, OpenOptions, Batch, MvccRwLock};
     use std::str;
     use std::sync::Arc;
     use snapshot::JsonFetcher;
@@ -483,7 +485,7 @@ mod tests {
 
         let index = Index::open(dbname, Some(OpenOptions::Create)).unwrap();
 
-        let index = Arc::new(IndexRwLock::new(index));
+        let index = Arc::new(MvccRwLock::new(index));
         let index_write = index.clone();
 
         let (sender_w, receiver_r) = channel();
