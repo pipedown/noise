@@ -10,6 +10,8 @@ use std::io::Write;
 use self::uuid::{Uuid, UuidVersion};
 use std::cmp::Ordering;
 
+use std::sync::{Mutex, MutexGuard, LockResult};
+
 use self::varint::{VarintRead, VarintWrite};
 
 use rocksdb::{MergeOperands, IteratorMode, Snapshot as RocksSnapshot, CompactionDecision};
@@ -308,14 +310,42 @@ impl Index {
     }
 }
 
+pub struct IndexRWLock {
+    raw: *const Index,
+    lock: Mutex<Box<Index>>,
+}
+
+impl IndexRWLock {
+    pub fn new(index: Index) -> IndexRWLock {
+        let index = Box::new(index);
+        IndexRWLock {
+            raw: index.as_ref() as *const Index,
+            lock: Mutex::new(index),
+        }
+    }
+
+    pub fn read(&self) -> &Index {
+        unsafe { &*self.raw }
+    }
+
+    pub fn write(&self) -> LockResult<MutexGuard<Box<Index>>> {
+        self.lock.lock()
+    }
+}
+
+unsafe impl Send for IndexRWLock {}
+unsafe impl Sync for IndexRWLock {}
 
 #[cfg(test)]
 mod tests {
     extern crate rocksdb;
-    use super::{Index, OpenOptions, Batch};
+    use super::{Index, OpenOptions, Batch, IndexRWLock};
     use std::str;
+    use std::sync::Arc;
     use snapshot::JsonFetcher;
     use json_value::JsonValue;
+    use std::sync::mpsc::channel;
+    use std::thread;
 
     #[test]
     fn test_open() {
@@ -443,6 +473,57 @@ mod tests {
         let json = results.next().unwrap();
         assert_eq!(json,
                    JsonValue::Object(vec![("_id".to_string(), JsonValue::String(id))]));
+
+    }
+
+    #[test]
+    fn test_index_rw_lock() {
+        let dbname = "target/tests/testindexrwlock";
+        let _ = Index::drop(dbname);
+
+        let index = Index::open(dbname, Some(OpenOptions::Create)).unwrap();
+
+        let index = Arc::new(IndexRWLock::new(index));
+        let index_write = index.clone();
+
+        let (sender_w, receiver_r) = channel();
+        let (sender_r, receiver_w) = channel();
+
+        // Spawn off a writer
+        thread::spawn(move || {
+            let mut index = index_write.write().unwrap();
+            let mut batch = Batch::new();
+
+            // wait until the main thread has read access
+            assert_eq!(1, receiver_w.recv().unwrap());
+            println!("reader sent success 1");
+
+            index
+                .add(r#"{"_id":"1","foo":"bar"}"#, &mut batch)
+                .unwrap();
+
+            index.flush(batch).unwrap();
+            println!("sending to reader");
+            sender_w.send(2).unwrap();
+
+            // wait until the main thread has successfully performed a query
+            assert_eq!(3, receiver_w.recv().unwrap());
+            println!("reader sent success 3");
+        });
+
+        let index = index.read();
+
+        sender_r.send(1).unwrap();
+
+        // wait until the writer thread has written something
+
+        assert_eq!(2, receiver_r.recv().unwrap());
+        println!("writer sent success 2");
+
+        let mut iter = index.query(r#"find {foo: == "bar"}"#, None).unwrap();
+        assert_eq!(JsonValue::String("1".to_string()), iter.next().unwrap());
+
+        sender_r.send(3).unwrap();
 
     }
 }
