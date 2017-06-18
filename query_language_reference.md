@@ -134,7 +134,7 @@ You can use logical not with parentheses to negate everything enclosed. This exa
 find {foo: == "bar", !(fab: == "baz" || fab: == "biz")}
 ```
 
-You cannot have every clause be negated. Query need at least one non-negated clauses.
+You cannot have every clause be negated as it's a very resource intensive operation. Query need at least one non-negated clauses.
 
 Illegal:
 
@@ -155,6 +155,14 @@ Illegal:
 ```
 find {foo ~= "waz" && !(foo: ~= "bar" && foo: !~= "baz"})
 ```
+
+Workarounds for this limitation are:
+
+ - Do a `find {}` and filter out the results in your application
+ - Add a field that will always match and use it in your condition. Example:
+   ```
+   find {alwaystrue: == true && foo: !~= "bar"}
+   ```
 
 ### Relevancy Scoring and Boosting
 
