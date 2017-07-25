@@ -602,14 +602,14 @@ impl<'a, 'c> Parser<'a, 'c> {
         }
     }
 
-    fn find<'b>(&'b mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
+    fn find(&mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
         if !self.consume("find") {
             return Err(Error::Parse("Missing 'find' keyword".to_string()));
         }
         self.not_object()
     }
 
-    fn not_object<'b>(&'b mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
+    fn not_object(&mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
         if self.consume("!") {
             let filter = try!(self.object());
             Ok(Box::new(NotFilter::new(&self.snapshot, filter, self.kb.clone())))
@@ -618,7 +618,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         }
     }
 
-    fn object<'b>(&'b mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
+    fn object(&mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
         if self.consume("{") {
             if self.consume("}") {
                 return Ok(Box::new(AllDocsFilter::new(&self.snapshot)));
@@ -643,7 +643,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         }
     }
 
-    fn parens<'b>(&'b mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
+    fn parens(&mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
         if self.consume("!") {
             let filter = try!(self.parens());
             return Ok(Box::new(NotFilter::new(&self.snapshot, filter, self.kb.clone())));
@@ -655,7 +655,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         self.consume_boost_and_wrap_filter(filter)
     }
 
-    fn obool<'b>(&'b mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
+    fn obool(&mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
         let mut filter = try!(self.ocompare());
         loop {
             filter = if self.consume("&&") || self.consume(",") {
@@ -671,7 +671,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         Ok(filter)
     }
 
-    fn ocompare<'b>(&'b mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
+    fn ocompare(&mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
         if let Some(filter) = try!(self.oparens()) {
             Ok(filter)
         } else if let Some(field) = try!(self.consume_key()) {
@@ -690,7 +690,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         }
     }
 
-    fn oparens<'b>(&'b mut self) -> Result<Option<Box<QueryRuntimeFilter + 'a>>, Error> {
+    fn oparens(&mut self) -> Result<Option<Box<QueryRuntimeFilter + 'a>>, Error> {
         let offset = self.offset;
         if self.consume("!") {
             if let Some(f) = try!(self.oparens()) {
@@ -723,7 +723,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         }
     }
 
-    fn compare<'b>(&'b mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
+    fn compare(&mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
         if let Some(filter) = try!(self.equal()) {
             Ok(filter)
         } else if let Some(filter) = try!(self.stemmed()) {
@@ -743,7 +743,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         }
     }
 
-    fn equal<'b>(&'b mut self) -> Result<Option<Box<QueryRuntimeFilter + 'a>>, Error> {
+    fn equal(&mut self) -> Result<Option<Box<QueryRuntimeFilter + 'a>>, Error> {
         let not_equal = self.consume("!=");
         if not_equal || self.consume("==") {
             let json = try!(self.must_consume_json_primitive());
@@ -803,7 +803,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         }
     }
 
-    fn stemmed<'b>(&'b mut self) -> Result<Option<Box<QueryRuntimeFilter + 'a>>, Error> {
+    fn stemmed(&mut self) -> Result<Option<Box<QueryRuntimeFilter + 'a>>, Error> {
         let not_stemmed = self.consume("!~=");
         if not_stemmed || self.consume("~=") {
             // regular search
@@ -882,7 +882,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         }
     }
 
-    fn abool<'b>(&'b mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
+    fn abool(&mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
         let mut filter = try!(self.acompare());
         loop {
             filter = if self.consume("&&") || self.consume(",") {
@@ -898,7 +898,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         Ok(filter)
     }
 
-    fn acompare<'b>(&'b mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
+    fn acompare(&mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
         if let Some(filter) = try!(self.aparens()) {
             Ok(filter)
         } else {
@@ -906,7 +906,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         }
     }
 
-    fn aparens<'b>(&'b mut self) -> Result<Option<Box<QueryRuntimeFilter + 'a>>, Error> {
+    fn aparens(&mut self) -> Result<Option<Box<QueryRuntimeFilter + 'a>>, Error> {
         let offset = self.offset;
         if self.consume("!") {
             if let Some(f) = try!(self.aparens()) {
@@ -939,7 +939,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         }
     }
 
-    fn bind_var<'b>(&'b mut self) -> Result<Option<Box<QueryRuntimeFilter + 'a>>, Error> {
+    fn bind_var(&mut self) -> Result<Option<Box<QueryRuntimeFilter + 'a>>, Error> {
         let offset = self.offset;
         if let Some(bind_name) = self.consume_field() {
             if self.consume("::") {
@@ -955,7 +955,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         Ok(None)
     }
 
-    fn array<'b>(&'b mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
+    fn array(&mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
         if !self.consume("[") {
             return Err(Error::Parse("Expected '['".to_string()));
         }
