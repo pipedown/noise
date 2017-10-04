@@ -26,6 +26,7 @@ fn test_repl() {
         .map(|r| r.unwrap())
         .collect();
     entries.sort_by_key(|entry| entry.metadata().unwrap().modified().unwrap());
+    entries.reverse();
     for entry in entries {
         let mut path = entry.path();
         if path.extension().unwrap().to_str().unwrap() != "noise" {
