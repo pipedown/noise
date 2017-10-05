@@ -19,7 +19,7 @@ rustc-serialize = "0.3.19"
 stemmer = "0.3.2"
 unicode-normalization = "0.1.2"
 unicode-segmentation = "0.1.2"
-rocksdb = { git = "https://github.com/vmx/rust-rocksdb", branch = "noise" }
+rocksdb = "0.8.1"
 varint = "0.9.0"
 uuid = { version = "0.3", features = ["v4"] }
 
