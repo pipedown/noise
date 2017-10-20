@@ -3,6 +3,7 @@ use std;
 use std::str;
 use std::collections::HashMap;
 use std::iter::Iterator;
+use std::rc::Rc;
 use std::usize;
 
 use error::Error;
@@ -15,7 +16,7 @@ use returnable::{Returnable, RetValue, RetObject, RetArray, RetLiteral, RetBind,
                  ReturnPath};
 use filters::{QueryRuntimeFilter, ExactMatchFilter, StemmedWordFilter, StemmedWordPosFilter,
               StemmedPhraseFilter, DistanceFilter, AndFilter, OrFilter, BindFilter, BoostFilter,
-              NotFilter, RangeFilter, RangeOperator, AllDocsFilter};
+              NotFilter, RangeFilter, RangeOperator, AllDocsFilter, BboxFilter};
 use snapshot::Snapshot;
 
 
@@ -32,14 +33,14 @@ pub struct Parser<'a, 'c> {
     offset: usize,
     params: HashMap<String, JsonValue>,
     kb: KeyBuilder,
-    pub snapshot: Snapshot<'a>,
+    pub snapshot: Rc<Snapshot<'a>>,
     pub needs_scoring: bool,
 }
 
 impl<'a, 'c> Parser<'a, 'c> {
     pub fn new(query: &'c str,
                params: HashMap<String, JsonValue>,
-               snapshot: Snapshot<'a>)
+               snapshot: Rc<Snapshot<'a>>)
                -> Parser<'a, 'c> {
         Parser {
             query: query,
@@ -137,6 +138,27 @@ impl<'a, 'c> Parser<'a, 'c> {
             Some(result)
         } else {
             None
+        }
+    }
+
+    fn consume_bbox(&mut self) -> Result<[f64; 4], Error> {
+        let error_message = "Bounding box needs to be `[west, south, east, north]`.";
+        match try!(self.json_array()) {
+            JsonValue::Array(vec) => {
+                if vec.len() == 4 {
+                    let mut bbox = [0f64; 4];
+                    for (ii, value) in vec.iter().enumerate() {
+                        match value {
+                            &JsonValue::Number(num) => bbox[ii] = num,
+                            _ => return Err(Error::Parse(error_message.to_string()))
+                        }
+                    }
+                    Ok(bbox)
+                } else {
+                    Err(Error::Parse(error_message.to_string()))
+                }
+            }
+            _ => Err(Error::Parse(error_message.to_string()))
         }
     }
 
@@ -746,6 +768,8 @@ impl<'a, 'c> Parser<'a, 'c> {
             Ok(filter)
         } else if let Some(filter) = try!(self.stemmed()) {
             Ok(filter)
+        } else if let Some(filter) = try!(self.bbox()) {
+            Ok(filter)
         } else {
             if self.consume(">") {
                 let min = try!(self.consume_range_operator());
@@ -895,6 +919,16 @@ impl<'a, 'c> Parser<'a, 'c> {
                     }
                 }
             }
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn bbox(&mut self) -> Result<Option<Box<QueryRuntimeFilter + 'a>>, Error> {
+        // TODO vmx 2017-10-12: Implement boost
+        if self.consume("&&") {
+            let bbox = try!(self.consume_bbox());
+            Ok(Some(Box::new(BboxFilter::new(Rc::clone(&self.snapshot), self.kb.clone(), bbox))))
         } else {
             Ok(None)
         }
@@ -1312,6 +1346,7 @@ mod tests {
     use super::Parser;
 
     use std::collections::HashMap;
+    use std::rc::Rc;
     use index::{Index, OpenOptions};
 
     #[test]
@@ -1320,14 +1355,14 @@ mod tests {
         let _ = Index::drop(dbname);
 
         let index = Index::open(dbname, Some(OpenOptions::Create)).unwrap();
-        let mut snapshot = index.new_snapshot();
+        let mut snapshot = Rc::new(index.new_snapshot());
 
         let query = " \n \t test";
         let mut parser = Parser::new(query, HashMap::new(), snapshot);
         parser.ws();
         assert_eq!(parser.offset, 5);
 
-        snapshot = index.new_snapshot();
+        snapshot = Rc::new(index.new_snapshot());
         let query = "test".to_string();
         let mut parser = Parser::new(&query, HashMap::new(), snapshot);
         parser.ws();
@@ -1340,7 +1375,7 @@ mod tests {
         let _ = Index::drop(dbname);
 
         let index = Index::open(dbname, Some(OpenOptions::Create)).unwrap();
-        let snapshot = index.new_snapshot();
+        let snapshot = Rc::new(index.new_snapshot());
 
         let query = r#"" \n \t test""#.to_string();
         let mut parser = Parser::new(&query, HashMap::new(), snapshot);
@@ -1354,7 +1389,7 @@ mod tests {
         let _ = Index::drop(dbname);
 
         let index = Index::open(dbname, Some(OpenOptions::Create)).unwrap();
-        let snapshot = index.new_snapshot();
+        let snapshot = Rc::new(index.new_snapshot());
 
         let query = r#"find {foo: =="bar""#.to_string();
         let mut parser = Parser::new(&query, HashMap::new(), snapshot);

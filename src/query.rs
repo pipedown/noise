@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::mem::swap;
 use std::collections::VecDeque;
 use std::iter::Iterator;
+use std::rc::Rc;
 use std::usize;
 
 use error::Error;
@@ -172,7 +173,7 @@ pub struct QueryScoringInfo {
 pub struct QueryResults<'a> {
     filter: Box<QueryRuntimeFilter + 'a>,
     doc_result_next: DocResult,
-    snapshot: Snapshot<'a>,
+    snapshot: Rc<Snapshot<'a>>,
     fetcher: JsonFetcher,
     returnable: Box<Returnable>,
     needs_ordering_and_ags: bool,
@@ -200,7 +201,8 @@ impl<'a> QueryResults<'a> {
         } else {
             HashMap::new()
         };
-        let mut parser = Parser::new(query, params, snapshot);
+        let snapshot = Rc::new(snapshot);
+        let mut parser = Parser::new(query, params, Rc::clone(&snapshot));
         let mut filter = try!(parser.build_filter());
         let mut orders = try!(parser.order_clause());
         let mut returnable = try!(parser.return_clause());
@@ -347,8 +349,8 @@ impl<'a> QueryResults<'a> {
         Ok(QueryResults {
                filter: filter,
                doc_result_next: DocResult::new(),
-               fetcher: parser.snapshot.new_json_fetcher(),
-               snapshot: parser.snapshot,
+               fetcher: snapshot.new_json_fetcher(),
+               snapshot: snapshot,
                returnable: returnable,
                needs_ordering_and_ags: needs_ordering_and_ags,
                done_with_ordering_and_ags: false,

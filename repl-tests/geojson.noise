@@ -1,0 +1,154 @@
+# Test for less and greater than
+
+drop target/tests/querytestgeojson;
+create target/tests/querytestgeojson;
+
+
+add {"_id": "point", "geometry": {"type": "Point", "coordinates": [10.9, 48.4]}};
+"point"
+
+add {"_id": "two", "geometry": {"coordinates": [10.9, 48.4], "type": "Point"}};
+"two"
+
+add {"_id": "linestring", "geometry": {"type": "LineString", "coordinates": [[102.0, 0.0], [103.0, 1.0], [104.0, 0.0], [105.0, 1.0]]}};
+"linestring"
+
+add {"_id": "polygon", "geometry": {"type": "Polygon", "coordinates": [[[100.0, 0.0], [101.0, 0.0], [101.0, 1.0], [100.0, 1.0], [100.0, 0.0]]]}};
+"polygon"
+
+add {"_id": "inarray", "arr": [{"geometry": {"type": "Point", "coordinates": [10.9, 48.4]}}]};
+"inarray"
+
+find {geometry: && [1.1, 2.2, 3.3, 4.4]};
+[]
+
+find {geometry: && [-1000, -1000, 99, 1000]};
+[
+"point",
+"two"
+]
+
+find {geometry: && [100, 0, 200, 5]};
+[
+"linestring",
+"polygon"
+]
+
+find {geometry: && [102, 0, 200, 5]};
+[
+"linestring"
+]
+
+find {arr: [{geometry: && [0, 0, 20, 50]}, {geometry: {type: == "Point"}}]};
+[
+"inarray"
+]
+
+# Error cases
+find {geometry: && []};
+Parse error: Bounding box needs to be `[west, south, east, north]`.
+
+find {geometry: && [1, 2, 3]};
+Parse error: Bounding box needs to be `[west, south, east, north]`.
+
+find {geometry: && [1, 2, 3, 4, 5]};
+Parse error: Bounding box needs to be `[west, south, east, north]`.
+
+find {geometry: && ["some", "strings"]};
+Parse error: Bounding box needs to be `[west, south, east, north]`.
+
+find {geometry: && ["some", true]};
+Parse error: Bounding box needs to be `[west, south, east, north]`.
+
+find {geometry: && [false, false, false, false]};
+Parse error: Bounding box needs to be `[west, south, east, north]`.
+
+find {geometry: && "astring"};
+Parse error: Expected '[' at character 19, found ".
+
+find {geometry: && true};
+Parse error: Expected '[' at character 19, found t.
+
+find {geometry: && null};
+Parse error: Expected '[' at character 19, found n.
+
+# Arrays of geometries
+
+add {"_id": "arraypoint", "area": [{"type": "Point", "coordinates": [10.9, 48.4]}, {"type": "Point", "coordinates": [-5.0, -20.1]}]};
+"arraypoint"
+
+find {area: [&& [-10, -100, 0, 0]]};
+[
+"arraypoint"
+]
+
+find {area: [&& [0, 0, 120, 100]]};
+[
+"arraypoint"
+]
+
+find {area: [&& [-20, -50, 120, 100]]};
+[
+"arraypoint"
+]
+
+find {area: first::[&& [5, 5, 30, 50]]}
+return first.coordinates;
+[
+[[10.9,48.4]]
+]
+
+find {area: second::[&& [-10, -100, 0, 0]]}
+return second.coordinates;
+[
+[[-5,-20.1]]
+]
+
+find {area: both::[&& [-10, -100, 50, 100]]}
+return both.coordinates;
+[
+[[-5,-20.1],[10.9,48.4]]
+]
+
+find {area: none::[&& [0, 0, 0, 0]]}
+return none.coordinates;
+[]
+
+add {"_id": "polygons", "area": [{"geom": {"type": "Polygon", "coordinates": [[[100.0, 0.0], [101.0, 0.0], [101.0, 1.0], [100.0, 1.0], [100.0, 0.0]]]}}, {"geom": {"type": "Polygon", "coordinates": [[[100.0, 110.0], [101.0, 110.0], [101.0, 111.0], [100.0, 111.0], [100.0, 110.0]]]}}]};
+"polygons"
+find {area: [{geom: && [0,50,1800,500]}]};
+[
+"polygons"
+]
+
+add {"_id": "arrayarraypoint", "array": [{"area": [{"geom": {"type": "Point", "coordinates": [10.9, 48.4]}}, {"geom": {"type": "Point", "coordinates": [-5.0, -20.1]}}]}]};
+"arrayarraypoint"
+
+find {array: [{area: second::[{geom: && [-10, -100, 0, 0]}]}]}
+return second.geom.coordinates;
+[
+[[-5,-20.1]]
+]
+
+# Scoring
+
+find {geometry: && [100, 0, 200, 5]}
+return score();
+[
+1,
+1
+]
+
+find {geometry: && [100, 0, 200, 5] || geometry: {type: == "Polygon"}}
+return [._id, score()];
+[
+["linestring",0.25],
+["polygon",1]
+]
+
+find {(geometry: && [100, 0, 200, 5])^2 || geometry: {type: == "Polygon"}}
+return [._id, score()];
+[
+["linestring",0.5],
+["polygon",1.5]
+]

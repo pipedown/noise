@@ -1,9 +1,12 @@
 extern crate unicode_normalization;
+extern crate varint;
 
 use query::DocResult;
-use std::str;
+use std::{mem, str};
 use std::cmp::Ordering;
+use std::io::Cursor;
 
+use self::varint::VarintWrite;
 
 /// For index header. This constant isn't actually used in the code, but provided here for
 /// completeness.
@@ -40,7 +43,7 @@ pub enum Segment {
 #[derive(Debug, Clone)]
 pub struct KeyBuilder {
     keypath: Vec<String>,
-    arraypath: Vec<u64>,
+    pub arraypath: Vec<u64>,
 }
 
 impl KeyBuilder {
@@ -120,6 +123,46 @@ impl KeyBuilder {
         } else {
             None
         }
+    }
+
+    /// Build key to query an R-tree
+    pub fn rtree_query_key(&self, seq_min: u64, seq_max: u64, bbox: &[u8]) -> Vec<u8> {
+        let mut keypath = String::with_capacity(100);
+        for segment in &self.keypath {
+            keypath.push_str(&segment);
+        }
+        let mut key = Vec::new();
+        let mut keypath_len = Cursor::new(Vec::new());
+        let _ = keypath_len.write_unsigned_varint_32(keypath.len() as u32);
+        key.append(&mut keypath_len.get_mut());
+        key.extend_from_slice(keypath.as_bytes());
+        key.extend_from_slice(&unsafe{ mem::transmute::<u64, [u8; 8]>(seq_min) });
+        key.extend_from_slice(&unsafe{ mem::transmute::<u64, [u8; 8]>(seq_max) });
+        key.extend_from_slice(bbox);
+        return key;
+    }
+
+
+    /// Build key an R-tree index can be built upon
+    /// The structure is a bit different from other keypath. It doesn't have a prefix as those
+    /// keys are stored in a separate column family. The Arraypath is not part of the key, but
+    /// stored as value. The sequence number is encoded as integer as it is the first dimension
+    /// of the R-tree. The second and third dimensions are the values of the bounding box.
+    pub fn rtree_key(&self, seq: u64, bbox: &[u8]) -> Vec<u8> {
+        let mut keypath = String::with_capacity(100);
+        for segment in &self.keypath {
+            keypath.push_str(&segment);
+        }
+        let mut key = Vec::new();
+        let mut keypath_len = Cursor::new(Vec::new());
+        let _ = keypath_len.write_unsigned_varint_32(keypath.len() as u32);
+        key.append(&mut keypath_len.get_mut());
+        key.extend_from_slice(keypath.as_bytes());
+        // The Internal Id is always only a single value, hence don't store a range, but only
+        // that single valye as first dimension
+        key.extend_from_slice(&unsafe{ mem::transmute::<u64, [u8; 8]>(seq) });
+        key.extend_from_slice(bbox);
+        return key;
     }
 
     /// Build the index key that corresponds to a number primitive
