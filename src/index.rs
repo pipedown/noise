@@ -108,7 +108,7 @@ impl Index {
         Ok(ret)
     }
 
-    pub fn add(&mut self, json: &str, mut batch: &mut Batch) -> Result<String, Error> {
+    pub fn add(&mut self, json: &str, batch: &mut Batch) -> Result<String, Error> {
         let mut shredder = Shredder::new();
         let (seq, docid) = if let Some(docid) = try!(shredder.shred(json)) {
             // user supplied doc id, see if we have an existing one.
@@ -143,7 +143,7 @@ impl Index {
     }
 
     /// Returns Ok(true) if the document was found and deleted, Ok(false) if it could not be found
-    pub fn delete(&mut self, docid: &str, mut batch: &mut Batch) -> Result<bool, Error> {
+    pub fn delete(&mut self, docid: &str, batch: &mut Batch) -> Result<bool, Error> {
         if batch.id_str_in_batch.contains(docid) {
             // oops use trying to delete a doc that's in the batch. Can't happen,
             return Err(Error::Write("Attempt to delete doc with same _id added earlier"

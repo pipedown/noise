@@ -60,7 +60,7 @@ impl QueryRuntimeFilter for AllDocsFilter {
         }
     }
 
-    fn prepare_relevancy_scoring(&mut self, mut qsi: &mut QueryScoringInfo) {
+    fn prepare_relevancy_scoring(&mut self, qsi: &mut QueryScoringInfo) {
         qsi.num_terms += 1;
         qsi.sum_of_idt_sqs += 1.0;
     }
@@ -361,7 +361,7 @@ impl QueryRuntimeFilter for ExactMatchFilter {
         }
     }
 
-    fn prepare_relevancy_scoring(&mut self, mut qsi: &mut QueryScoringInfo) {
+    fn prepare_relevancy_scoring(&mut self, qsi: &mut QueryScoringInfo) {
         // we score these as binary. Either they have a value of 1 or nothing.
         self.term_ordinal = Some(qsi.num_terms);
         qsi.num_terms += 1;
