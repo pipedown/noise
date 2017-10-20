@@ -135,7 +135,7 @@ impl DocResult {
             self.seq += 1;
         } else {
             self.arraypath.resize(array_depth, 0);
-            if let Some(mut i) = self.arraypath.last_mut() {
+            if let Some(i) = self.arraypath.last_mut() {
                 *i += 1;
             }
         }

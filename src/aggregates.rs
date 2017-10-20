@@ -114,7 +114,7 @@ impl AggregateFun {
         base
     }
 
-    fn sum(mut existing: &mut JsonValue, new: JsonValue, _user_arg: &JsonValue) {
+    fn sum(existing: &mut JsonValue, new: JsonValue, _user_arg: &JsonValue) {
         match new {
             JsonValue::Number(new) => {
                 if let &mut JsonValue::Number(ref mut existing) = existing {
@@ -151,7 +151,7 @@ impl AggregateFun {
         val
     }
 
-    fn max_array(mut existing: &mut JsonValue, new: JsonValue, _user_arg: &JsonValue) {
+    fn max_array(existing: &mut JsonValue, new: JsonValue, _user_arg: &JsonValue) {
         if let JsonValue::Array(vec) = new {
             for v in vec {
                 AggregateFun::max_array(existing, v, _user_arg);
@@ -174,7 +174,7 @@ impl AggregateFun {
         val
     }
 
-    fn min_array(mut existing: &mut JsonValue, new: JsonValue, _user_arg: &JsonValue) {
+    fn min_array(existing: &mut JsonValue, new: JsonValue, _user_arg: &JsonValue) {
         if let JsonValue::Array(vec) = new {
             for v in vec {
                 AggregateFun::min_array(existing, v, _user_arg);
