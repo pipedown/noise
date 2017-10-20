@@ -915,7 +915,7 @@ impl<'a> NotFilter<'a> {
                 // if we got a (not) match on the first array element, it's always a match
                 // but only if the document actually exists.
                 true
-            } 
+            }
             Some(_) => {
                 // if we got a (not) match on any other element, check to make sure the key exists.
                 // if not, it means other elements did a regular match and skipped them, then we
