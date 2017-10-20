@@ -56,6 +56,10 @@ impl<'a> Snapshot<'a> {
         self.rocks.iterator(IteratorMode::Start)
     }
 
+    pub fn new_rtree_iterator(&self, query: &[u8]) -> DBIterator {
+        self.rocks.rtree_iterator(query)
+    }
+
     pub fn new_all_docs_iterator(&self) -> AllDocsIterator {
         let mut iter = self.rocks.iterator(IteratorMode::Start);
         iter.set_mode(IteratorMode::From(b"S", rocksdb::Direction::Forward));

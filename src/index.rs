@@ -14,7 +14,8 @@ use std::sync::{Mutex, MutexGuard, LockResult};
 
 use self::varint::{VarintRead, VarintWrite};
 
-use rocksdb::{MergeOperands, IteratorMode, Snapshot as RocksSnapshot, CompactionDecision};
+use rocksdb::{BlockBasedIndexType, BlockBasedOptions, MergeOperands, IteratorMode,
+    Snapshot as RocksSnapshot, CompactionDecision};
 pub use rocksdb::WriteBatch;
 
 use error::Error;
@@ -29,6 +30,7 @@ pub struct Index {
     name: String,
     high_doc_seq: u64,
     pub rocks: rocksdb::DB,
+    rtree: rocksdb::ColumnFamily,
 }
 
 pub struct Batch {
@@ -56,7 +58,14 @@ impl Index {
         rocks_options.set_merge_operator("noise_merge", Index::sum_merge);
         rocks_options.set_compaction_filter("noise_compact", Index::compaction_filter);
 
-        let rocks = match rocksdb::DB::open(&rocks_options, name) {
+        let mut rtree_options = rocksdb::Options::default();
+        rtree_options.set_memtable_skip_list_mbb_rep();
+        let mut block_based_opts = BlockBasedOptions::default();
+        block_based_opts.set_index_type(BlockBasedIndexType::RtreeSearch);
+        rtree_options.set_block_based_table_factory(&block_based_opts);
+        rtree_options.set_comparator("noise_rtree_cmp", Index::compare_keys_rtree);
+
+        let rocks = match rocksdb::DB::open_cf(&rocks_options, name, &[&"rtree"], &[&rtree_options]) {
             Ok(rocks) => rocks,
             Err(error) => {
                 match open_options {
@@ -66,7 +75,9 @@ impl Index {
 
                 rocks_options.create_if_missing(true);
 
-                let rocks = try!(rocksdb::DB::open(&rocks_options, name));
+                let mut rocks = try!(rocksdb::DB::open(&rocks_options, name));
+                // TODO vmx 2017-10-20: Use create_missing_column_families
+                try!(rocks.create_cf("rtree", &rtree_options));
 
                 let mut bytes = Vec::with_capacity(8 * 2);
                 bytes
@@ -90,6 +101,7 @@ impl Index {
         Ok(Index {
                name: name.to_string(),
                high_doc_seq: Index::convert_bytes_to_u64(&value[8..]),
+               rtree: rocks.cf_handle("rtree").unwrap(),
                rocks: rocks,
            })
     }
@@ -136,7 +148,7 @@ impl Index {
             (self.high_doc_seq, docid)
         };
         // now everything needs to be added to the batch,
-        try!(shredder.add_all_to_batch(seq, &mut batch.wb));
+        try!(shredder.add_all_to_batch(seq, &mut batch.wb, self.rtree.clone()));
         batch.id_str_in_batch.insert(docid.clone());
 
         Ok(docid)
@@ -307,6 +319,75 @@ impl Index {
             count += Index::convert_bytes_to_i32(&bytes);
         }
         Index::convert_i32_to_bytes(count)
+    }
+
+
+    /// Return the slice that is prefixed with an unsigned 32-bit varint and the offset after
+    /// the slice that was read
+    fn get_length_prefixed_slice(data: &[u8]) -> (&[u8], usize) {
+        let mut vec = Vec::with_capacity(data.len());
+        vec.extend_from_slice(data);
+        let mut cursor = Cursor::new(vec);
+        let size = cursor.read_unsigned_varint_32().unwrap() as usize;
+        let slice_end = cursor.position() as usize + size;
+        let slice = &data[cursor.position() as usize..slice_end];
+        (slice, slice_end)
+    }
+
+    /// Compare function for RocksDB for the keys in the R-tree
+    /// The keys have a length prefixed string (the Keypath), followed by the Interan Id and
+    /// the bounding box around the geometry
+    fn compare_keys_rtree(aa: &[u8], bb: &[u8]) -> Ordering {
+        if aa.len() == 0 && bb.len() == 0{
+            return Ordering::Equal;
+        } else if aa.len() == 0 {
+            return Ordering::Less;
+        } else if bb.len() == 0 {
+            return Ordering::Greater;
+        }
+
+        let (keypath_aa, offset_aa) = Index::get_length_prefixed_slice(aa);
+        let (keypath_bb, offset_bb) = Index::get_length_prefixed_slice(bb);
+
+        // The ordering of the keypath doesn't need to be unicode collated. The ordering
+        // doesn't really matters, it only matters that it's always the same.
+        let keypath_compare = keypath_aa.cmp(keypath_bb);
+        if keypath_compare != Ordering::Equal {
+            return keypath_compare;
+        }
+
+        // Keypaths are the same, compare the Internal Ids value
+        let seq_aa = unsafe {
+            let array = *(aa[(offset_aa)..].as_ptr() as *const [_; 8]);
+            mem::transmute::<[u8; 8], u64>(array)
+        };
+        let seq_bb = unsafe {
+            let array = *(bb[(offset_bb)..].as_ptr() as *const [_; 8]);
+            mem::transmute::<[u8; 8], u64>(array)
+        };
+        let seq_compare = seq_aa.cmp(&seq_bb);
+        if seq_compare != Ordering::Equal {
+            return seq_compare;
+        }
+
+        // Internal Ids are the same, compare the bounding box
+        let bbox_aa = unsafe {
+            let array = *(aa[(offset_aa + 8)..].as_ptr() as *const [_; 32]);
+            mem::transmute::<[u8; 32], [f64; 4]>(array)
+        };
+        let bbox_bb = unsafe {
+            let array = *(bb[(offset_bb + 8)..].as_ptr() as *const [_; 32]);
+            mem::transmute::<[u8; 32], [f64; 4]>(array)
+        };
+
+        for (value_aa, value_bb) in bbox_aa.into_iter().zip(bbox_bb.into_iter()) {
+            let value_compare = value_aa.partial_cmp(value_bb).unwrap();
+            if value_compare != Ordering::Equal {
+                return value_compare;
+            }
+        }
+        // No early return, the values are fully equal
+        return Ordering::Equal;
     }
 }
 

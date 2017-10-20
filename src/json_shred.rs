@@ -7,7 +7,7 @@ use std::mem::transmute;
 use std::io::Write;
 use std::str::Chars;
 use std::io::Cursor;
-use std::str;
+use std::{self, f64, str};
 
 use self::varint::VarintWrite;
 use self::rustc_serialize::json::{JsonEvent, Parser, StackElement};
@@ -23,6 +23,10 @@ use index::Index;
 //   https://github.com/gyscos/json-streamer.rs
 // Another parser pased on rustc_serializ:
 //   https://github.com/isagalaev/ijson-rust/blob/master/src/test.rs#L11
+
+// `GeometryCollection` is left out as we will process the individual geometries of it
+const GEOJSON_TYPES: &'static [&'static str] = &["Point", "MultiPoint", "LineString",
+   "MultiLineString", "Polygon", "MultiPolygon"];
 
 enum ObjectKeyTypes {
     /// _id field
@@ -40,6 +44,17 @@ pub struct Shredder {
     object_keys_indexed: Vec<bool>,
     shredded_key_values: BTreeMap<String, Vec<u8>>,
     existing_key_value_to_delete: BTreeMap<String, Vec<u8>>,
+    // Whether the current object is a GeoJSON geometry or not. It's a counter that increases
+    // the more of the geometry was seen. It is increased for the following cases:
+    //  - a `type` field with a valid GeoJSON geometry type as value
+    //  - a `coordinates` field with an array with numbers. It is not verified if the coordinates
+    //    actually match the type.
+    // So if it is equal to 2, it is considered being a proper GeoJSON geometry
+    maybe_geometry: u8,
+    // Currently only 2D GeoJSON is supported. Hence only distinguish between first and other
+    // coordinates
+    is_first: bool,
+    bounding_box: [f64; 4],
 }
 
 impl Shredder {
@@ -50,10 +65,41 @@ impl Shredder {
             object_keys_indexed: Vec::new(),
             shredded_key_values: BTreeMap::new(),
             existing_key_value_to_delete: BTreeMap::new(),
+            maybe_geometry: 0,
+            is_first: true,
+            bounding_box: [f64::MAX, f64::MAX, f64::MIN, f64::MIN],
         }
     }
 
-    fn add_number_entries(kb: &mut KeyBuilder,
+    // Based on https://stackoverflow.com/questions/29037033/how-to-slice-a-large-veci32-as-u8
+    // (2017-07-26)
+    fn as_u8_slice(v: &[u64]) -> &[u8] {
+        unsafe {
+            std::slice::from_raw_parts(v.as_ptr() as *const u8,
+                                       v.len() * std::mem::size_of::<u64>())
+        }
+    }
+
+    fn add_rtree_entries(kb: &mut KeyBuilder,
+                         bbox: &[u8],
+                         docseq: u64,
+                         batch: &mut rocksdb::WriteBatch,
+                         column_family: rocksdb::ColumnFamily,
+                         delete: bool)
+                         -> Result<(), Error> {
+        // Add/delete the key that is used for R-tree lookups
+        let rtree_key = kb.rtree_key(docseq, bbox);
+        if delete {
+            try!(batch.delete_cf(column_family, &rtree_key.as_slice()));
+        } else {
+            try!(batch.put_cf(column_family, &rtree_key.as_slice(),
+                Shredder::as_u8_slice(kb.arraypath.as_slice())));
+        }
+
+        Ok(())
+    }
+
+   fn add_number_entries(kb: &mut KeyBuilder,
                           number: &[u8],
                           docseq: u64,
                           batch: &mut rocksdb::WriteBatch,
@@ -145,6 +191,19 @@ impl Shredder {
         Ok(())
     }
 
+    fn calc_mbb(&mut self, value: f64) {
+        if self.maybe_geometry > 0 {
+            if self.is_first {
+                self.bounding_box[0] = self.bounding_box[0].min(value);
+                self.bounding_box[2] = self.bounding_box[0].max(value);
+            } else {
+                self.bounding_box[1] = self.bounding_box[1].min(value);
+                self.bounding_box[3] = self.bounding_box[3].max(value);
+            }
+            self.is_first = !self.is_first;
+        }
+    }
+
     fn add_value(&mut self, code: char, value: &[u8]) -> Result<(), Error> {
         let key = self.kb.kp_value_no_seq();
         let mut buffer = Vec::with_capacity(value.len() + 1);
@@ -173,6 +232,14 @@ impl Shredder {
                 try!(self.add_value(code, &value));
             }
             ObjectKeyTypes::Key(key) => {
+                if key == "type" {
+                    let is_valid_type = GEOJSON_TYPES.iter().position(|&tt| {
+                        tt == unsafe{ str::from_utf8_unchecked(&value) }
+                    });
+                    if is_valid_type.is_some() {
+                        self.maybe_geometry += 1;
+                    }
+                }
                 // Pop the dummy object that makes ObjectEnd happy
                 // or the previous object key
                 self.kb.pop_object_key();
@@ -189,6 +256,8 @@ impl Shredder {
     }
 
     // Extract key if it exists and indicates if it's a special type of key
+    // It is called when the value is a primitive type. If it is an array or object, then
+    // `maybe_push_key` is called.
     fn extract_key(&mut self, stack_element: Option<StackElement>) -> ObjectKeyTypes {
         match stack_element {
             Some(StackElement::Key(key)) => {
@@ -204,25 +273,32 @@ impl Shredder {
 
     // If we are inside an object we need to push the key to the key builder
     // Don't push them if they are reserved fields (starting with underscore)
-    fn maybe_push_key(&mut self, stack_element: Option<StackElement>) -> Result<(), Error> {
-        if let Some(StackElement::Key(key)) = stack_element {
-            if self.kb.kp_segments_len() == 1 && key == "_id" {
-                return Err(Error::Shred("Expected string for `_id` field, got another type"
+    // It is called when the value is an array or object. If it is a primitive type, then
+    // `extract_key` is called.
+    fn maybe_push_key(&mut self, stack_element: Option<StackElement>) ->
+            Result<Option<String>, Error> {
+        match stack_element {
+            Some(StackElement::Key(key)) => {
+                if self.kb.kp_segments_len() == 1 && key == "_id" {
+                    return Err(Error::Shred("Expected string for `_id` field, got another type"
                                             .to_string()));
-            } else {
-                // Pop the dummy object that makes ObjectEnd happy
-                // or the previous object key
-                self.kb.pop_object_key();
-                self.kb.push_object_key(key);
-                *self.object_keys_indexed.last_mut().unwrap() = true;
-            }
+                } else {
+                    // Pop the dummy object that makes ObjectEnd happy
+                    // or the previous object key
+                    self.kb.pop_object_key();
+                    self.kb.push_object_key(key);
+                    *self.object_keys_indexed.last_mut().unwrap() = true;
+                }
+                Ok(Some(key.to_string()))
+            },
+            _ => Ok(None),
         }
-        Ok(())
     }
 
     pub fn add_all_to_batch(&mut self,
                             seq: u64,
-                            batch: &mut rocksdb::WriteBatch)
+                            batch: &mut rocksdb::WriteBatch,
+                            rtree: rocksdb::ColumnFamily)
                             -> Result<(), Error> {
         for (key, value) in &self.existing_key_value_to_delete {
             self.kb.clear();
@@ -243,9 +319,21 @@ impl Shredder {
                                                          batch,
                                                          true));
                 }
+                'r' => {
+                    try!(Shredder::add_rtree_entries(&mut self.kb,
+                                                     &value[1..],
+                                                     seq,
+                                                     batch,
+                                                     rtree,
+                                                     true));
+                }
                 _ => {}
             }
-            try!(batch.delete(&key.as_bytes()));
+            // If it was a bounding box calculated for the R-tree, it's not part of the
+            // shredded original JSON document
+            if value[0] as char != 'r' {
+                try!(batch.delete(&key.as_bytes()));
+            }
         }
         self.existing_key_value_to_delete = BTreeMap::new();
 
@@ -267,10 +355,22 @@ impl Shredder {
                                                          batch,
                                                          false));
                 }
+                'r' => {
+                    try!(Shredder::add_rtree_entries(&mut self.kb,
+                                                     &value[1..],
+                                                     seq,
+                                                     batch,
+                                                     rtree,
+                                                     false));
+                }
                 _ => {}
             }
-            let key = self.kb.kp_value_key(seq);
-            try!(batch.put(&key.as_bytes(), &value.as_ref()));
+            // If it was a bounding box calculated for the R-tree, it's not a value meant to
+            // be part of the shredded original JSON document
+            if value[0] as char != 'r' {
+                let key = self.kb.kp_value_key(seq);
+                try!(batch.put(&key.as_bytes(), &value.as_ref()));
+            }
         }
         self.shredded_key_values = BTreeMap::new();
 
@@ -374,10 +474,31 @@ impl Shredder {
                         // but not for the root object. it will always have _id field added.
                         try!(self.maybe_add_value(&parser, 'o', &[]));
                     }
+                    if self.maybe_geometry == 2 {
+                        let mut encoded_bbox = Vec::new();
+                        encoded_bbox.extend_from_slice(
+                            &unsafe{ transmute::<f64, [u8; 8]>(self.bounding_box[0]) });
+                        encoded_bbox.extend_from_slice(
+                            &unsafe{ transmute::<f64, [u8; 8]>(self.bounding_box[2]) });
+                        encoded_bbox.extend_from_slice(
+                            &unsafe{ transmute::<f64, [u8; 8]>(self.bounding_box[1]) });
+                        encoded_bbox.extend_from_slice(
+                            &unsafe{ transmute::<f64, [u8; 8]>(self.bounding_box[3]) });
+
+                        let _ = self.add_value('r', &encoded_bbox.as_slice());
+                    }
+                    // Reset the values as it either wasn't a valid geometry, or it was already
+                    // succcessfully processed
+                    self.maybe_geometry = 0;
+                    self.bounding_box = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
+
                     self.kb.inc_top_array_index();
                 }
                 Some(JsonEvent::ArrayStart) => {
-                    try!(self.maybe_push_key(parser.stack().top()));
+                    let key = try!(self.maybe_push_key(parser.stack().top()));
+                    if key == Some("coordinates".to_string()) {
+                        self.maybe_geometry += 1;
+                    }
                     self.kb.push_array();
                 }
                 Some(JsonEvent::ArrayEnd) => {
@@ -400,15 +521,18 @@ impl Shredder {
                 }
                 Some(JsonEvent::I64Value(i)) => {
                     let f = i as f64;
+                    self.calc_mbb(f);
                     let bytes = unsafe { transmute::<f64, [u8; 8]>(f) };
                     try!(self.maybe_add_value(&parser, 'f', &bytes[..]));
                 }
                 Some(JsonEvent::U64Value(u)) => {
                     let f = u as f64;
+                    self.calc_mbb(f);
                     let bytes = unsafe { transmute::<f64, [u8; 8]>(f) };
                     try!(self.maybe_add_value(&parser, 'f', &bytes[..]));
                 }
                 Some(JsonEvent::F64Value(f)) => {
+                    self.calc_mbb(f);
                     let bytes = unsafe { transmute::<f64, [u8; 8]>(f) };
                     try!(self.maybe_add_value(&parser, 'f', &bytes[..]));
                 }
@@ -476,15 +600,15 @@ mod tests {
         let mut shredder = super::Shredder::new();
         let json = r#"{"some": ["array", "data", ["also", "nested"]]}"#;
         let docseq = 123;
+        let dbname = "target/tests/test_shred_nested";
+        let _ = Index::drop(dbname);
+        let index = Index::open(dbname, Some(OpenOptions::Create)).unwrap();
+        let rtree = index.rocks.cf_handle("rtree").unwrap();
+
         let mut batch = rocksdb::WriteBatch::default();
         shredder.shred(json).unwrap();
         shredder.add_id("foo").unwrap();
-        shredder.add_all_to_batch(docseq, &mut batch).unwrap();
-
-        let dbname = "target/tests/test_shred_nested";
-        let _ = Index::drop(dbname);
-
-        let index = Index::open(dbname, Some(OpenOptions::Create)).unwrap();
+        shredder.add_all_to_batch(docseq, &mut batch, rtree).unwrap();
 
         index.rocks.write(batch).unwrap();
         let result = positions_from_rocks(&index.rocks);
@@ -502,15 +626,15 @@ mod tests {
         let mut shredder = super::Shredder::new();
         let json = r#"{"a":{"a":"b"}}"#;
         let docseq = 123;
+        let dbname = "target/tests/test_shred_double_nested";
+        let _ = Index::drop(dbname);
+        let index = Index::open(dbname, Some(OpenOptions::Create)).unwrap();
+        let rtree = index.rocks.cf_handle("rtree").unwrap();
+
         let mut batch = rocksdb::WriteBatch::default();
         shredder.shred(json).unwrap();
         shredder.add_id("foo").unwrap();
-        shredder.add_all_to_batch(docseq, &mut batch).unwrap();
-
-        let dbname = "target/tests/test_shred_double_nested";
-        let _ = Index::drop(dbname);
-
-        let index = Index::open(dbname, Some(OpenOptions::Create)).unwrap();
+        shredder.add_all_to_batch(docseq, &mut batch, rtree).unwrap();
 
         index.rocks.write(batch).unwrap();
         let result = values_from_rocks(&index.rocks);
@@ -530,14 +654,15 @@ mod tests {
         let mut shredder = super::Shredder::new();
         let json = r#"{"A":[{"B":"B2VMX two three","C":"..C2"},{"B": "b1","C":"..C2"}]}"#;
         let docseq = 1234;
-        let mut batch = rocksdb::WriteBatch::default();
-        shredder.shred(json).unwrap();
-        shredder.add_all_to_batch(docseq, &mut batch).unwrap();
-
         let dbname = "target/tests/test_shred_objects";
         let _ = Index::drop(dbname);
 
         let index = Index::open(dbname, Some(OpenOptions::Create)).unwrap();
+        let rtree = index.rocks.cf_handle("rtree").unwrap();
+
+        let mut batch = rocksdb::WriteBatch::default();
+        shredder.shred(json).unwrap();
+        shredder.add_all_to_batch(docseq, &mut batch, rtree).unwrap();
 
         index.rocks.write(batch).unwrap();
         let result = positions_from_rocks(&index.rocks);
@@ -557,15 +682,16 @@ mod tests {
         let mut shredder = super::Shredder::new();
         let json = r#"{}"#;
         let docseq = 123;
-        let mut batch = rocksdb::WriteBatch::default();
-        shredder.shred(json).unwrap();
-        shredder.add_id("foo").unwrap();
-        shredder.add_all_to_batch(docseq, &mut batch).unwrap();
-
         let dbname = "target/tests/test_shred_empty_object";
         let _ = Index::drop(dbname);
 
         let index = Index::open(dbname, Some(OpenOptions::Create)).unwrap();
+        let rtree = index.rocks.cf_handle("rtree").unwrap();
+
+        let mut batch = rocksdb::WriteBatch::default();
+        shredder.shred(json).unwrap();
+        shredder.add_id("foo").unwrap();
+        shredder.add_all_to_batch(docseq, &mut batch, rtree).unwrap();
 
         index.rocks.write(batch).unwrap();
         let result = positions_from_rocks(&index.rocks);

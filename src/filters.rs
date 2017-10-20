@@ -1,7 +1,13 @@
-use std::{mem, str};
+extern crate varint;
+
+use std::{self, mem, str};
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::collections::HashSet;
+use std::io::Cursor;
+use std::rc::Rc;
+
+use self::varint::VarintRead;
 
 use error::Error;
 use key_builder::KeyBuilder;
@@ -481,6 +487,92 @@ impl QueryRuntimeFilter for RangeFilter {
     // TODO vmx 2017-04-13: Scoring is not implemented yet
     fn prepare_relevancy_scoring(&mut self, qsi: &mut QueryScoringInfo) {
         // we score these as binary. Either they have a value of 1 or nothing.
+        self.term_ordinal = Some(qsi.num_terms);
+        qsi.num_terms += 1;
+        qsi.sum_of_idt_sqs += 1.0;
+    }
+
+    fn check_double_not(&self, _parent_is_neg: bool) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn is_all_not(&self) -> bool {
+        false
+    }
+}
+
+pub struct BboxFilter<'a> {
+    snapshot: Rc<Snapshot<'a>>,
+    iter: Option<DBIterator>,
+    kb: KeyBuilder,
+    bbox: [f64; 4],
+    term_ordinal: Option<usize>,
+}
+
+impl<'a> BboxFilter<'a> {
+    pub fn new(snapshot: Rc<Snapshot<'a>>,
+               kb: KeyBuilder,
+               bbox: [f64; 4])
+               -> BboxFilter<'a> {
+        BboxFilter {
+            snapshot: snapshot,
+            iter: None,
+            kb: kb,
+            bbox: bbox,
+            term_ordinal: None,
+        }
+    }
+
+    /// Function to deserialize the Arraypaths
+    fn from_u8_slice(slice: &[u8]) -> Vec<u64> {
+        let u64_slice = unsafe {
+            std::slice::from_raw_parts(slice.as_ptr() as *const u64, slice.len() / 8)
+        };
+        u64_slice.to_vec()
+    }
+}
+
+impl<'a> QueryRuntimeFilter for BboxFilter<'a> {
+    fn first_result(&mut self, start: &DocResult) -> Option<DocResult> {
+        let mut bbox_vec = Vec::new();
+        bbox_vec.extend_from_slice(&unsafe{ mem::transmute::<f64, [u8; 8]>(self.bbox[0]) });
+        bbox_vec.extend_from_slice(&unsafe{ mem::transmute::<f64, [u8; 8]>(self.bbox[2]) });
+        bbox_vec.extend_from_slice(&unsafe{ mem::transmute::<f64, [u8; 8]>(self.bbox[1]) });
+        bbox_vec.extend_from_slice(&unsafe{ mem::transmute::<f64, [u8; 8]>(self.bbox[3]) });
+
+        let query = self.kb.rtree_query_key(start.seq, std::u64::MAX, bbox_vec.as_slice());
+        self.iter = Some(self.snapshot.new_rtree_iterator(query.as_slice()));
+        self.next_result()
+    }
+
+    fn next_result(&mut self) -> Option<DocResult> {
+        let iter = self.iter.as_mut().unwrap();
+        if let Some((key, value)) = iter.next() {
+            let mut vec = Vec::with_capacity(key.len());
+            vec.extend_from_slice(&key);
+            let mut read = Cursor::new(vec);
+            let key_len = read.read_unsigned_varint_32().unwrap();
+            let offset = read.position() as usize;
+
+            let iid = unsafe {
+                let array = *(key[offset + key_len as usize..].as_ptr() as *const [_; 8]);
+                mem::transmute::<[u8; 8], u64>(array)
+            };
+
+            let mut dr = DocResult::new();
+            dr.seq = iid;
+            dr.arraypath = BboxFilter::from_u8_slice(&value);
+            if self.term_ordinal.is_some() {
+                dr.add_score(self.term_ordinal.unwrap(), 1.0);
+            }
+            Some(dr)
+        } else {
+            None
+        }
+    }
+
+    fn prepare_relevancy_scoring(&mut self, qsi: &mut QueryScoringInfo) {
+        // We score these as binary. Either they have a value of 1 or nothing.
         self.term_ordinal = Some(qsi.num_terms);
         qsi.num_terms += 1;
         qsi.sum_of_idt_sqs += 1.0;
