@@ -66,6 +66,15 @@ Noise supports the following comparison operators:
 
 Noise does not do type conversions of datatypes. Strings only compare with strings, number only compare with numbers, etc.
 
+### Geospatial operators
+
+[GeoJSON](https://tools.ietf.org/html/rfc7946#section-3.1) geometry objects are indexed automatically for geospatial queries. Currently only bounding box queries are supported. The input geometries are simplified to bounding boxes. The operator is `&&` (the [similar to PostGIS](http://postgis.net/docs/manual-2.4/geometry_overlaps.html)) followed by a bounding box, which is a 4 element array where the coordinate order is `[West, South, East, North`] (or you could say lower-left corner followed by upper-right corner).
+
+```
+find {geometry: && [-180, -90, 180, 90]}
+```
+
+
 ### Finding Things in Arrays
 
 Let's say you have document like this with text in an array:
