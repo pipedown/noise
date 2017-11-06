@@ -505,7 +505,7 @@ pub struct BboxFilter<'a> {
     snapshot: Rc<Snapshot<'a>>,
     iter: Option<DBIterator>,
     kb: KeyBuilder,
-    bbox: [f64; 4],
+    bbox: Vec<u8>,
     term_ordinal: Option<usize>,
 }
 
@@ -514,11 +514,17 @@ impl<'a> BboxFilter<'a> {
                kb: KeyBuilder,
                bbox: [f64; 4])
                -> BboxFilter<'a> {
+        let mut bbox_vec = Vec::with_capacity(32);
+        bbox_vec.extend_from_slice(&unsafe{ mem::transmute::<f64, [u8; 8]>(bbox[0]) });
+        bbox_vec.extend_from_slice(&unsafe{ mem::transmute::<f64, [u8; 8]>(bbox[2]) });
+        bbox_vec.extend_from_slice(&unsafe{ mem::transmute::<f64, [u8; 8]>(bbox[1]) });
+        bbox_vec.extend_from_slice(&unsafe{ mem::transmute::<f64, [u8; 8]>(bbox[3]) });
+
         BboxFilter {
             snapshot: snapshot,
             iter: None,
             kb: kb,
-            bbox: bbox,
+            bbox: bbox_vec,
             term_ordinal: None,
         }
     }
@@ -534,14 +540,8 @@ impl<'a> BboxFilter<'a> {
 
 impl<'a> QueryRuntimeFilter for BboxFilter<'a> {
     fn first_result(&mut self, start: &DocResult) -> Option<DocResult> {
-        let mut bbox_vec = Vec::new();
-        bbox_vec.extend_from_slice(&unsafe{ mem::transmute::<f64, [u8; 8]>(self.bbox[0]) });
-        bbox_vec.extend_from_slice(&unsafe{ mem::transmute::<f64, [u8; 8]>(self.bbox[2]) });
-        bbox_vec.extend_from_slice(&unsafe{ mem::transmute::<f64, [u8; 8]>(self.bbox[1]) });
-        bbox_vec.extend_from_slice(&unsafe{ mem::transmute::<f64, [u8; 8]>(self.bbox[3]) });
-
-        let query = self.kb.rtree_query_key(start.seq, std::u64::MAX, bbox_vec.as_slice());
-        self.iter = Some(self.snapshot.new_rtree_iterator(query.as_slice()));
+        let query = self.kb.rtree_query_key(start.seq, std::u64::MAX, &self.bbox);
+        self.iter = Some(self.snapshot.new_rtree_iterator(&query));
         self.next_result()
     }
 
