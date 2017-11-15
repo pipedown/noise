@@ -156,41 +156,6 @@ Illegal:
 find {foo ~= "waz" && !(foo: ~= "bar" && foo: !~= "baz"})
 ```
 
-### Relevancy Scoring and Boosting
-
-Relevancy scoring uses a combination boolean model and Term Frequency/Inverse Document Frequency (TF/IDF) scoring system, very similar to Lucene and Elastic Search. The details of the scoring model is beyond the scope of the document.
-
-To return results in relevancy score order (most relevant first), simply use the order clause with the `score()` function.
-
-```
-find {subject: ~= "hammer" || body: ~= "hammer"}
-order score() desc
-```
-
-But if you want matches in `subject` fields to score higher than in `body` fields, you can boost the score with the `^` operator. It is a multiplier of the scores of associated clauses.
-
-This boosts `subject` matches by 2x:
-
-```
-find {subject: ~= "hammer"^2 || body: ~= "hammer"}
-order score() desc
-```
-
-You can also boost everything in parenthesis or objects or arrays:
-
-```
-find {(subject: ~= "hammer" || subject: ~= "nails")^2 ||
-       body: ~= "hammer" ||  body: ~= "nails"}
-order score() desc
-```
-Another way to express the same thing:
-
-```
-find {subject: ~= "hammer" || subject: ~= "nails"}^2 ||
-     {body: ~= "hammer" || body: ~= "nails"}
-order score() desc
-```
-
 
 ## Order Clause
 
@@ -232,6 +197,43 @@ This will order `baz` ascending, for values of `baz` that are the same, those re
 find {foo: == "bar"}
 order .baz asc, .biz desc
 ```
+
+
+## Relevancy Scoring and Boosting
+
+Relevancy scoring uses a combination boolean model and Term Frequency/Inverse Document Frequency (TF/IDF) scoring system, very similar to Lucene and Elastic Search. The details of the scoring model is beyond the scope of the document.
+
+To return results in relevancy score order (most relevant first), simply use the order clause with the `score()` function.
+
+```
+find {subject: ~= "hammer" || body: ~= "hammer"}
+order score() desc
+```
+
+But if you want matches in `subject` fields to score higher than in `body` fields, you can boost the score with the `^` operator. It is a multiplier of the scores of associated clauses.
+
+This boosts `subject` matches by 2x:
+
+```
+find {subject: ~= "hammer"^2 || body: ~= "hammer"}
+order score() desc
+```
+
+You can also boost everything in parenthesis or objects or arrays:
+
+```
+find {(subject: ~= "hammer" || subject: ~= "nails")^2 ||
+       body: ~= "hammer" ||  body: ~= "nails"}
+order score() desc
+```
+Another way to express the same thing:
+
+```
+find {subject: ~= "hammer" || subject: ~= "nails"}^2 ||
+     {body: ~= "hammer" || body: ~= "nails"}
+order score() desc
+```
+
 
 ## Return Clause
 
