@@ -230,7 +230,7 @@ This will order `baz` ascending, for values of `baz` that are the same, those re
 
 ```
 find {foo: == "bar"}
-order .baz asc, .biz dsc
+order .baz asc, .biz desc
 ```
 
 ## Return Clause
