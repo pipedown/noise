@@ -333,4 +333,19 @@ return [._id, score()];
 ["1",1]
 ]
 
+# Dollar sign bug
+add {"_id":"17", "$A": true};
+"17"
+add {"_id":"18", "A$B": true};
+"18"
+
+find {"$A": == true};
+[
+"17"
+]
+
+find {"A$B": == true};
+[
+"18"
+]
 

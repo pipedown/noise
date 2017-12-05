@@ -289,10 +289,11 @@ impl KeyBuilder {
         }
     }
 
-    // returns the unescaped segment as Segment and the escaped segment as a slice
+    // returns the unescaped segment as Segment and the escaped segment as a String
     pub fn parse_first_kp_value_segment(keypath: &str) -> Option<(Segment, String)> {
 
         let mut unescaped = String::with_capacity(50);
+        // The length of the escaped sequence. It always starts with a dot '.'
         let mut len_bytes = 1;
         let mut chars = keypath.chars();
 
@@ -301,7 +302,8 @@ impl KeyBuilder {
             Some('.') => {
                 loop {
                     match chars.next() {
-                        Some('\\') => {
+                        Some(backslash @ '\\') => {
+                            len_bytes += backslash.len_utf8();
                             if let Some(c) = chars.next() {
                                 len_bytes += c.len_utf8();
                                 unescaped.push(c);
