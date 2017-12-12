@@ -188,7 +188,7 @@ This will order `baz` ascending with default value of `1` if no `baz` value exis
 
 ```
 find {foo: == "bar"}
-order .baz asc default=1
+order .baz default=1 asc
 ```
 
 This will order `baz` ascending, for values of `baz` that are the same, those results are now ordered as `biz` ascending.
