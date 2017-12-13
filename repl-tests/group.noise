@@ -149,7 +149,7 @@ add {"_id":"8", "foo":"group3", "baz": "b", "bar": "e"};
 add {"_id":"9", "foo":"group3", "baz": "a", "bar": "f"};
 "9"
 
-find {foo: =="group2"}
+find {foo: =="group3"}
 return [group(.baz order=asc) default="a", group(.bar order=desc) default="c", count()];
 [
 ["a","f",1],
