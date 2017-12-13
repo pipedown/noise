@@ -1126,11 +1126,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         }
 
         if let Some((ag, bind_name_option, rp, json)) = try!(self.consume_aggregate()) {
-            let default = if let Some(default) = try!(self.consume_default()) {
-                default
-            } else {
-                JsonValue::Null
-            };
+            let default = self.consume_default()?.unwrap_or(JsonValue::Null);
             if let Some(bind_name) = bind_name_option {
                 Ok(Some(Box::new(RetBind {
                                      bind_name: bind_name,
@@ -1153,12 +1149,7 @@ impl<'a, 'c> Parser<'a, 'c> {
             } else {
                 ReturnPath::new()
             };
-
-            let default = if let Some(default) = try!(self.consume_default()) {
-                default
-            } else {
-                JsonValue::Null
-            };
+            let default = self.consume_default()?.unwrap_or(JsonValue::Null);
 
             Ok(Some(Box::new(RetBind {
                                  bind_name: bind_name,
@@ -1168,11 +1159,7 @@ impl<'a, 'c> Parser<'a, 'c> {
                                  order_info: None,
                              })))
         } else if let Some(rp) = try!(self.consume_keypath()) {
-            let default = if let Some(default) = try!(self.consume_default()) {
-                default
-            } else {
-                JsonValue::Null
-            };
+            let default = self.consume_default()?.unwrap_or(JsonValue::Null);
 
             Ok(Some(Box::new(RetValue {
                                  rp: rp,
