@@ -983,16 +983,7 @@ impl<'a, 'c> Parser<'a, 'c> {
                         Order::Asc
                     };
 
-                    let default = if self.consume("default") {
-                        try!(self.must_consume("="));
-                        if let Some(json) = try!(self.json()) {
-                            json
-                        } else {
-                            return Err(Error::Parse("Expected Json after default.".to_string()));
-                        }
-                    } else {
-                        JsonValue::Null
-                    };
+                    let default = self.consume_default()?.unwrap_or(JsonValue::Null);
 
                     order = if self.consume("asc") {
                         Order::Asc
