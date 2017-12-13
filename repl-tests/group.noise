@@ -90,6 +90,23 @@ return {max: max(.baz)};
 {"max":"c"}
 ]
 
+
+add {"_id":"13", "foo":"group", "baz": "c"};
+"13"
+
+find {foo: =="group"}
+return {max: max(.bar) default=120};
+[
+{"max":120}
+]
+
+find {foo: =="group"}
+return {max: max(.bar) default=1};
+[
+{"max":3}
+]
+
+
 add {"_id":"10", "foo":"group2", "baz": "a", "bar": "a"};
 "10"
 add {"_id":"11", "foo":"group2", "baz": "a", "bar": "b"};
