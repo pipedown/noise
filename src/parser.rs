@@ -19,6 +19,14 @@ use filters::{QueryRuntimeFilter, ExactMatchFilter, StemmedWordFilter, StemmedWo
 use snapshot::Snapshot;
 
 
+struct Aggregate {
+    fun: AggregateFun,
+    bind_name: Option<String>,
+    keypath: ReturnPath,
+    // The concat aggregate has an additional "sep" parameter
+    sep: Option<JsonValue>,
+}
+
 pub struct Parser<'a, 'c> {
     query: &'c str,
     offset: usize,
@@ -199,12 +207,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         }
     }
 
-    fn consume_aggregate(&mut self)
-                         -> Result<Option<(AggregateFun,
-                                           Option<String>, /*optional bind var name*/
-                                           ReturnPath,
-                                           JsonValue)>,
-                                   Error> {
+    fn consume_aggregate(&mut self) -> Result<Option<Aggregate>, Error> {
         let offset = self.offset;
         let mut aggregate_fun = if self.consume("group") {
             AggregateFun::GroupAsc
@@ -235,19 +238,29 @@ impl<'a, 'c> Parser<'a, 'c> {
         if self.consume("(") {
             if aggregate_fun == AggregateFun::Count {
                 try!(self.must_consume(")"));
-                Ok(Some((aggregate_fun, None, ReturnPath::new(), JsonValue::Null)))
+                Ok(Some(Aggregate {
+                    fun: aggregate_fun,
+                    bind_name: None,
+                    keypath: ReturnPath::new(),
+                    sep: None
+                }))
             } else if aggregate_fun == AggregateFun::Concat {
                 let bind_name_option = self.consume_field();
 
                 if let Some(rp) = try!(self.consume_keypath()) {
-                    let json = if self.consume("sep") {
+                    let sep = if self.consume("sep") {
                         try!(self.must_consume("="));
                         JsonValue::String(try!(self.must_consume_string_literal()))
                     } else {
                         JsonValue::String(",".to_string())
                     };
                     try!(self.must_consume(")"));
-                    Ok(Some((aggregate_fun, bind_name_option, rp, json)))
+                    Ok(Some(Aggregate {
+                        fun: aggregate_fun,
+                        bind_name: bind_name_option,
+                        keypath: rp,
+                        sep: Some(sep),
+                    }))
                 } else {
                     Err(Error::Parse("Expected keypath or bind variable".to_string()))
                 }
@@ -267,7 +280,12 @@ impl<'a, 'c> Parser<'a, 'c> {
                     }
                     try!(self.must_consume(")"));
 
-                    Ok(Some((aggregate_fun, bind_name_option, rp, JsonValue::Null)))
+                    Ok(Some(Aggregate {
+                        fun: aggregate_fun,
+                        bind_name: bind_name_option,
+                        keypath: rp,
+                        sep: None,
+                    }))
                 } else {
                     Err(Error::Parse("Expected keypath or bind variable".to_string()))
                 }
@@ -1116,23 +1134,22 @@ impl<'a, 'c> Parser<'a, 'c> {
             }
         }
 
-        if let Some((ag, bind_name_option, rp, json)) = try!(self.consume_aggregate()) {
+        if let Some(aggregate) = try!(self.consume_aggregate()) {
             let default = self.consume_default()?.unwrap_or(JsonValue::Null);
-            if let Some(bind_name) = bind_name_option {
-                Ok(Some(Box::new(RetBind {
-                                     bind_name: bind_name,
-                                     extra_rp: rp,
-                                     ag: Some((ag, json)),
-                                     default: default,
-                                     order_info: None,
-                                 })))
-            } else {
-                Ok(Some(Box::new(RetValue {
-                                     rp: rp,
-                                     ag: Some((ag, json)),
-                                     default: default,
-                                     order_info: None,
-                                 })))
+            match aggregate.bind_name {
+                Some(bind_name) => Ok(Some(Box::new(RetBind {
+                    bind_name: bind_name,
+                    extra_rp: aggregate.keypath,
+                    ag: Some((aggregate.fun, aggregate.sep)),
+                    default: default,
+                    order_info: None,
+                }))),
+                None => Ok(Some(Box::new(RetValue {
+                    rp: aggregate.keypath,
+                    ag: Some((aggregate.fun, aggregate.sep)),
+                    default: default,
+                    order_info: None,
+                }))),
             }
         } else if let Some(bind_name) = self.consume_field() {
             let rp = if let Some(rp) = try!(self.consume_keypath()) {
