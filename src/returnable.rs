@@ -89,7 +89,7 @@ pub trait Returnable {
 
     /// If aggregates are used each Returnable needs to return information about the
     /// aggregate function it's using and the default value.
-    fn get_aggregate_funs(&self, funs: &mut Vec<Option<(AggregateFun, JsonValue)>>);
+    fn get_aggregate_funs(&self, funs: &mut Vec<Option<(AggregateFun, Option<JsonValue>)>>);
 
     /// If a query has a order clause then we want to match the fields being ordered with
     /// fields being returned. We pass the ordering info by the path of the ordered fields
@@ -126,7 +126,7 @@ impl Returnable for RetObject {
         }
     }
 
-    fn get_aggregate_funs(&self, funs: &mut Vec<Option<(AggregateFun, JsonValue)>>) {
+    fn get_aggregate_funs(&self, funs: &mut Vec<Option<(AggregateFun, Option<JsonValue>)>>) {
         for &(ref _key, ref field) in self.fields.iter() {
             field.get_aggregate_funs(funs);
         }
@@ -170,7 +170,7 @@ impl Returnable for RetArray {
         }
     }
 
-    fn get_aggregate_funs(&self, funs: &mut Vec<Option<(AggregateFun, JsonValue)>>) {
+    fn get_aggregate_funs(&self, funs: &mut Vec<Option<(AggregateFun, Option<JsonValue>)>>) {
         for ref slot in self.slots.iter() {
             slot.get_aggregate_funs(funs);
         }
@@ -219,7 +219,7 @@ impl Returnable for RetHidden {
             .fetch_result(fetcher, seq, score, bind_var_keys, result);
     }
 
-    fn get_aggregate_funs(&self, funs: &mut Vec<Option<(AggregateFun, JsonValue)>>) {
+    fn get_aggregate_funs(&self, funs: &mut Vec<Option<(AggregateFun, Option<JsonValue>)>>) {
         self.visible.get_aggregate_funs(funs);
     }
 
@@ -259,7 +259,7 @@ impl Returnable for RetLiteral {
                     _result: &mut VecDeque<JsonValue>) {
     }
 
-    fn get_aggregate_funs(&self, _funs: &mut Vec<Option<(AggregateFun, JsonValue)>>) {
+    fn get_aggregate_funs(&self, _funs: &mut Vec<Option<(AggregateFun, Option<JsonValue>)>>) {
         //noop
     }
 
@@ -280,7 +280,7 @@ impl Returnable for RetLiteral {
 /// stored original document.
 pub struct RetValue {
     pub rp: ReturnPath,
-    pub ag: Option<(AggregateFun, JsonValue)>,
+    pub ag: Option<(AggregateFun, Option<JsonValue>)>,
     pub default: JsonValue,
     pub order_info: Option<OrderInfo>,
 }
@@ -294,7 +294,7 @@ impl Returnable for RetValue {
                     _score: f32,
                     _bind_var_keys: &HashMap<String, Vec<String>>,
                     result: &mut VecDeque<JsonValue>) {
-        if Some((AggregateFun::Count, JsonValue::Null)) == self.ag {
+        if Some((AggregateFun::Count, None)) == self.ag {
             //don't fetch anything for count(). just stick in a null
             result.push_back(JsonValue::Null);
             return;
@@ -307,7 +307,7 @@ impl Returnable for RetValue {
         }
     }
 
-    fn get_aggregate_funs(&self, funs: &mut Vec<Option<(AggregateFun, JsonValue)>>) {
+    fn get_aggregate_funs(&self, funs: &mut Vec<Option<(AggregateFun, Option<JsonValue>)>>) {
         funs.push(self.ag.clone());
     }
 
@@ -334,7 +334,7 @@ impl Returnable for RetValue {
 pub struct RetBind {
     pub bind_name: String,
     pub extra_rp: ReturnPath,
-    pub ag: Option<(AggregateFun, JsonValue)>,
+    pub ag: Option<(AggregateFun, Option<JsonValue>)>,
     pub default: JsonValue,
     pub order_info: Option<OrderInfo>,
 }
@@ -365,7 +365,7 @@ impl Returnable for RetBind {
         }
     }
 
-    fn get_aggregate_funs(&self, funs: &mut Vec<Option<(AggregateFun, JsonValue)>>) {
+    fn get_aggregate_funs(&self, funs: &mut Vec<Option<(AggregateFun, Option<JsonValue>)>>) {
         funs.push(self.ag.clone());
     }
 
@@ -401,7 +401,7 @@ impl Returnable for RetScore {
         result.push_back(JsonValue::Number(score as f64));
     }
 
-    fn get_aggregate_funs(&self, _funs: &mut Vec<Option<(AggregateFun, JsonValue)>>) {
+    fn get_aggregate_funs(&self, _funs: &mut Vec<Option<(AggregateFun, Option<JsonValue>)>>) {
         // noop
     }
 

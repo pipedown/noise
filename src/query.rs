@@ -180,7 +180,7 @@ pub struct QueryResults<'a> {
     does_group_or_aggr: bool,
     orders: Option<Vec<(Order, usize)>>,
     aggr_inits: Vec<(fn(JsonValue) -> JsonValue, usize)>,
-    aggr_actions: Vec<(fn(&mut JsonValue, JsonValue, &JsonValue), JsonValue, usize)>,
+    aggr_actions: Vec<(fn(&mut JsonValue, JsonValue, Option<&JsonValue>), Option<JsonValue>, usize)>,
     aggr_finals: Vec<(fn(&mut JsonValue), usize)>,
     in_buffer: Vec<VecDeque<JsonValue>>,
     ordered_buffer: Vec<VecDeque<JsonValue>>,
@@ -706,7 +706,7 @@ impl<'a> QueryResults<'a> {
                                 // expensive
                                 let mut new_n = JsonValue::Null;
                                 swap(&mut new_n, &mut new[n]);
-                                (action)(&mut old[n], new_n, &user_arg);
+                                (action)(&mut old[n], new_n, user_arg.as_ref());
                             }
                             option_old = Some(old);
                             option_new = self.in_buffer.pop();
