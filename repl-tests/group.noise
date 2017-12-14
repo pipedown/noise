@@ -95,13 +95,13 @@ add {"_id":"13", "foo":"group", "baz": "c"};
 "13"
 
 find {foo: =="group"}
-return {max: max(.bar) default=120};
+return {max: max(.bar default=120)};
 [
 {"max":120}
 ]
 
 find {foo: =="group"}
-return {max: max(.bar) default=1};
+return {max: max(.bar default=1)};
 [
 {"max":3}
 ]
@@ -167,7 +167,7 @@ add {"_id":"9", "foo":"group3", "baz": "a", "bar": "f"};
 "9"
 
 find {foo: =="group3"}
-return [group(.baz order=asc) default="a", group(.bar order=desc) default="c", count()];
+return [group(.baz default="a" order=asc), group(.bar default="c" order=desc), count()];
 [
 ["a","f",1],
 ["a","c",1],
