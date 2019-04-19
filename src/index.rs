@@ -227,7 +227,7 @@ impl Index {
     pub fn all_keys(&self) -> Result<Vec<String>, Error> {
         let mut results = Vec::new();
         for (key, _value) in self.rocks.iterator(rocksdb::IteratorMode::Start) {
-            let key_string = unsafe { str::from_utf8_unchecked((&key)) }.to_string();
+            let key_string = unsafe { str::from_utf8_unchecked(&key) }.to_string();
             results.push(key_string);
         }
         Ok(results)
@@ -506,7 +506,7 @@ mod tests {
             let mut results = Vec::new();
             for (key, value) in index.rocks.iterator(rocksdb::IteratorMode::Start) {
                 if key[0] as char == 'V' {
-                    let key_string = unsafe { str::from_utf8_unchecked((&key)) }.to_string();
+                    let key_string = unsafe { str::from_utf8_unchecked(&key) }.to_string();
                     results.push((key_string, JsonFetcher::bytes_to_json_value(&*value)));
                 }
             }
@@ -530,7 +530,7 @@ mod tests {
         let mut results = Vec::new();
         for (key, value) in index.rocks.iterator(rocksdb::IteratorMode::Start) {
             if key[0] as char == 'V' {
-                let key_string = unsafe { str::from_utf8_unchecked((&key)) }.to_string();
+                let key_string = unsafe { str::from_utf8_unchecked(&key) }.to_string();
                 results.push((key_string, JsonFetcher::bytes_to_json_value(&*value)));
             }
         }

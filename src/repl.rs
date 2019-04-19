@@ -39,10 +39,10 @@ fn next_command(r: &mut BufRead, w: &mut Write, test_mode: bool) -> Option<Strin
                 continue;
             }
             // check for end semi-colon
-            if !lines.trim_right().ends_with(";") {
+            if !lines.trim_end().ends_with(";") {
                 while r.read_line(&mut lines).unwrap() > 0 {
                     // loop until we get the end semi-colon
-                    if lines.trim_right().ends_with(";") {
+                    if lines.trim_end().ends_with(";") {
                         break;
                     }
                 }
@@ -56,7 +56,7 @@ fn next_command(r: &mut BufRead, w: &mut Write, test_mode: bool) -> Option<Strin
             w.write_all(lines.as_bytes()).unwrap();
         }
 
-        lines = lines.trim_right().to_string();
+        lines = lines.trim_end().to_string();
         if lines.ends_with(";") {
             // strip the semi-colon off
             lines.pop();
@@ -72,7 +72,7 @@ pub fn repl(r: &mut BufRead, w: &mut Write, test_mode: bool) {
     loop {
         if let Some(cmd) = next_command(r, w, test_mode) {
             if cmd.starts_with("open") {
-                let dbname = cmd[4..].trim_left();
+                let dbname = cmd[4..].trim_start();
                 match Index::open(dbname, None) {
                     Ok(index) => {
                         repl_opened(index, r, w, test_mode, pretty);
@@ -81,7 +81,7 @@ pub fn repl(r: &mut BufRead, w: &mut Write, test_mode: bool) {
                     Err(reason) => write!(w, "{}\n", reason).unwrap(),
                 }
             } else if cmd.starts_with("create") {
-                let dbname = cmd[6..].trim_left();
+                let dbname = cmd[6..].trim_start();
                 match Index::open(dbname, Some(OpenOptions::Create)) {
                     Ok(index) => {
                         repl_opened(index, r, w, test_mode, pretty);
@@ -90,13 +90,13 @@ pub fn repl(r: &mut BufRead, w: &mut Write, test_mode: bool) {
                     Err(reason) => write!(w, "{}\n", reason).unwrap(),
                 }
             } else if cmd.starts_with("pretty") {
-                if cmd[6..].trim_left().starts_with("on") {
+                if cmd[6..].trim_start().starts_with("on") {
                     pretty = PrettyPrint::new("  ", "\n", " ");
                 } else {
                     pretty = PrettyPrint::new("", "", "");
                 }
             } else if cmd.starts_with("drop") {
-                let dbname = cmd[4..].trim_left();
+                let dbname = cmd[4..].trim_start();
                 match Index::drop(dbname) {
                     Ok(()) => (),
                     Err(reason) => write!(w, "{}\n", reason).unwrap(),
@@ -133,28 +133,28 @@ fn repl_opened(mut index: Index,
             return;
         };
         if cmd.starts_with("params") {
-            params = Some(cmd[6..].trim_left().to_string());
+            params = Some(cmd[6..].trim_start().to_string());
         } else if cmd.starts_with("pretty") {
-            if cmd[6..].trim_left().starts_with("on") {
+            if cmd[6..].trim_start().starts_with("on") {
                 pretty = PrettyPrint::new("  ", "\n", " ");
             } else {
                 pretty = PrettyPrint::new("", "", "");
             }
         } else if cmd.starts_with("create") {
             flush_batch(&mut index, &mut batch, w);
-            let dbname = cmd[6..].trim_left();
+            let dbname = cmd[6..].trim_start();
             match Index::open(dbname, Some(OpenOptions::Create)) {
                 Ok(index_new) => index = index_new,
                 Err(reason) => write!(w, "{}\n", reason).unwrap(),
             }
         } else if cmd.starts_with("drop") {
-            let dbname = cmd[4..].trim_left();
+            let dbname = cmd[4..].trim_start();
             match Index::drop(dbname) {
                 Ok(()) => (),
                 Err(reason) => write!(w, "{}\n", reason).unwrap(),
             }
         } else if cmd.starts_with("open") {
-            let dbname = cmd[4..].trim_left();
+            let dbname = cmd[4..].trim_start();
             match Index::open(dbname, None) {
                 Ok(index_new) => index = index_new,
                 Err(reason) => write!(w, "{}\n", reason).unwrap(),
@@ -177,7 +177,7 @@ fn repl_opened(mut index: Index,
                 Err(reason) => write!(w, "{}\n", reason).unwrap(),
             }
         } else if cmd.starts_with("del") {
-            match index.delete(&cmd[3..].trim_left(), &mut batch) {
+            match index.delete(&cmd[3..].trim_start(), &mut batch) {
                 Ok(true) => write!(w, "ok\n").unwrap(),
                 Ok(false) => write!(w, "not found\n").unwrap(),
                 Err(reason) => write!(w, "{}\n", reason).unwrap(),
