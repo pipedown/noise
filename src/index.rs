@@ -7,7 +7,7 @@ use std::str;
 use std::io::Cursor;
 use std::mem;
 use std::io::Write;
-use self::uuid::{Uuid, UuidVersion};
+use self::uuid::{Uuid};
 use std::cmp::Ordering;
 
 use std::sync::{Mutex, MutexGuard, LockResult};
@@ -138,10 +138,9 @@ impl Index {
                 (self.high_doc_seq, docid)
             }
         } else {
-            // no doc id supplied in document, so we create one.
-            let docid = Uuid::new(UuidVersion::Random)
-                .unwrap()
-                .simple()
+            // no doc id supplied in document, so we create a random one.
+            let docid = Uuid::new_v4()
+                .to_simple()
                 .to_string();
             try!(shredder.add_id(&docid));
             self.high_doc_seq += 1;
