@@ -576,7 +576,7 @@ mod tests {
                 while let Ok(pos) = bytes.read_unsigned_varint_32() {
                     positions.push(pos);
                 }
-                let key_string = unsafe { str::from_utf8_unchecked((&key)) }.to_string();
+                let key_string = unsafe { str::from_utf8_unchecked(&key) }.to_string();
                 result.push((key_string, positions));
             }
         }
@@ -587,7 +587,7 @@ mod tests {
         let mut result = Vec::new();
         for (key, value) in rocks.iterator(rocksdb::IteratorMode::Start) {
             if key[0] as char == 'V' {
-                let key_string = unsafe { str::from_utf8_unchecked((&key)) }.to_string();
+                let key_string = unsafe { str::from_utf8_unchecked(&key) }.to_string();
                 result.push((key_string, JsonFetcher::bytes_to_json_value(&*value)));
             }
         }
