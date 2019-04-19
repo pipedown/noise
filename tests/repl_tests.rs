@@ -13,7 +13,7 @@ fn test_repl() {
     // .reject extension in the same directory where it can be investigated.
 
     // To update the test files with new command and output, simply edit/add commands and run
-    // update-test-repl.sh script from the project root directory. Then examin or do a git diff to
+    // update-test-repl.sh script from the project root directory. Then examine or do a git diff to
     // see if the output is as expected.
 
     let mut test_dir = env::current_dir().unwrap();
