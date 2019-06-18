@@ -125,7 +125,7 @@ impl JsonValue {
         }
     }
 
-    pub fn render(&self, write: &mut Write, pretty: &mut PrettyPrint) -> Result<(), Error> {
+    pub fn render(&self, write: &mut dyn Write, pretty: &mut PrettyPrint) -> Result<(), Error> {
         match self {
             &JsonValue::Number(ref num) => {
                 try!(write.write_all(pretty.prefix()));

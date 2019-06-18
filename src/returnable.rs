@@ -111,7 +111,7 @@ pub trait Returnable {
 
 /// A static Json Object the can contain another number of fields and nested returnables.
 pub struct RetObject {
-    pub fields: Vec<(String, Box<Returnable>)>,
+    pub fields: Vec<(String, Box<dyn Returnable>)>,
 }
 
 impl Returnable for RetObject {
@@ -155,7 +155,7 @@ impl Returnable for RetObject {
 
 /// A static Json array the can contain another number of nested Returnables.
 pub struct RetArray {
-    pub slots: Vec<Box<Returnable>>,
+    pub slots: Vec<Box<dyn Returnable>>,
 }
 
 impl Returnable for RetArray {
@@ -200,8 +200,8 @@ impl Returnable for RetArray {
 /// A special returnable that only fetches values for later ordering but never renders
 /// them back to the caller.
 pub struct RetHidden {
-    pub unrendered: Vec<Box<Returnable>>,
-    pub visible: Box<Returnable>,
+    pub unrendered: Vec<Box<dyn Returnable>>,
+    pub visible: Box<dyn Returnable>,
 }
 
 impl Returnable for RetHidden {

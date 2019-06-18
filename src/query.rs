@@ -171,11 +171,11 @@ pub struct QueryScoringInfo {
 }
 
 pub struct QueryResults<'a> {
-    filter: Box<QueryRuntimeFilter + 'a>,
+    filter: Box<dyn QueryRuntimeFilter + 'a>,
     doc_result_next: DocResult,
     snapshot: Rc<Snapshot<'a>>,
     fetcher: JsonFetcher,
-    returnable: Box<Returnable>,
+    returnable: Box<dyn Returnable>,
     needs_ordering_and_ags: bool,
     done_with_ordering_and_ags: bool,
     does_group_or_aggr: bool,
@@ -234,7 +234,7 @@ impl<'a> QueryResults<'a> {
         } else if has_ordering {
             returnable.take_order_for_matching_fields(&mut orders);
             if !orders.is_empty() {
-                let mut vec: Vec<Box<Returnable>> = Vec::new();
+                let mut vec: Vec<Box<dyn Returnable>> = Vec::new();
                 for (_key, order_info) in orders.into_iter() {
                     let order = order_info.clone();
                     match order_info.field {
