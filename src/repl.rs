@@ -18,7 +18,7 @@ fn is_command(str: &str) -> bool {
 }
 
 
-fn next_command(r: &mut BufRead, w: &mut Write, test_mode: bool) -> Option<String> {
+fn next_command(r: &mut dyn BufRead, w: &mut dyn Write, test_mode: bool) -> Option<String> {
     let mut lines = String::new();
     loop {
         // read in command until we get to a end semi-colon
@@ -67,7 +67,7 @@ fn next_command(r: &mut BufRead, w: &mut Write, test_mode: bool) -> Option<Strin
     }
 }
 
-pub fn repl(r: &mut BufRead, w: &mut Write, test_mode: bool) {
+pub fn repl(r: &mut dyn BufRead, w: &mut dyn Write, test_mode: bool) {
     let mut pretty = PrettyPrint::new("", "", "");
     loop {
         if let Some(cmd) = next_command(r, w, test_mode) {
@@ -110,7 +110,7 @@ pub fn repl(r: &mut BufRead, w: &mut Write, test_mode: bool) {
     }
 }
 
-fn flush_batch(index: &mut Index, batch: &mut Batch, w: &mut Write) {
+fn flush_batch(index: &mut Index, batch: &mut Batch, w: &mut dyn Write) {
     let mut batch2 = Batch::new();
     mem::swap(batch, &mut batch2);
     if let Err(reason) = index.flush(batch2) {
@@ -119,8 +119,8 @@ fn flush_batch(index: &mut Index, batch: &mut Batch, w: &mut Write) {
 }
 
 fn repl_opened(mut index: Index,
-               r: &mut BufRead,
-               w: &mut Write,
+               r: &mut dyn BufRead,
+               w: &mut dyn Write,
                test_mode: bool,
                mut pretty: PrettyPrint) {
     let mut batch = Batch::new();

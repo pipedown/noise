@@ -742,13 +742,13 @@ impl QueryRuntimeFilter for DistanceFilter {
 
 
 pub struct AndFilter<'a> {
-    filters: Vec<Box<QueryRuntimeFilter + 'a>>,
+    filters: Vec<Box<dyn QueryRuntimeFilter + 'a>>,
     current_filter: usize,
     array_depth: usize,
 }
 
 impl<'a> AndFilter<'a> {
-    pub fn new(filters: Vec<Box<QueryRuntimeFilter + 'a>>, array_depth: usize) -> AndFilter<'a> {
+    pub fn new(filters: Vec<Box<dyn QueryRuntimeFilter + 'a>>, array_depth: usize) -> AndFilter<'a> {
         AndFilter {
             filters: filters,
             current_filter: 0,
@@ -833,7 +833,7 @@ impl<'a> QueryRuntimeFilter for AndFilter<'a> {
 /// returned to caller. Because we won't know which side gets returned until both sides are
 /// fetched.
 pub struct FilterWithResult<'a> {
-    filter: Box<QueryRuntimeFilter + 'a>,
+    filter: Box<dyn QueryRuntimeFilter + 'a>,
     result: Option<DocResult>,
     is_done: bool,
     array_depth: usize,
@@ -888,8 +888,8 @@ pub struct OrFilter<'a> {
 }
 
 impl<'a> OrFilter<'a> {
-    pub fn new(left: Box<QueryRuntimeFilter + 'a>,
-               right: Box<QueryRuntimeFilter + 'a>,
+    pub fn new(left: Box<dyn QueryRuntimeFilter + 'a>,
+               right: Box<dyn QueryRuntimeFilter + 'a>,
                array_depth: usize)
                -> OrFilter<'a> {
         OrFilter {
@@ -983,14 +983,14 @@ impl<'a> QueryRuntimeFilter for OrFilter<'a> {
 
 pub struct NotFilter<'a> {
     iter: DBIterator,
-    filter: Box<QueryRuntimeFilter + 'a>,
+    filter: Box<dyn QueryRuntimeFilter + 'a>,
     last_doc_returned: Option<DocResult>,
     kb: KeyBuilder,
 }
 
 impl<'a> NotFilter<'a> {
     pub fn new(snapshot: &Snapshot,
-               filter: Box<QueryRuntimeFilter + 'a>,
+               filter: Box<dyn QueryRuntimeFilter + 'a>,
                kb: KeyBuilder)
                -> NotFilter<'a> {
         NotFilter {
@@ -1101,7 +1101,7 @@ impl<'a> QueryRuntimeFilter for NotFilter<'a> {
 
 pub struct BindFilter<'a> {
     bind_var_name: String,
-    filter: Box<QueryRuntimeFilter + 'a>,
+    filter: Box<dyn QueryRuntimeFilter + 'a>,
     array_depth: usize,
     kb: KeyBuilder,
     option_next: Option<DocResult>,
@@ -1109,7 +1109,7 @@ pub struct BindFilter<'a> {
 
 impl<'a> BindFilter<'a> {
     pub fn new(bind_var_name: String,
-               filter: Box<QueryRuntimeFilter + 'a>,
+               filter: Box<dyn QueryRuntimeFilter + 'a>,
                kb: KeyBuilder)
                -> BindFilter {
         BindFilter {
@@ -1185,12 +1185,12 @@ impl<'a> QueryRuntimeFilter for BindFilter<'a> {
 }
 
 pub struct BoostFilter<'a> {
-    filter: Box<QueryRuntimeFilter + 'a>,
+    filter: Box<dyn QueryRuntimeFilter + 'a>,
     boost: f32,
 }
 
 impl<'a> BoostFilter<'a> {
-    pub fn new(filter: Box<QueryRuntimeFilter + 'a>, boost: f32) -> BoostFilter {
+    pub fn new(filter: Box<dyn QueryRuntimeFilter + 'a>, boost: f32) -> BoostFilter {
         BoostFilter {
             filter: filter,
             boost: boost,

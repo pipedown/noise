@@ -380,8 +380,8 @@ impl<'a, 'c> Parser<'a, 'c> {
     }
 
     fn consume_boost_and_wrap_filter(&mut self,
-                                     filter: Box<QueryRuntimeFilter + 'a>)
-                                     -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
+                                     filter: Box<dyn QueryRuntimeFilter + 'a>)
+                                     -> Result<Box<dyn QueryRuntimeFilter + 'a>, Error> {
         let boost = try!(self.consume_boost());
         if boost != 1.0 {
             Ok(Box::new(BoostFilter::new(filter, boost)))
@@ -593,9 +593,9 @@ impl<'a, 'c> Parser<'a, 'c> {
                                     break 'outer;
                                 };
                                 n = match char {
-                                    c @ '0'...'9' => n * 16 + ((c as u16) - ('0' as u16)),
-                                    c @ 'a'...'f' => n * 16 + (10 + (c as u16) - ('a' as u16)),
-                                    c @ 'A'...'F' => n * 16 + (10 + (c as u16) - ('A' as u16)),
+                                    c @ '0'..='9' => n * 16 + ((c as u16) - ('0' as u16)),
+                                    c @ 'a'..='f' => n * 16 + (10 + (c as u16) - ('a' as u16)),
+                                    c @ 'A'..='F' => n * 16 + (10 + (c as u16) - ('A' as u16)),
                                     _ => {
                                         let msg = format!("Invalid hexidecimal escape: {}", char);
                                         return Err(Error::Parse(msg));
@@ -642,14 +642,14 @@ impl<'a, 'c> Parser<'a, 'c> {
         }
     }
 
-    fn find(&mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
+    fn find(&mut self) -> Result<Box<dyn QueryRuntimeFilter + 'a>, Error> {
         if !self.consume("find") {
             return Err(Error::Parse("Missing 'find' keyword".to_string()));
         }
         self.not_object()
     }
 
-    fn not_object(&mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
+    fn not_object(&mut self) -> Result<Box<dyn QueryRuntimeFilter + 'a>, Error> {
         if self.consume("!") {
             let filter = try!(self.object());
             Ok(Box::new(NotFilter::new(&self.snapshot, filter, self.kb.clone())))
@@ -658,7 +658,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         }
     }
 
-    fn object(&mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
+    fn object(&mut self) -> Result<Box<dyn QueryRuntimeFilter + 'a>, Error> {
         if self.consume("{") {
             if self.consume("}") {
                 return Ok(Box::new(AllDocsFilter::new(&self.snapshot)));
@@ -683,7 +683,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         }
     }
 
-    fn parens(&mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
+    fn parens(&mut self) -> Result<Box<dyn QueryRuntimeFilter + 'a>, Error> {
         if self.consume("!") {
             let filter = try!(self.parens());
             return Ok(Box::new(NotFilter::new(&self.snapshot, filter, self.kb.clone())));
@@ -695,7 +695,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         self.consume_boost_and_wrap_filter(filter)
     }
 
-    fn obool(&mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
+    fn obool(&mut self) -> Result<Box<dyn QueryRuntimeFilter + 'a>, Error> {
         let mut filter = try!(self.ocompare());
         loop {
             filter = if self.consume("&&") || self.consume(",") {
@@ -711,7 +711,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         Ok(filter)
     }
 
-    fn ocompare(&mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
+    fn ocompare(&mut self) -> Result<Box<dyn QueryRuntimeFilter + 'a>, Error> {
         if let Some(filter) = try!(self.oparens()) {
             Ok(filter)
         } else if let Some(field) = try!(self.consume_key()) {
@@ -730,7 +730,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         }
     }
 
-    fn oparens(&mut self) -> Result<Option<Box<QueryRuntimeFilter + 'a>>, Error> {
+    fn oparens(&mut self) -> Result<Option<Box<dyn QueryRuntimeFilter + 'a>>, Error> {
         let offset = self.offset;
         if self.consume("!") {
             if let Some(f) = try!(self.oparens()) {
@@ -763,7 +763,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         }
     }
 
-    fn compare(&mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
+    fn compare(&mut self) -> Result<Box<dyn QueryRuntimeFilter + 'a>, Error> {
         if let Some(filter) = try!(self.equal()) {
             Ok(filter)
         } else if let Some(filter) = try!(self.stemmed()) {
@@ -785,12 +785,12 @@ impl<'a, 'c> Parser<'a, 'c> {
         }
     }
 
-    fn equal(&mut self) -> Result<Option<Box<QueryRuntimeFilter + 'a>>, Error> {
+    fn equal(&mut self) -> Result<Option<Box<dyn QueryRuntimeFilter + 'a>>, Error> {
         let not_equal = self.consume("!=");
         if not_equal || self.consume("==") {
             let json = try!(self.must_consume_json_primitive());
             let boost = try!(self.consume_boost());
-            let filter: Box<QueryRuntimeFilter> = match json {
+            let filter: Box<dyn QueryRuntimeFilter> = match json {
                 JsonValue::String(literal) => {
                     let mut filters: Vec<StemmedWordPosFilter> = Vec::new();
                     {
@@ -845,7 +845,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         }
     }
 
-    fn stemmed(&mut self) -> Result<Option<Box<QueryRuntimeFilter + 'a>>, Error> {
+    fn stemmed(&mut self) -> Result<Option<Box<dyn QueryRuntimeFilter + 'a>>, Error> {
         let not_stemmed = self.consume("!~=");
         if not_stemmed || self.consume("~=") {
             // regular search
@@ -858,7 +858,7 @@ impl<'a, 'c> Parser<'a, 'c> {
             let stems = Stems::new(&literal);
             let stemmed_words: Vec<String> = stems.map(|stem| stem.stemmed).collect();
 
-            let filter: Box<QueryRuntimeFilter> = match stemmed_words.len() {
+            let filter: Box<dyn QueryRuntimeFilter> = match stemmed_words.len() {
                 0 => panic!("Cannot create a StemmedWordFilter"),
                 1 => {
                     Box::new(StemmedWordFilter::new(&self.snapshot,
@@ -924,7 +924,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         }
     }
 
-    fn bbox(&mut self) -> Result<Option<Box<QueryRuntimeFilter + 'a>>, Error> {
+    fn bbox(&mut self) -> Result<Option<Box<dyn QueryRuntimeFilter + 'a>>, Error> {
         // TODO vmx 2017-10-12: Implement boost
         if self.consume("&&") {
             let bbox = try!(self.consume_bbox());
@@ -934,7 +934,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         }
     }
 
-    fn abool(&mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
+    fn abool(&mut self) -> Result<Box<dyn QueryRuntimeFilter + 'a>, Error> {
         let mut filter = try!(self.acompare());
         loop {
             filter = if self.consume("&&") || self.consume(",") {
@@ -950,7 +950,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         Ok(filter)
     }
 
-    fn acompare(&mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
+    fn acompare(&mut self) -> Result<Box<dyn QueryRuntimeFilter + 'a>, Error> {
         if let Some(filter) = try!(self.aparens()) {
             Ok(filter)
         } else {
@@ -958,7 +958,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         }
     }
 
-    fn aparens(&mut self) -> Result<Option<Box<QueryRuntimeFilter + 'a>>, Error> {
+    fn aparens(&mut self) -> Result<Option<Box<dyn QueryRuntimeFilter + 'a>>, Error> {
         let offset = self.offset;
         if self.consume("!") {
             if let Some(f) = try!(self.aparens()) {
@@ -991,7 +991,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         }
     }
 
-    fn bind_var(&mut self) -> Result<Option<Box<QueryRuntimeFilter + 'a>>, Error> {
+    fn bind_var(&mut self) -> Result<Option<Box<dyn QueryRuntimeFilter + 'a>>, Error> {
         let offset = self.offset;
         if let Some(bind_name) = self.consume_field() {
             if self.consume("::") {
@@ -1007,7 +1007,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         Ok(None)
     }
 
-    fn array(&mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
+    fn array(&mut self) -> Result<Box<dyn QueryRuntimeFilter + 'a>, Error> {
         if !self.consume("[") {
             return Err(Error::Parse("Expected '['".to_string()));
         }
@@ -1088,7 +1088,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         Ok(order_infos)
     }
 
-    pub fn return_clause(&mut self) -> Result<Box<Returnable>, Error> {
+    pub fn return_clause(&mut self) -> Result<Box<dyn Returnable>, Error> {
         if self.consume("return") {
             if let Some(ret_value) = try!(self.ret_value()) {
                 Ok(ret_value)
@@ -1107,9 +1107,9 @@ impl<'a, 'c> Parser<'a, 'c> {
         }
     }
 
-    fn ret_object(&mut self) -> Result<Box<Returnable>, Error> {
+    fn ret_object(&mut self) -> Result<Box<dyn Returnable>, Error> {
         try!(self.must_consume("{"));
-        let mut fields: Vec<(String, Box<Returnable>)> = Vec::new();
+        let mut fields: Vec<(String, Box<dyn Returnable>)> = Vec::new();
         loop {
             if let Some(field) = try!(self.consume_key()) {
                 try!(self.must_consume(":"));
@@ -1130,7 +1130,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         Ok(Box::new(RetObject { fields: fields }))
     }
 
-    fn ret_array(&mut self) -> Result<Box<Returnable>, Error> {
+    fn ret_array(&mut self) -> Result<Box<dyn Returnable>, Error> {
         try!(self.must_consume("["));
         let mut slots = Vec::new();
         loop {
@@ -1148,7 +1148,7 @@ impl<'a, 'c> Parser<'a, 'c> {
 
     }
 
-    fn ret_value(&mut self) -> Result<Option<Box<Returnable>>, Error> {
+    fn ret_value(&mut self) -> Result<Option<Box<dyn Returnable>>, Error> {
         if self.consume("true") {
             return Ok(Some(Box::new(RetLiteral { json: JsonValue::True })));
         } else if self.consume("false") {
@@ -1323,7 +1323,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         Ok(JsonValue::Array(array))
     }
 
-    pub fn build_filter(&mut self) -> Result<Box<QueryRuntimeFilter + 'a>, Error> {
+    pub fn build_filter(&mut self) -> Result<Box<dyn QueryRuntimeFilter + 'a>, Error> {
         self.ws();
         Ok(try!(self.find()))
     }

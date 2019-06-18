@@ -208,7 +208,7 @@ impl Shredder {
         let key = self.kb.kp_value_no_seq();
         let mut buffer = Vec::with_capacity(value.len() + 1);
         buffer.push(code as u8);
-        try!((&mut buffer as &mut Write).write_all(value));
+        try!((&mut buffer as &mut dyn Write).write_all(value));
         self.shredded_key_values.insert(key, buffer);
         Ok(())
     }

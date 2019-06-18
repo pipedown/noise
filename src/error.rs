@@ -35,7 +35,7 @@ impl error::Error for Error {
         }
     }
 
-    fn cause(&self) -> Option<&error::Error> {
+    fn cause(&self) -> Option<&dyn error::Error> {
         match *self {
             Error::Parse(_) => None,
             Error::Shred(_) => None,
@@ -43,7 +43,7 @@ impl error::Error for Error {
             // patched to be based on the std::error::Error trait
             Error::Rocks(_) => None,
             Error::Write(_) => None,
-            Error::Io(ref err) => Some(err as &error::Error),
+            Error::Io(ref err) => Some(err as &dyn error::Error),
         }
     }
 }
