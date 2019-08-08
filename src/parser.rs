@@ -26,6 +26,8 @@ struct Aggregate {
     keypath: ReturnPath,
     // The concat aggregate has an additional "sep" parameter
     sep: Option<JsonValue>,
+    // The default default value is always `null` hence we don't need an option type here
+    default: JsonValue,
 }
 
 pub struct Parser<'a, 'c> {
@@ -264,12 +266,14 @@ impl<'a, 'c> Parser<'a, 'c> {
                     fun: aggregate_fun,
                     bind_name: None,
                     keypath: ReturnPath::new(),
-                    sep: None
+                    sep: None,
+                    default: JsonValue::Null,
                 }))
             } else if aggregate_fun == AggregateFun::Concat {
                 let bind_name_option = self.consume_field();
 
                 if let Some(rp) = try!(self.consume_keypath()) {
+                    let default = self.consume_default()?.unwrap_or(JsonValue::Null);
                     let sep = if self.consume("sep") {
                         try!(self.must_consume("="));
                         JsonValue::String(try!(self.must_consume_string_literal()))
@@ -282,6 +286,7 @@ impl<'a, 'c> Parser<'a, 'c> {
                         bind_name: bind_name_option,
                         keypath: rp,
                         sep: Some(sep),
+                        default: default,
                     }))
                 } else {
                     Err(Error::Parse("Expected keypath or bind variable".to_string()))
@@ -290,6 +295,7 @@ impl<'a, 'c> Parser<'a, 'c> {
                 let bind_name_option = self.consume_field();
 
                 if let Some(rp) = try!(self.consume_keypath()) {
+                    let default = self.consume_default()?.unwrap_or(JsonValue::Null);
                     if self.consume("order") {
                         try!(self.must_consume("="));
                         if self.consume("asc") {
@@ -307,6 +313,7 @@ impl<'a, 'c> Parser<'a, 'c> {
                         bind_name: bind_name_option,
                         keypath: rp,
                         sep: None,
+                        default: default,
                     }))
                 } else {
                     Err(Error::Parse("Expected keypath or bind variable".to_string()))
@@ -1169,19 +1176,18 @@ impl<'a, 'c> Parser<'a, 'c> {
         }
 
         if let Some(aggregate) = try!(self.consume_aggregate()) {
-            let default = self.consume_default()?.unwrap_or(JsonValue::Null);
             match aggregate.bind_name {
                 Some(bind_name) => Ok(Some(Box::new(RetBind {
                     bind_name: bind_name,
                     extra_rp: aggregate.keypath,
                     ag: Some((aggregate.fun, aggregate.sep)),
-                    default: default,
+                    default: aggregate.default,
                     order_info: None,
                 }))),
                 None => Ok(Some(Box::new(RetValue {
                     rp: aggregate.keypath,
                     ag: Some((aggregate.fun, aggregate.sep)),
-                    default: default,
+                    default: aggregate.default,
                     order_info: None,
                 }))),
             }

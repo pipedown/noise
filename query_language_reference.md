@@ -662,7 +662,7 @@ Query:
 
 ```
 find {foo: =="group2"}
-return [group(.baz order=asc) default="a", group(.bar order=desc) default="c", count()];
+return [group(.baz default="a" order=asc), group(.bar default="c" order=desc), count()];
 ```
 
 Results:
