@@ -75,23 +75,23 @@ impl Index {
 
                 rocks_options.create_if_missing(true);
 
-                let mut rocks = try!(rocksdb::DB::open(&rocks_options, name));
+                let mut rocks = rocksdb::DB::open(&rocks_options, name)?;
                 // TODO vmx 2017-10-20: Use create_missing_column_families
-                try!(rocks.create_cf("rtree", &rtree_options));
+                rocks.create_cf("rtree", &rtree_options)?;
 
                 let mut bytes = Vec::with_capacity(8 * 2);
                 bytes
                     .write(&Index::convert_u64_to_bytes(NOISE_HEADER_VERSION))
                     .unwrap();
                 bytes.write(&Index::convert_u64_to_bytes(0)).unwrap();
-                try!(rocks.put_opt(b"HDB", &bytes, &rocksdb::WriteOptions::new()));
+                rocks.put_opt(b"HDB", &bytes, &rocksdb::WriteOptions::new())?;
 
                 rocks
             }
         };
 
         // validate header is there
-        let value = try!(rocks.get(b"HDB")).unwrap();
+        let value = rocks.get(b"HDB")?.unwrap();
         assert_eq!(value.len(), 8 * 2);
         // first 8 is version
         assert_eq!(Index::convert_bytes_to_u64(&value[..8]),
@@ -116,20 +116,20 @@ impl Index {
 
     //This deletes the Rockdbs instance from disk
     pub fn drop(name: &str) -> Result<(), Error> {
-        let ret = try!(rocksdb::DB::destroy(&rocksdb::Options::default(), name));
+        let ret = rocksdb::DB::destroy(&rocksdb::Options::default(), name)?;
         Ok(ret)
     }
 
     pub fn add(&mut self, json: &str, batch: &mut Batch) -> Result<String, Error> {
         let mut shredder = Shredder::new();
-        let (seq, docid) = if let Some(docid) = try!(shredder.shred(json)) {
+        let (seq, docid) = if let Some(docid) = shredder.shred(json)? {
             // user supplied doc id, see if we have an existing one.
             if batch.id_str_in_batch.contains(&docid) {
                 // oops use trying to add some doc 2x to this batch.
                 return Err(Error::Write("Attempt to insert multiple docs with same _id"
                                             .to_string()));
             }
-            if let Some((seq, existing_key_values)) = try!(self.gather_doc_fields(&docid)) {
+            if let Some((seq, existing_key_values)) = self.gather_doc_fields(&docid)? {
                 shredder.merge_existing_doc(existing_key_values);
                 (seq, docid)
             } else {
@@ -142,12 +142,12 @@ impl Index {
             let docid = Uuid::new_v4()
                 .to_simple()
                 .to_string();
-            try!(shredder.add_id(&docid));
+            shredder.add_id(&docid)?;
             self.high_doc_seq += 1;
             (self.high_doc_seq, docid)
         };
         // now everything needs to be added to the batch,
-        try!(shredder.add_all_to_batch(seq, &mut batch.wb, self.rtree.clone()));
+        shredder.add_all_to_batch(seq, &mut batch.wb, self.rtree.clone())?;
         batch.id_str_in_batch.insert(docid.clone());
 
         Ok(docid)
@@ -160,9 +160,9 @@ impl Index {
             return Err(Error::Write("Attempt to delete doc with same _id added earlier"
                                         .to_string()));
         }
-        if let Some((seq, key_values)) = try!(self.gather_doc_fields(docid)) {
+        if let Some((seq, key_values)) = self.gather_doc_fields(docid)? {
             let mut shredder = Shredder::new();
-            try!(shredder.delete_existing_doc(docid, seq, key_values, &mut batch.wb));
+            shredder.delete_existing_doc(docid, seq, key_values, &mut batch.wb)?;
             batch.id_str_in_batch.insert(docid.to_string());
             Ok(true)
         } else {
@@ -178,7 +178,7 @@ impl Index {
     fn gather_doc_fields(&self,
                          docid: &str)
                          -> Result<Option<(u64, BTreeMap<String, Vec<u8>>)>, Error> {
-        if let Some(seq) = try!(self.fetch_seq(&docid)) {
+        if let Some(seq) = self.fetch_seq(&docid)? {
             // collect up all the fields for the existing doc
             let kb = KeyBuilder::new();
             let value_key = kb.kp_value_key(seq);
@@ -217,9 +217,9 @@ impl Index {
         bytes
             .write(&Index::convert_u64_to_bytes(self.high_doc_seq))
             .unwrap();
-        try!(batch.wb.put(b"HDB", &bytes));
+        batch.wb.put(b"HDB", &bytes)?;
 
-        let status = try!(self.rocks.write(batch.wb));
+        let status = self.rocks.write(batch.wb)?;
         Ok(status)
     }
 
@@ -265,7 +265,7 @@ impl Index {
     pub fn fetch_seq(&self, id: &str) -> Result<Option<u64>, Error> {
 
         let key = format!("{}{}", key_builder::KEY_PREFIX_ID_TO_SEQ, id);
-        match try!(self.rocks.get(&key.as_bytes())) {
+        match self.rocks.get(&key.as_bytes())? {
             // If there is an id, it's UTF-8
             Some(bytes) => Ok(Some(bytes.to_utf8().unwrap().parse().unwrap())),
             None => Ok(None),

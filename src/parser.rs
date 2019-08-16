@@ -107,7 +107,7 @@ impl<'a, 'c> Parser<'a, 'c> {
     fn consume_key(&mut self) -> Result<Option<String>, Error> {
         if let Some(key) = self.consume_field() {
             Ok(Some(key))
-        } else if let Some(key) = try!(self.consume_string_literal()) {
+        } else if let Some(key) = self.consume_string_literal()? {
             Ok(Some(key))
         } else {
             Ok(None)
@@ -143,7 +143,7 @@ impl<'a, 'c> Parser<'a, 'c> {
 
     fn consume_bbox(&mut self) -> Result<[f64; 4], Error> {
         let error_message = "Bounding box needs to be `[west, south, east, north]`.";
-        match try!(self.json_array()) {
+        match self.json_array()? {
             JsonValue::Array(vec) => {
                 if vec.len() == 4 {
                     let mut bbox = [0f64; 4];
@@ -210,7 +210,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         if !result.is_empty() {
             self.offset += result.len();
             self.ws();
-            Ok(Some(try!(result.parse())))
+            Ok(Some(result.parse()?))
         } else {
             Ok(None)
         }
@@ -218,8 +218,8 @@ impl<'a, 'c> Parser<'a, 'c> {
 
     fn consume_default(&mut self) -> Result<Option<JsonValue>, Error> {
         if self.consume("default") {
-            try!(self.must_consume("="));
-            if let Some(json) = try!(self.json()) {
+            self.must_consume("=")?;
+            if let Some(json) = self.json()? {
                 Ok(Some(json))
             } else {
                 Err(Error::Parse("Expected json value for default".to_string()))
@@ -259,7 +259,7 @@ impl<'a, 'c> Parser<'a, 'c> {
 
         if self.consume("(") {
             if aggregate_fun == AggregateFun::Count {
-                try!(self.must_consume(")"));
+                self.must_consume(")")?;
                 Ok(Some(Aggregate {
                     fun: aggregate_fun,
                     bind_name: None,
@@ -269,14 +269,14 @@ impl<'a, 'c> Parser<'a, 'c> {
             } else if aggregate_fun == AggregateFun::Concat {
                 let bind_name_option = self.consume_field();
 
-                if let Some(rp) = try!(self.consume_keypath()) {
+                if let Some(rp) = self.consume_keypath()? {
                     let sep = if self.consume("sep") {
-                        try!(self.must_consume("="));
-                        JsonValue::String(try!(self.must_consume_string_literal()))
+                        self.must_consume("=")?;
+                        JsonValue::String(self.must_consume_string_literal()?)
                     } else {
                         JsonValue::String(",".to_string())
                     };
-                    try!(self.must_consume(")"));
+                    self.must_consume(")")?;
                     Ok(Some(Aggregate {
                         fun: aggregate_fun,
                         bind_name: bind_name_option,
@@ -289,9 +289,9 @@ impl<'a, 'c> Parser<'a, 'c> {
             } else {
                 let bind_name_option = self.consume_field();
 
-                if let Some(rp) = try!(self.consume_keypath()) {
+                if let Some(rp) = self.consume_keypath()? {
                     if self.consume("order") {
-                        try!(self.must_consume("="));
+                        self.must_consume("=")?;
                         if self.consume("asc") {
                             aggregate_fun = AggregateFun::GroupAsc;
                         } else if self.consume("desc") {
@@ -300,7 +300,7 @@ impl<'a, 'c> Parser<'a, 'c> {
                             return Err(Error::Parse("Expected asc or desc".to_string()));
                         }
                     }
-                    try!(self.must_consume(")"));
+                    self.must_consume(")")?;
 
                     Ok(Some(Aggregate {
                         fun: aggregate_fun,
@@ -322,8 +322,8 @@ impl<'a, 'c> Parser<'a, 'c> {
     fn consume_keypath(&mut self) -> Result<Option<ReturnPath>, Error> {
         let key: String = if self.consume_no_ws(".") {
             if self.consume("[") {
-                let key = try!(self.must_consume_string_literal());
-                try!(self.must_consume("]"));
+                let key = self.must_consume_string_literal()?;
+                self.must_consume("]")?;
                 key
             } else {
                 if let Some(key) = self.consume_field() {
@@ -342,9 +342,9 @@ impl<'a, 'c> Parser<'a, 'c> {
         ret_path.push_object_key(key);
         loop {
             if self.consume("[") {
-                if let Some(index) = try!(self.consume_integer()) {
+                if let Some(index) = self.consume_integer()? {
                     ret_path.push_array(index as u64);
-                    try!(self.must_consume("]"));
+                    self.must_consume("]")?;
                 } else {
                     if self.consume("]") {
                         ret_path.push_array_all();
@@ -369,7 +369,7 @@ impl<'a, 'c> Parser<'a, 'c> {
     // if no boost is specified returns 1.0
     fn consume_boost(&mut self) -> Result<f32, Error> {
         if self.consume("^") {
-            if let Some(num) = try!(self.consume_number()) {
+            if let Some(num) = self.consume_number()? {
                 Ok(num as f32)
             } else {
                 return Err(Error::Parse("Expected number after ^ symbol.".to_string()));
@@ -382,7 +382,7 @@ impl<'a, 'c> Parser<'a, 'c> {
     fn consume_boost_and_wrap_filter(&mut self,
                                      filter: Box<dyn QueryRuntimeFilter + 'a>)
                                      -> Result<Box<dyn QueryRuntimeFilter + 'a>, Error> {
-        let boost = try!(self.consume_boost());
+        let boost = self.consume_boost()?;
         if boost != 1.0 {
             Ok(Box::new(BoostFilter::new(filter, boost)))
         } else {
@@ -540,12 +540,12 @@ impl<'a, 'c> Parser<'a, 'c> {
 
         self.offset += result.len();
         self.ws();
-        Ok(Some(try!(result.parse())))
+        Ok(Some(result.parse()?))
     }
 
 
     fn must_consume_string_literal(&mut self) -> Result<String, Error> {
-        if let Some(string) = try!(self.consume_string_literal()) {
+        if let Some(string) = self.consume_string_literal()? {
             Ok(string)
         } else {
             Err(Error::Parse("Expected string literal.".to_string()))
@@ -620,13 +620,13 @@ impl<'a, 'c> Parser<'a, 'c> {
                 }
             }
         }
-        try!(self.must_consume("\""));
+        self.must_consume("\"")?;
         Ok(Some(lit))
     }
 
     fn consume_range_operator(&mut self) -> Result<RangeOperator, Error> {
         let inclusive = self.consume("=");
-        let json = try!(self.must_consume_json_primitive());
+        let json = self.must_consume_json_primitive()?;
         match json {
             JsonValue::Number(num) => {
                 if inclusive {
@@ -651,7 +651,7 @@ impl<'a, 'c> Parser<'a, 'c> {
 
     fn not_object(&mut self) -> Result<Box<dyn QueryRuntimeFilter + 'a>, Error> {
         if self.consume("!") {
-            let filter = try!(self.object());
+            let filter = self.object()?;
             Ok(Box::new(NotFilter::new(&self.snapshot, filter, self.kb.clone())))
         } else {
             self.object()
@@ -663,17 +663,17 @@ impl<'a, 'c> Parser<'a, 'c> {
             if self.consume("}") {
                 return Ok(Box::new(AllDocsFilter::new(&self.snapshot)));
             }
-            let mut left = try!(self.obool());
-            try!(self.must_consume("}"));
+            let mut left = self.obool()?;
+            self.must_consume("}")?;
 
-            left = try!(self.consume_boost_and_wrap_filter(left));
+            left = self.consume_boost_and_wrap_filter(left)?;
 
             if self.consume("&&") {
-                let right = try!(self.not_object());
+                let right = self.not_object()?;
                 Ok(Box::new(AndFilter::new(vec![left, right], self.kb.arraypath_len())))
 
             } else if self.consume("||") {
-                let right = try!(self.not_object());
+                let right = self.not_object()?;
                 Ok(Box::new(OrFilter::new(left, right, self.kb.arraypath_len())))
             } else {
                 Ok(left)
@@ -685,24 +685,24 @@ impl<'a, 'c> Parser<'a, 'c> {
 
     fn parens(&mut self) -> Result<Box<dyn QueryRuntimeFilter + 'a>, Error> {
         if self.consume("!") {
-            let filter = try!(self.parens());
+            let filter = self.parens()?;
             return Ok(Box::new(NotFilter::new(&self.snapshot, filter, self.kb.clone())));
         }
-        try!(self.must_consume("("));
-        let filter = try!(self.object());
-        try!(self.must_consume(")"));
+        self.must_consume("(")?;
+        let filter = self.object()?;
+        self.must_consume(")")?;
 
         self.consume_boost_and_wrap_filter(filter)
     }
 
     fn obool(&mut self) -> Result<Box<dyn QueryRuntimeFilter + 'a>, Error> {
-        let mut filter = try!(self.ocompare());
+        let mut filter = self.ocompare()?;
         loop {
             filter = if self.consume("&&") || self.consume(",") {
-                let right = try!(self.obool());
+                let right = self.obool()?;
                 Box::new(AndFilter::new(vec![filter, right], self.kb.arraypath_len()))
             } else if self.consume("||") {
-                let right = try!(self.obool());
+                let right = self.obool()?;
                 Box::new(OrFilter::new(filter, right, self.kb.arraypath_len()))
             } else {
                 break;
@@ -712,16 +712,16 @@ impl<'a, 'c> Parser<'a, 'c> {
     }
 
     fn ocompare(&mut self) -> Result<Box<dyn QueryRuntimeFilter + 'a>, Error> {
-        if let Some(filter) = try!(self.oparens()) {
+        if let Some(filter) = self.oparens()? {
             Ok(filter)
-        } else if let Some(field) = try!(self.consume_key()) {
+        } else if let Some(field) = self.consume_key()? {
             self.kb.push_object_key(&field);
-            try!(self.must_consume(":"));
-            if let Some(filter) = try!(self.oparens()) {
+            self.must_consume(":")?;
+            if let Some(filter) = self.oparens()? {
                 self.kb.pop_object_key();
                 Ok(filter)
             } else {
-                let filter = try!(self.compare());
+                let filter = self.compare()?;
                 self.kb.pop_object_key();
                 Ok(filter)
             }
@@ -733,7 +733,7 @@ impl<'a, 'c> Parser<'a, 'c> {
     fn oparens(&mut self) -> Result<Option<Box<dyn QueryRuntimeFilter + 'a>>, Error> {
         let offset = self.offset;
         if self.consume("!") {
-            if let Some(f) = try!(self.oparens()) {
+            if let Some(f) = self.oparens()? {
                 return Ok(Some(Box::new(NotFilter::new(&self.snapshot, f, self.kb.clone()))));
             } else {
                 self.offset = offset;
@@ -741,15 +741,15 @@ impl<'a, 'c> Parser<'a, 'c> {
             }
         }
         let opt_filter = if self.consume("(") {
-            let f = try!(self.obool());
-            try!(self.must_consume(")"));
+            let f = self.obool()?;
+            self.must_consume(")")?;
             Some(f)
         } else if self.could_consume("[") {
-            Some(try!(self.array()))
+            Some(self.array()?)
         } else if self.could_consume("{") {
-            Some(try!(self.object()))
+            Some(self.object()?)
         } else {
-            if let Some(filter) = try!(self.bind_var()) {
+            if let Some(filter) = self.bind_var()? {
                 Some(filter)
             } else {
                 None
@@ -757,26 +757,26 @@ impl<'a, 'c> Parser<'a, 'c> {
         };
 
         if let Some(filter) = opt_filter {
-            Ok(Some(try!(self.consume_boost_and_wrap_filter(filter))))
+            Ok(Some(self.consume_boost_and_wrap_filter(filter)?))
         } else {
             Ok(None)
         }
     }
 
     fn compare(&mut self) -> Result<Box<dyn QueryRuntimeFilter + 'a>, Error> {
-        if let Some(filter) = try!(self.equal()) {
+        if let Some(filter) = self.equal()? {
             Ok(filter)
-        } else if let Some(filter) = try!(self.stemmed()) {
+        } else if let Some(filter) = self.stemmed()? {
             Ok(filter)
-        } else if let Some(filter) = try!(self.bbox()) {
+        } else if let Some(filter) = self.bbox()? {
             Ok(filter)
         } else {
             if self.consume(">") {
-                let min = try!(self.consume_range_operator());
+                let min = self.consume_range_operator()?;
                 let filter = RangeFilter::new(&self.snapshot, self.kb.clone(), Some(min), None);
                 Ok(Box::new(filter))
             } else if self.consume("<") {
-                let max = try!(self.consume_range_operator());
+                let max = self.consume_range_operator()?;
                 let filter = RangeFilter::new(&self.snapshot, self.kb.clone(), None, Some(max));
                 Ok(Box::new(filter))
             } else {
@@ -788,8 +788,8 @@ impl<'a, 'c> Parser<'a, 'c> {
     fn equal(&mut self) -> Result<Option<Box<dyn QueryRuntimeFilter + 'a>>, Error> {
         let not_equal = self.consume("!=");
         if not_equal || self.consume("==") {
-            let json = try!(self.must_consume_json_primitive());
-            let boost = try!(self.consume_boost());
+            let json = self.must_consume_json_primitive()?;
+            let boost = self.consume_boost()?;
             let filter: Box<dyn QueryRuntimeFilter> = match json {
                 JsonValue::String(literal) => {
                     let mut filters: Vec<StemmedWordPosFilter> = Vec::new();
@@ -849,12 +849,12 @@ impl<'a, 'c> Parser<'a, 'c> {
         let not_stemmed = self.consume("!~=");
         if not_stemmed || self.consume("~=") {
             // regular search
-            let literal = if let Some(string) = try!(self.consume_param_string()) {
+            let literal = if let Some(string) = self.consume_param_string()? {
                 string
             } else {
-                try!(self.must_consume_string_literal())
+                self.must_consume_string_literal()?
             };
-            let boost = try!(self.consume_boost());
+            let boost = self.consume_boost()?;
             let stems = Stems::new(&literal);
             let stemmed_words: Vec<String> = stems.map(|stem| stem.stemmed).collect();
 
@@ -884,20 +884,20 @@ impl<'a, 'c> Parser<'a, 'c> {
                 Ok(Some(filter))
             }
         } else if not_stemmed || self.consume("~") {
-            let word_distance = match try!(self.consume_integer()) {
+            let word_distance = match self.consume_integer()? {
                 Some(int) => int,
                 None => {
                     return Err(Error::Parse("Expected integer for proximity search".to_string()));
                 }
             };
-            try!(self.must_consume("="));
+            self.must_consume("=")?;
 
-            let literal = if let Some(string) = try!(self.consume_param_string()) {
+            let literal = if let Some(string) = self.consume_param_string()? {
                 string
             } else {
-                try!(self.must_consume_string_literal())
+                self.must_consume_string_literal()?
             };
-            let boost = try!(self.consume_boost());
+            let boost = self.consume_boost()?;
             let stems = Stems::new(&literal);
             let mut filters: Vec<StemmedWordPosFilter> = Vec::new();
             for stem in stems {
@@ -927,7 +927,7 @@ impl<'a, 'c> Parser<'a, 'c> {
     fn bbox(&mut self) -> Result<Option<Box<dyn QueryRuntimeFilter + 'a>>, Error> {
         // TODO vmx 2017-10-12: Implement boost
         if self.consume("&&") {
-            let bbox = try!(self.consume_bbox());
+            let bbox = self.consume_bbox()?;
             Ok(Some(Box::new(BboxFilter::new(Rc::clone(&self.snapshot), self.kb.clone(), bbox))))
         } else {
             Ok(None)
@@ -935,13 +935,13 @@ impl<'a, 'c> Parser<'a, 'c> {
     }
 
     fn abool(&mut self) -> Result<Box<dyn QueryRuntimeFilter + 'a>, Error> {
-        let mut filter = try!(self.acompare());
+        let mut filter = self.acompare()?;
         loop {
             filter = if self.consume("&&") || self.consume(",") {
-                let right = try!(self.abool());
+                let right = self.abool()?;
                 Box::new(AndFilter::new(vec![filter, right], self.kb.arraypath_len()))
             } else if self.consume("||") {
-                let right = try!(self.abool());
+                let right = self.abool()?;
                 Box::new(OrFilter::new(filter, right, self.kb.arraypath_len()))
             } else {
                 break;
@@ -951,7 +951,7 @@ impl<'a, 'c> Parser<'a, 'c> {
     }
 
     fn acompare(&mut self) -> Result<Box<dyn QueryRuntimeFilter + 'a>, Error> {
-        if let Some(filter) = try!(self.aparens()) {
+        if let Some(filter) = self.aparens()? {
             Ok(filter)
         } else {
             self.compare()
@@ -961,7 +961,7 @@ impl<'a, 'c> Parser<'a, 'c> {
     fn aparens(&mut self) -> Result<Option<Box<dyn QueryRuntimeFilter + 'a>>, Error> {
         let offset = self.offset;
         if self.consume("!") {
-            if let Some(f) = try!(self.aparens()) {
+            if let Some(f) = self.aparens()? {
                 return Ok(Some(Box::new(NotFilter::new(&self.snapshot, f, self.kb.clone()))));
             } else {
                 self.offset = offset;
@@ -969,15 +969,15 @@ impl<'a, 'c> Parser<'a, 'c> {
             }
         }
         let opt_filter = if self.consume("(") {
-            let f = try!(self.abool());
-            try!(self.must_consume(")"));
+            let f = self.abool()?;
+            self.must_consume(")")?;
             Some(f)
         } else if self.could_consume("[") {
-            Some(try!(self.array()))
+            Some(self.array()?)
         } else if self.could_consume("{") {
-            Some(try!(self.object()))
+            Some(self.object()?)
         } else {
-            if let Some(filter) = try!(self.bind_var()) {
+            if let Some(filter) = self.bind_var()? {
                 Some(filter)
             } else {
                 None
@@ -985,7 +985,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         };
 
         if let Some(filter) = opt_filter {
-            Ok(Some(try!(self.consume_boost_and_wrap_filter(filter))))
+            Ok(Some(self.consume_boost_and_wrap_filter(filter)?))
         } else {
             Ok(None)
         }
@@ -995,7 +995,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         let offset = self.offset;
         if let Some(bind_name) = self.consume_field() {
             if self.consume("::") {
-                let filter = try!(self.array());
+                let filter = self.array()?;
                 self.kb.push_array();
                 let kb_clone = self.kb.clone();
                 self.kb.pop_array();
@@ -1012,9 +1012,9 @@ impl<'a, 'c> Parser<'a, 'c> {
             return Err(Error::Parse("Expected '['".to_string()));
         }
         self.kb.push_array();
-        let filter = try!(self.abool());
+        let filter = self.abool()?;
         self.kb.pop_array();
-        try!(self.must_consume("]"));
+        self.must_consume("]")?;
 
         self.consume_boost_and_wrap_filter(filter)
     }
@@ -1024,7 +1024,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         if self.consume("order") {
             let mut n = 0;
             loop {
-                if let Some(rp) = try!(self.consume_keypath()) {
+                if let Some(rp) = self.consume_keypath()? {
                     // doing the search for source 2x so user can order
                     // anyway they like. Yes it's a hack, but it simple.
                     let mut order = if self.consume("asc") {
@@ -1053,9 +1053,9 @@ impl<'a, 'c> Parser<'a, 'c> {
                                            default: default,
                                        });
                 } else {
-                    try!(self.must_consume("score"));
-                    try!(self.must_consume("("));
-                    try!(self.must_consume(")"));
+                    self.must_consume("score")?;
+                    self.must_consume("(")?;
+                    self.must_consume(")")?;
 
                     self.needs_scoring = true;
 
@@ -1090,7 +1090,7 @@ impl<'a, 'c> Parser<'a, 'c> {
 
     pub fn return_clause(&mut self) -> Result<Box<dyn Returnable>, Error> {
         if self.consume("return") {
-            if let Some(ret_value) = try!(self.ret_value()) {
+            if let Some(ret_value) = self.ret_value()? {
                 Ok(ret_value)
             } else {
                 Err(Error::Parse("Expected key, object or array to return.".to_string()))
@@ -1108,12 +1108,12 @@ impl<'a, 'c> Parser<'a, 'c> {
     }
 
     fn ret_object(&mut self) -> Result<Box<dyn Returnable>, Error> {
-        try!(self.must_consume("{"));
+        self.must_consume("{")?;
         let mut fields: Vec<(String, Box<dyn Returnable>)> = Vec::new();
         loop {
-            if let Some(field) = try!(self.consume_key()) {
-                try!(self.must_consume(":"));
-                if let Some(ret_value) = try!(self.ret_value()) {
+            if let Some(field) = self.consume_key()? {
+                self.must_consume(":")?;
+                if let Some(ret_value) = self.ret_value()? {
                     fields.push((field, ret_value));
                     if !self.consume(",") {
                         break;
@@ -1126,15 +1126,15 @@ impl<'a, 'c> Parser<'a, 'c> {
             }
         }
 
-        try!(self.must_consume("}"));
+        self.must_consume("}")?;
         Ok(Box::new(RetObject { fields: fields }))
     }
 
     fn ret_array(&mut self) -> Result<Box<dyn Returnable>, Error> {
-        try!(self.must_consume("["));
+        self.must_consume("[")?;
         let mut slots = Vec::new();
         loop {
-            if let Some(ret_value) = try!(self.ret_value()) {
+            if let Some(ret_value) = self.ret_value()? {
                 slots.push(ret_value);
                 if !self.consume(",") {
                     break;
@@ -1143,7 +1143,7 @@ impl<'a, 'c> Parser<'a, 'c> {
                 break;
             }
         }
-        try!(self.must_consume("]"));
+        self.must_consume("]")?;
         Ok(Box::new(RetArray { slots: slots }))
 
     }
@@ -1159,7 +1159,7 @@ impl<'a, 'c> Parser<'a, 'c> {
             let offset = self.offset;
             let _ = self.consume("score");
             if self.consume("(") {
-                try!(self.must_consume(")"));
+                self.must_consume(")")?;
                 self.needs_scoring = true;
                 return Ok(Some(Box::new(RetScore { order_info: None })));
             } else {
@@ -1168,7 +1168,7 @@ impl<'a, 'c> Parser<'a, 'c> {
             }
         }
 
-        if let Some(aggregate) = try!(self.consume_aggregate()) {
+        if let Some(aggregate) = self.consume_aggregate()? {
             let default = self.consume_default()?.unwrap_or(JsonValue::Null);
             match aggregate.bind_name {
                 Some(bind_name) => Ok(Some(Box::new(RetBind {
@@ -1186,7 +1186,7 @@ impl<'a, 'c> Parser<'a, 'c> {
                 }))),
             }
         } else if let Some(bind_name) = self.consume_field() {
-            let rp = if let Some(rp) = try!(self.consume_keypath()) {
+            let rp = if let Some(rp) = self.consume_keypath()? {
                 rp
             } else {
                 ReturnPath::new()
@@ -1200,7 +1200,7 @@ impl<'a, 'c> Parser<'a, 'c> {
                                  default: default,
                                  order_info: None,
                              })))
-        } else if let Some(rp) = try!(self.consume_keypath()) {
+        } else if let Some(rp) = self.consume_keypath()? {
             let default = self.consume_default()?.unwrap_or(JsonValue::Null);
 
             Ok(Some(Box::new(RetValue {
@@ -1210,12 +1210,12 @@ impl<'a, 'c> Parser<'a, 'c> {
                                  order_info: None,
                              })))
         } else if self.could_consume("{") {
-            Ok(Some(try!(self.ret_object())))
+            Ok(Some(self.ret_object()?))
         } else if self.could_consume("[") {
-            Ok(Some(try!(self.ret_array())))
-        } else if let Some(string) = try!(self.consume_string_literal()) {
+            Ok(Some(self.ret_array()?))
+        } else if let Some(string) = self.consume_string_literal()? {
             Ok(Some(Box::new(RetLiteral { json: JsonValue::String(string) })))
-        } else if let Some(num) = try!(self.consume_number()) {
+        } else if let Some(num) = self.consume_number()? {
             Ok(Some(Box::new(RetLiteral { json: JsonValue::Number(num) })))
         } else {
             Ok(None)
@@ -1224,7 +1224,7 @@ impl<'a, 'c> Parser<'a, 'c> {
 
     pub fn limit_clause(&mut self) -> Result<usize, Error> {
         if self.consume("limit") {
-            if let Some(i) = try!(self.consume_integer()) {
+            if let Some(i) = self.consume_integer()? {
                 if i <= 0 {
                     return Err(Error::Parse("limit must be an integer greater than 0".to_string()));
                 }
@@ -1239,16 +1239,16 @@ impl<'a, 'c> Parser<'a, 'c> {
 
     fn json(&mut self) -> Result<Option<JsonValue>, Error> {
         if self.could_consume("{") {
-            Ok(Some(try!(self.json_object())))
+            Ok(Some(self.json_object()?))
         } else if self.could_consume("[") {
-            Ok(Some(try!(self.json_array())))
+            Ok(Some(self.json_array()?))
         } else {
-            Ok(try!(self.json_primitive()))
+            Ok(self.json_primitive()?)
         }
     }
 
     fn must_consume_json_primitive(&mut self) -> Result<JsonValue, Error> {
-        if let Some(json) = try!(self.json_primitive()) {
+        if let Some(json) = self.json_primitive()? {
             Ok(json)
         } else {
             Err(Error::Parse("Expected JSON primitive.".to_string()))
@@ -1257,7 +1257,7 @@ impl<'a, 'c> Parser<'a, 'c> {
 
     /// JSON primites are strings, numbers, booleans and null
     fn json_primitive(&mut self) -> Result<Option<JsonValue>, Error> {
-        if let Some(string) = try!(self.consume_string_literal()) {
+        if let Some(string) = self.consume_string_literal()? {
             Ok(Some(JsonValue::String(string)))
         }
         // The else is needed becaue of https://github.com/rust-lang/rust/issues/37510
@@ -1268,9 +1268,9 @@ impl<'a, 'c> Parser<'a, 'c> {
                 Ok(Some(JsonValue::False))
             } else if self.consume("null") {
                 Ok(Some(JsonValue::Null))
-            } else if let Some(num) = try!(self.consume_number()) {
+            } else if let Some(num) = self.consume_number()? {
                 Ok(Some(JsonValue::Number(num)))
-            } else if let Some(json) = try!(self.consume_param()) {
+            } else if let Some(json) = self.consume_param()? {
                 Ok(Some(json))
             } else {
                 Ok(None)
@@ -1279,15 +1279,15 @@ impl<'a, 'c> Parser<'a, 'c> {
     }
 
     fn json_object(&mut self) -> Result<JsonValue, Error> {
-        try!(self.must_consume("{"));
+        self.must_consume("{")?;
         let mut object = Vec::new();
         if self.consume("}") {
             return Ok(JsonValue::Object(object));
         }
         loop {
-            if let Some(field) = try!(self.consume_key()) {
-                try!(self.must_consume(":"));
-                if let Some(json) = try!(self.json()) {
+            if let Some(field) = self.consume_key()? {
+                self.must_consume(":")?;
+                if let Some(json) = self.json()? {
                     object.push((field, json));
                     if !self.consume(",") {
                         break;
@@ -1299,18 +1299,18 @@ impl<'a, 'c> Parser<'a, 'c> {
                 return Err(Error::Parse("Invalid json found".to_string()));
             }
         }
-        try!(self.must_consume("}"));
+        self.must_consume("}")?;
         Ok(JsonValue::Object(object))
     }
 
     fn json_array(&mut self) -> Result<JsonValue, Error> {
-        try!(self.must_consume("["));
+        self.must_consume("[")?;
         let mut array = Vec::new();
         if self.consume("]") {
             return Ok(JsonValue::Array(array));
         }
         loop {
-            if let Some(json) = try!(self.json()) {
+            if let Some(json) = self.json()? {
                 array.push(json);
                 if !self.consume(",") {
                     break;
@@ -1319,13 +1319,13 @@ impl<'a, 'c> Parser<'a, 'c> {
                 return Err(Error::Parse("Invalid json found".to_string()));
             }
         }
-        try!(self.must_consume("]"));
+        self.must_consume("]")?;
         Ok(JsonValue::Array(array))
     }
 
     pub fn build_filter(&mut self) -> Result<Box<dyn QueryRuntimeFilter + 'a>, Error> {
         self.ws();
-        Ok(try!(self.find()))
+        Ok(self.find()?)
     }
 
     pub fn non_ws_left(&mut self) -> Result<(), Error> {

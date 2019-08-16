@@ -814,7 +814,7 @@ impl<'a> QueryRuntimeFilter for AndFilter<'a> {
 
     fn check_double_not(&self, parent_is_neg: bool) -> Result<(), Error> {
         for f in self.filters.iter() {
-            try!(f.check_double_not(parent_is_neg));
+            f.check_double_not(parent_is_neg)?;
         }
         Ok(())
     }
@@ -966,8 +966,8 @@ impl<'a> QueryRuntimeFilter for OrFilter<'a> {
     }
 
     fn check_double_not(&self, parent_is_neg: bool) -> Result<(), Error> {
-        try!(self.left.filter.check_double_not(parent_is_neg));
-        try!(self.right.filter.check_double_not(parent_is_neg));
+        self.left.filter.check_double_not(parent_is_neg)?;
+        self.right.filter.check_double_not(parent_is_neg)?;
         Ok(())
     }
 
@@ -1090,7 +1090,7 @@ impl<'a> QueryRuntimeFilter for NotFilter<'a> {
                                      This is not allowed."
                                             .to_string()));
         }
-        try!(self.filter.check_double_not(true));
+        self.filter.check_double_not(true)?;
         Ok(())
     }
 

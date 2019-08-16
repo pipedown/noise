@@ -90,10 +90,10 @@ impl Shredder {
         // Add/delete the key that is used for R-tree lookups
         let rtree_key = kb.rtree_key(docseq, bbox);
         if delete {
-            try!(batch.delete_cf(column_family, &rtree_key.as_slice()));
+            batch.delete_cf(column_family, &rtree_key.as_slice())?;
         } else {
-            try!(batch.put_cf(column_family, &rtree_key.as_slice(),
-                Shredder::as_u8_slice(kb.arraypath.as_slice())));
+            batch.put_cf(column_family, &rtree_key.as_slice(),
+                Shredder::as_u8_slice(kb.arraypath.as_slice()))?;
         }
 
         Ok(())
@@ -108,10 +108,10 @@ impl Shredder {
         // Add/delete the key that is used for range lookups
         let number_key = kb.number_key(docseq);
         if delete {
-            try!(batch.delete(&number_key.as_bytes()));
+            batch.delete(&number_key.as_bytes())?;
         } else {
             // The number contains the `f` prefix
-            try!(batch.put(&number_key.as_bytes(), &number[1..]));
+            batch.put(&number_key.as_bytes(), &number[1..])?;
         }
 
         Ok(())
@@ -125,10 +125,10 @@ impl Shredder {
                              -> Result<(), Error> {
         let key = kb.bool_null_key(prefix, docseq);
         if delete {
-            try!(batch.delete(&key.as_bytes()));
+            batch.delete(&key.as_bytes())?;
         } else {
             // No need to store any value as the key already contains it
-            try!(batch.put(&key.as_bytes(), &[]));
+            batch.put(&key.as_bytes(), &[])?;
         }
 
         Ok(())
@@ -165,27 +165,27 @@ impl Shredder {
         for (stemmed, (word_positions, count)) in word_to_word_positions {
             let key = kb.kp_word_key(&stemmed, docseq);
             if delete {
-                try!(batch.delete(&key.into_bytes()));
+                batch.delete(&key.into_bytes())?;
             } else {
-                try!(batch.put(&key.into_bytes(), &word_positions.into_inner()));
+                batch.put(&key.into_bytes(), &word_positions.into_inner())?;
             }
 
             let key = kb.kp_field_length_key(docseq);
             if delete {
-                try!(batch.delete(&key.into_bytes()));
+                batch.delete(&key.into_bytes())?;
             } else {
-                try!(batch.put(&key.into_bytes(), &Index::convert_i32_to_bytes(total_words)));
+                batch.put(&key.into_bytes(), &Index::convert_i32_to_bytes(total_words))?;
             }
 
             let key = kb.kp_word_count_key(&stemmed);
             if delete {
-                try!(batch.merge(&key.into_bytes(), &Index::convert_i32_to_bytes(-count)));
+                batch.merge(&key.into_bytes(), &Index::convert_i32_to_bytes(-count))?;
             } else {
-                try!(batch.merge(&key.into_bytes(), &Index::convert_i32_to_bytes(count)));
+                batch.merge(&key.into_bytes(), &Index::convert_i32_to_bytes(count))?;
             }
 
             let key = kb.kp_field_count_key();
-            try!(batch.merge(&key.into_bytes(), one_enc_bytes.get_ref()));
+            batch.merge(&key.into_bytes(), one_enc_bytes.get_ref())?;
         }
 
         Ok(())
@@ -208,7 +208,7 @@ impl Shredder {
         let key = self.kb.kp_value_no_seq();
         let mut buffer = Vec::with_capacity(value.len() + 1);
         buffer.push(code as u8);
-        try!((&mut buffer as &mut dyn Write).write_all(value));
+        (&mut buffer as &mut dyn Write).write_all(value)?;
         self.shredded_key_values.insert(key, buffer);
         Ok(())
     }
@@ -229,7 +229,7 @@ impl Shredder {
                 self.kb.pop_object_key();
                 self.kb.push_object_key("_id");
                 *self.object_keys_indexed.last_mut().unwrap() = true;
-                try!(self.add_value(code, &value));
+                self.add_value(code, &value)?;
             }
             ObjectKeyTypes::Key(key) => {
                 if key == "type" {
@@ -245,10 +245,10 @@ impl Shredder {
                 self.kb.pop_object_key();
                 self.kb.push_object_key(&key);
                 *self.object_keys_indexed.last_mut().unwrap() = true;
-                try!(self.add_value(code, &value));
+                self.add_value(code, &value)?;
             }
             ObjectKeyTypes::NoKey => {
-                try!(self.add_value(code, &value));
+                self.add_value(code, &value)?;
                 self.kb.inc_top_array_index();
             }
         }
@@ -307,32 +307,32 @@ impl Shredder {
             match value[0] as char {
                 's' => {
                     let text = unsafe { str::from_utf8_unchecked(&value[1..]) };
-                    try!(Shredder::add_stemmed_entries(&mut self.kb, text, seq, batch, true));
+                    Shredder::add_stemmed_entries(&mut self.kb, text, seq, batch, true)?;
                 }
                 'f' => {
-                    try!(Shredder::add_number_entries(&mut self.kb, &value, seq, batch, true));
+                    Shredder::add_number_entries(&mut self.kb, &value, seq, batch, true)?;
                 }
                 'T' | 'F' | 'N' => {
-                    try!(Shredder::add_bool_null_entries(&mut self.kb,
+                    Shredder::add_bool_null_entries(&mut self.kb,
                                                          value[0] as char,
                                                          seq,
                                                          batch,
-                                                         true));
+                                                         true)?;
                 }
                 'r' => {
-                    try!(Shredder::add_rtree_entries(&mut self.kb,
+                    Shredder::add_rtree_entries(&mut self.kb,
                                                      &value[1..],
                                                      seq,
                                                      batch,
                                                      rtree,
-                                                     true));
+                                                     true)?;
                 }
                 _ => {}
             }
             // If it was a bounding box calculated for the R-tree, it's not part of the
             // shredded original JSON document
             if value[0] as char != 'r' {
-                try!(batch.delete(&key.as_bytes()));
+                batch.delete(&key.as_bytes())?;
             }
         }
         self.existing_key_value_to_delete = BTreeMap::new();
@@ -343,25 +343,25 @@ impl Shredder {
             match value[0] as char {
                 's' => {
                     let text = unsafe { str::from_utf8_unchecked(&value[1..]) };
-                    try!(Shredder::add_stemmed_entries(&mut self.kb, text, seq, batch, false));
+                    Shredder::add_stemmed_entries(&mut self.kb, text, seq, batch, false)?;
                 }
                 'f' => {
-                    try!(Shredder::add_number_entries(&mut self.kb, &value, seq, batch, false));
+                    Shredder::add_number_entries(&mut self.kb, &value, seq, batch, false)?;
                 }
                 'T' | 'F' | 'N' => {
-                    try!(Shredder::add_bool_null_entries(&mut self.kb,
+                    Shredder::add_bool_null_entries(&mut self.kb,
                                                          value[0] as char,
                                                          seq,
                                                          batch,
-                                                         false));
+                                                         false)?;
                 }
                 'r' => {
-                    try!(Shredder::add_rtree_entries(&mut self.kb,
+                    Shredder::add_rtree_entries(&mut self.kb,
                                                      &value[1..],
                                                      seq,
                                                      batch,
                                                      rtree,
-                                                     false));
+                                                     false)?;
                 }
                 _ => {}
             }
@@ -369,16 +369,16 @@ impl Shredder {
             // be part of the shredded original JSON document
             if value[0] as char != 'r' {
                 let key = self.kb.kp_value_key(seq);
-                try!(batch.put(&key.as_bytes(), &value.as_ref()));
+                batch.put(&key.as_bytes(), &value.as_ref())?;
             }
         }
         self.shredded_key_values = BTreeMap::new();
 
         let key = KeyBuilder::id_to_seq_key(self.doc_id.as_ref().unwrap());
-        try!(batch.put(&key.into_bytes(), &seq.to_string().as_bytes()));
+        batch.put(&key.into_bytes(), &seq.to_string().as_bytes())?;
 
         let key = KeyBuilder::seq_key(seq);
-        try!(batch.put(&key.into_bytes(), b""));
+        batch.put(&key.into_bytes(), b"")?;
 
         Ok(())
     }
@@ -397,27 +397,27 @@ impl Shredder {
             match value[0] as char {
                 's' => {
                     let text = unsafe { str::from_utf8_unchecked(&value[1..]) };
-                    try!(Shredder::add_stemmed_entries(&mut self.kb, text, seq, batch, true));
+                    Shredder::add_stemmed_entries(&mut self.kb, text, seq, batch, true)?;
                 }
                 'f' => {
-                    try!(Shredder::add_number_entries(&mut self.kb, &value, seq, batch, true));
+                    Shredder::add_number_entries(&mut self.kb, &value, seq, batch, true)?;
                 }
                 'T' | 'F' | 'N' => {
-                    try!(Shredder::add_bool_null_entries(&mut self.kb,
+                    Shredder::add_bool_null_entries(&mut self.kb,
                                                          value[0] as char,
                                                          seq,
                                                          batch,
-                                                         true));
+                                                         true)?;
                 }
                 _ => {}
             }
-            try!(batch.delete(&key.as_bytes()));
+            batch.delete(&key.as_bytes())?;
         }
         let key = KeyBuilder::id_to_seq_key(self.doc_id.as_ref().unwrap());
-        try!(batch.delete(&key.into_bytes()));
+        batch.delete(&key.into_bytes())?;
 
         let key = KeyBuilder::seq_key(seq);
-        try!(batch.delete(&key.into_bytes()));
+        batch.delete(&key.into_bytes())?;
         Ok(())
     }
 
@@ -450,7 +450,7 @@ impl Shredder {
         self.doc_id = Some(id.to_string());
         self.kb.clear();
         self.kb.push_object_key("_id");
-        try!(self.add_value('s', &id.as_bytes()));
+        self.add_value('s', &id.as_bytes())?;
         Ok(())
     }
 
@@ -461,7 +461,7 @@ impl Shredder {
             // on the stack.
             match parser.next().take() {
                 Some(JsonEvent::ObjectStart) => {
-                    try!(self.maybe_push_key(parser.stack().top()));
+                    self.maybe_push_key(parser.stack().top())?;
                     // Just push something to make `ObjectEnd` happy
                     self.kb.push_object_key("");
                     self.object_keys_indexed.push(false);
@@ -472,7 +472,7 @@ impl Shredder {
                         // this means we never wrote a key because the object was empty.
                         // So preserve the empty object by writing a special value.
                         // but not for the root object. it will always have _id field added.
-                        try!(self.maybe_add_value(&parser, 'o', &[]));
+                        self.maybe_add_value(&parser, 'o', &[])?;
                     }
                     if self.maybe_geometry == 2 {
                         let mut encoded_bbox = Vec::new();
@@ -495,7 +495,7 @@ impl Shredder {
                     self.kb.inc_top_array_index();
                 }
                 Some(JsonEvent::ArrayStart) => {
-                    let key = try!(self.maybe_push_key(parser.stack().top()));
+                    let key = self.maybe_push_key(parser.stack().top())?;
                     if key == Some("coordinates".to_string()) {
                         self.maybe_geometry += 1;
                     }
@@ -506,38 +506,38 @@ impl Shredder {
                         // this means we never wrote a value because the object was empty.
                         // So preserve the empty array by writing a special value.
                         self.kb.pop_array();
-                        try!(self.maybe_add_value(&parser, 'a', &[]));
+                        self.maybe_add_value(&parser, 'a', &[])?;
                     } else {
                         self.kb.pop_array();
                     }
                     self.kb.inc_top_array_index();
                 }
                 Some(JsonEvent::StringValue(value)) => {
-                    try!(self.maybe_add_value(&parser, 's', &value.as_bytes()));
+                    self.maybe_add_value(&parser, 's', &value.as_bytes())?;
                 }
                 Some(JsonEvent::BooleanValue(tf)) => {
                     let code = if tf { 'T' } else { 'F' };
-                    try!(self.maybe_add_value(&parser, code, &[]));
+                    self.maybe_add_value(&parser, code, &[])?;
                 }
                 Some(JsonEvent::I64Value(i)) => {
                     let f = i as f64;
                     self.calc_mbb(f);
                     let bytes = unsafe { transmute::<f64, [u8; 8]>(f) };
-                    try!(self.maybe_add_value(&parser, 'f', &bytes[..]));
+                    self.maybe_add_value(&parser, 'f', &bytes[..])?;
                 }
                 Some(JsonEvent::U64Value(u)) => {
                     let f = u as f64;
                     self.calc_mbb(f);
                     let bytes = unsafe { transmute::<f64, [u8; 8]>(f) };
-                    try!(self.maybe_add_value(&parser, 'f', &bytes[..]));
+                    self.maybe_add_value(&parser, 'f', &bytes[..])?;
                 }
                 Some(JsonEvent::F64Value(f)) => {
                     self.calc_mbb(f);
                     let bytes = unsafe { transmute::<f64, [u8; 8]>(f) };
-                    try!(self.maybe_add_value(&parser, 'f', &bytes[..]));
+                    self.maybe_add_value(&parser, 'f', &bytes[..])?;
                 }
                 Some(JsonEvent::NullValue) => {
-                    try!(self.maybe_add_value(&parser, 'N', &[]));
+                    self.maybe_add_value(&parser, 'N', &[])?;
                 }
                 Some(JsonEvent::Error(error)) => {
                     return Err(Error::Shred(error.to_string()));

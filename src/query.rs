@@ -197,18 +197,18 @@ impl<'a> QueryResults<'a> {
                              -> Result<QueryResults<'a>, Error> {
 
         let params = if let Some(param_str) = parameters {
-            try!(QueryResults::parse_parameters(&param_str))
+            QueryResults::parse_parameters(&param_str)?
         } else {
             HashMap::new()
         };
         let snapshot = Rc::new(snapshot);
         let mut parser = Parser::new(query, params, Rc::clone(&snapshot));
-        let mut filter = try!(parser.build_filter());
-        let mut orders = try!(parser.order_clause());
-        let mut returnable = try!(parser.return_clause());
-        let limit = try!(parser.limit_clause());
-        try!(parser.non_ws_left());
-        try!(filter.check_double_not(false));
+        let mut filter = parser.build_filter()?;
+        let mut orders = parser.order_clause()?;
+        let mut returnable = parser.return_clause()?;
+        let limit = parser.limit_clause()?;
+        parser.non_ws_left()?;
+        filter.check_double_not(false)?;
 
         if filter.is_all_not() {
             return Err(Error::Parse("query cannot be made up of only logical not. Must have at \
