@@ -379,7 +379,7 @@ impl Index {
             mem::transmute::<[u8; 32], [f64; 4]>(array)
         };
 
-        for (value_aa, value_bb) in bbox_aa.into_iter().zip(bbox_bb.into_iter()) {
+        for (value_aa, value_bb) in bbox_aa.iter().zip(bbox_bb.iter()) {
             let value_compare = value_aa.partial_cmp(value_bb).unwrap();
             if value_compare != Ordering::Equal {
                 return value_compare;
