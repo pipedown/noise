@@ -22,19 +22,6 @@ impl PartialEq for Error {
 }
 
 impl error::Error for Error {
-    fn description(&self) -> &str {
-        match *self {
-            Error::Parse(ref description) => description,
-            Error::Shred(ref description) => description,
-            // XXX vmx 2016-11-07: It should be fixed on the RocksDB wrapper
-            // that it has the std::error:Error implemented and hence
-            // and err.description()
-            Error::Rocks(_) => "This is an rocksdb error",
-            Error::Write(ref description) => description,
-            Error::Io(ref err) => err.description(),
-        }
-    }
-
     fn cause(&self) -> Option<&dyn error::Error> {
         match *self {
             Error::Parse(_) => None,
