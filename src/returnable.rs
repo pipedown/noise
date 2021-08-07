@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 use std::collections::VecDeque;
 
-use key_builder::KeyBuilder;
+use aggregates::AggregateFun;
 use json_value::JsonValue;
+use key_builder::KeyBuilder;
 use query::OrderInfo;
 use snapshot::JsonFetcher;
-use aggregates::AggregateFun;
 
 #[derive(Clone)]
 pub enum PathSegment {
@@ -71,8 +71,6 @@ impl ReturnPath {
     }
 }
 
-
-
 /// Returnables are created from parsing the return statement in queries.
 /// They nest inside of each other, with the outermost typically being a RetObject or RetArray.
 pub trait Returnable {
@@ -80,12 +78,14 @@ pub trait Returnable {
     /// and then each nested Returnable will fetch information about the document (fields or
     /// scores or bind variables etc) and convert them to JsonValues and add them to the result
     /// VecDeque.
-    fn fetch_result(&self,
-                    fetcher: &mut JsonFetcher,
-                    seq: u64,
-                    score: f32,
-                    bind_var_keys: &HashMap<String, Vec<String>>,
-                    result: &mut VecDeque<JsonValue>);
+    fn fetch_result(
+        &self,
+        fetcher: &mut JsonFetcher,
+        seq: u64,
+        score: f32,
+        bind_var_keys: &HashMap<String, Vec<String>>,
+        result: &mut VecDeque<JsonValue>,
+    );
 
     /// If aggregates are used each Returnable needs to return information about the
     /// aggregate function it's using and the default value.
@@ -115,12 +115,14 @@ pub struct RetObject {
 }
 
 impl Returnable for RetObject {
-    fn fetch_result(&self,
-                    fetcher: &mut JsonFetcher,
-                    seq: u64,
-                    score: f32,
-                    bind_var_keys: &HashMap<String, Vec<String>>,
-                    result: &mut VecDeque<JsonValue>) {
+    fn fetch_result(
+        &self,
+        fetcher: &mut JsonFetcher,
+        seq: u64,
+        score: f32,
+        bind_var_keys: &HashMap<String, Vec<String>>,
+        result: &mut VecDeque<JsonValue>,
+    ) {
         for &(ref _key, ref field) in self.fields.iter() {
             field.fetch_result(fetcher, seq, score, bind_var_keys, result);
         }
@@ -159,12 +161,14 @@ pub struct RetArray {
 }
 
 impl Returnable for RetArray {
-    fn fetch_result(&self,
-                    fetcher: &mut JsonFetcher,
-                    seq: u64,
-                    score: f32,
-                    bind_var_keys: &HashMap<String, Vec<String>>,
-                    result: &mut VecDeque<JsonValue>) {
+    fn fetch_result(
+        &self,
+        fetcher: &mut JsonFetcher,
+        seq: u64,
+        score: f32,
+        bind_var_keys: &HashMap<String, Vec<String>>,
+        result: &mut VecDeque<JsonValue>,
+    ) {
         for ref slot in self.slots.iter() {
             slot.fetch_result(fetcher, seq, score, bind_var_keys, result);
         }
@@ -205,12 +209,14 @@ pub struct RetHidden {
 }
 
 impl Returnable for RetHidden {
-    fn fetch_result(&self,
-                    fetcher: &mut JsonFetcher,
-                    seq: u64,
-                    score: f32,
-                    bind_var_keys: &HashMap<String, Vec<String>>,
-                    result: &mut VecDeque<JsonValue>) {
+    fn fetch_result(
+        &self,
+        fetcher: &mut JsonFetcher,
+        seq: u64,
+        score: f32,
+        bind_var_keys: &HashMap<String, Vec<String>>,
+        result: &mut VecDeque<JsonValue>,
+    ) {
         for ref unrendered in self.unrendered.iter() {
             unrendered.fetch_result(fetcher, seq, score, bind_var_keys, result);
         }
@@ -251,12 +257,14 @@ pub struct RetLiteral {
 }
 
 impl Returnable for RetLiteral {
-    fn fetch_result(&self,
-                    _fetcher: &mut JsonFetcher,
-                    _seq: u64,
-                    _score: f32,
-                    _bind_var_keys: &HashMap<String, Vec<String>>,
-                    _result: &mut VecDeque<JsonValue>) {
+    fn fetch_result(
+        &self,
+        _fetcher: &mut JsonFetcher,
+        _seq: u64,
+        _score: f32,
+        _bind_var_keys: &HashMap<String, Vec<String>>,
+        _result: &mut VecDeque<JsonValue>,
+    ) {
     }
 
     fn get_aggregate_funs(&self, _funs: &mut Vec<Option<(AggregateFun, Option<JsonValue>)>>) {
@@ -285,15 +293,15 @@ pub struct RetValue {
     pub order_info: Option<OrderInfo>,
 }
 
-
-
 impl Returnable for RetValue {
-    fn fetch_result(&self,
-                    fetcher: &mut JsonFetcher,
-                    seq: u64,
-                    _score: f32,
-                    _bind_var_keys: &HashMap<String, Vec<String>>,
-                    result: &mut VecDeque<JsonValue>) {
+    fn fetch_result(
+        &self,
+        fetcher: &mut JsonFetcher,
+        seq: u64,
+        _score: f32,
+        _bind_var_keys: &HashMap<String, Vec<String>>,
+        result: &mut VecDeque<JsonValue>,
+    ) {
         if Some((AggregateFun::Count, None)) == self.ag {
             //don't fetch anything for count(). just stick in a null
             result.push_back(JsonValue::Null);
@@ -340,13 +348,14 @@ pub struct RetBind {
 }
 
 impl Returnable for RetBind {
-    fn fetch_result(&self,
-                    fetcher: &mut JsonFetcher,
-                    seq: u64,
-                    _score: f32,
-                    bind_var_keys: &HashMap<String, Vec<String>>,
-                    result: &mut VecDeque<JsonValue>) {
-
+    fn fetch_result(
+        &self,
+        fetcher: &mut JsonFetcher,
+        seq: u64,
+        _score: f32,
+        bind_var_keys: &HashMap<String, Vec<String>>,
+        result: &mut VecDeque<JsonValue>,
+    ) {
         if let Some(value_keys) = bind_var_keys.get(&self.bind_name) {
             let mut array = Vec::with_capacity(value_keys.len());
             for base_key in value_keys {
@@ -392,12 +401,14 @@ pub struct RetScore {
 }
 
 impl Returnable for RetScore {
-    fn fetch_result(&self,
-                    _fetcher: &mut JsonFetcher,
-                    _seq: u64,
-                    score: f32,
-                    _bind_var_keys: &HashMap<String, Vec<String>>,
-                    result: &mut VecDeque<JsonValue>) {
+    fn fetch_result(
+        &self,
+        _fetcher: &mut JsonFetcher,
+        _seq: u64,
+        score: f32,
+        _bind_var_keys: &HashMap<String, Vec<String>>,
+        result: &mut VecDeque<JsonValue>,
+    ) {
         result.push_back(JsonValue::Number(score as f64));
     }
 

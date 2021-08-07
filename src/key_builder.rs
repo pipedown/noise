@@ -2,9 +2,9 @@ extern crate unicode_normalization;
 extern crate varint;
 
 use query::DocResult;
-use std::{mem, str};
 use std::cmp::Ordering;
 use std::io::Cursor;
+use std::{mem, str};
 
 use self::varint::VarintWrite;
 
@@ -33,7 +33,6 @@ pub const KEY_PREFIX_FALSE: char = 'F';
 pub const KEY_PREFIX_NULL: char = 'N';
 /// for orignal doc values for retrieving results
 pub const KEY_PREFIX_VALUE: char = 'V';
-
 
 pub enum Segment {
     ObjectKey(String),
@@ -136,12 +135,11 @@ impl KeyBuilder {
         let _ = keypath_len.write_unsigned_varint_32(keypath.len() as u32);
         key.append(&mut keypath_len.get_mut());
         key.extend_from_slice(keypath.as_bytes());
-        key.extend_from_slice(&unsafe{ mem::transmute::<u64, [u8; 8]>(seq_min) });
-        key.extend_from_slice(&unsafe{ mem::transmute::<u64, [u8; 8]>(seq_max) });
+        key.extend_from_slice(&unsafe { mem::transmute::<u64, [u8; 8]>(seq_min) });
+        key.extend_from_slice(&unsafe { mem::transmute::<u64, [u8; 8]>(seq_max) });
         key.extend_from_slice(bbox);
         return key;
     }
-
 
     /// Build key an R-tree index can be built upon
     /// The structure is a bit different from other keypath. It doesn't have a prefix as those
@@ -160,7 +158,7 @@ impl KeyBuilder {
         key.extend_from_slice(keypath.as_bytes());
         // The Internal Id is always only a single value, hence don't store a range, but only
         // that single valye as first dimension
-        key.extend_from_slice(&unsafe{ mem::transmute::<u64, [u8; 8]>(seq) });
+        key.extend_from_slice(&unsafe { mem::transmute::<u64, [u8; 8]>(seq) });
         key.extend_from_slice(bbox);
         return key;
     }
@@ -234,7 +232,6 @@ impl KeyBuilder {
         let n = stemmed_word_key.rfind("#").unwrap();
         stemmed_word_key.truncate(n + 1);
     }
-
 
     /// Builds a value key for seq (value keys are the original json terminal value with
     /// keyed on keypath and arraypath built up internally).
@@ -334,7 +331,6 @@ impl KeyBuilder {
 
     // returns the unescaped segment as Segment and the escaped segment as a String
     pub fn parse_first_kp_value_segment(keypath: &str) -> Option<(Segment, String)> {
-
         let mut unescaped = String::with_capacity(50);
         // The length of the escaped sequence. It always starts with a dot '.'
         let mut len_bytes = 1;
@@ -366,7 +362,10 @@ impl KeyBuilder {
                         }
                     }
                 }
-                Some((Segment::ObjectKey(unescaped), keypath[..len_bytes].to_string()))
+                Some((
+                    Segment::ObjectKey(unescaped),
+                    keypath[..len_bytes].to_string(),
+                ))
             }
             Some('$') => {
                 let mut i = String::new();
@@ -377,7 +376,10 @@ impl KeyBuilder {
                         break;
                     }
                 }
-                Some((Segment::Array(i.parse().unwrap()), keypath[..1 + i.len()].to_string()))
+                Some((
+                    Segment::Array(i.parse().unwrap()),
+                    keypath[..1 + i.len()].to_string(),
+                ))
             }
             Some(_) => None, // we must be past the keypath portion of string. done.
             None => None,
@@ -456,7 +458,11 @@ impl KeyBuilder {
         let seq_arraypath_str = &str[(n + 1)..];
         let m = seq_arraypath_str.find(",").unwrap();
 
-        (&str[..n], &seq_arraypath_str[..m], &seq_arraypath_str[m + 1..])
+        (
+            &str[..n],
+            &seq_arraypath_str[..m],
+            &seq_arraypath_str[m + 1..],
+        )
     }
 
     /// parses a seq and array path portion (ex "123,0,0,10) of a key into a doc result
@@ -475,14 +481,20 @@ impl KeyBuilder {
 
     /// used to collate relevant keys that need specific sorting.
     pub fn compare_keys(akey: &str, bkey: &str) -> Ordering {
-        debug_assert!(akey.starts_with(KEY_PREFIX_WORD) || akey.starts_with(KEY_PREFIX_NUMBER) ||
-                      akey.starts_with(KEY_PREFIX_TRUE) ||
-                      akey.starts_with(KEY_PREFIX_FALSE) ||
-                      akey.starts_with(KEY_PREFIX_NULL));
-        debug_assert!(bkey.starts_with(KEY_PREFIX_WORD) || bkey.starts_with(KEY_PREFIX_NUMBER) ||
-                      bkey.starts_with(KEY_PREFIX_TRUE) ||
-                      bkey.starts_with(KEY_PREFIX_FALSE) ||
-                      bkey.starts_with(KEY_PREFIX_NULL));
+        debug_assert!(
+            akey.starts_with(KEY_PREFIX_WORD)
+                || akey.starts_with(KEY_PREFIX_NUMBER)
+                || akey.starts_with(KEY_PREFIX_TRUE)
+                || akey.starts_with(KEY_PREFIX_FALSE)
+                || akey.starts_with(KEY_PREFIX_NULL)
+        );
+        debug_assert!(
+            bkey.starts_with(KEY_PREFIX_WORD)
+                || bkey.starts_with(KEY_PREFIX_NUMBER)
+                || bkey.starts_with(KEY_PREFIX_TRUE)
+                || bkey.starts_with(KEY_PREFIX_FALSE)
+                || bkey.starts_with(KEY_PREFIX_NULL)
+        );
         let (apath_str, aseq_str, aarraypath_str) =
             KeyBuilder::split_seq_arraypath_from_kp_word_key(&akey);
         let (bpath_str, bseq_str, barraypath_str) =
@@ -536,12 +548,10 @@ impl KeyBuilder {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::KeyBuilder;
     use query::DocResult;
-
 
     #[test]
     fn test_segments_push() {
@@ -566,10 +576,11 @@ mod tests {
         kb.push_array();
 
         assert_eq!(kb.kp_segments_len(), 3, "three segments");
-        assert_eq!(kb.kp_word_key("astemmedword", 123),
-                   "W.first.second$!astemmedword#123,0",
-                   "Key for six segments is correct");
-
+        assert_eq!(
+            kb.kp_word_key("astemmedword", 123),
+            "W.first.second$!astemmedword#123,0",
+            "Key for six segments is correct"
+        );
 
         kb.pop_array();
         assert_eq!(kb.kp_segments_len(), 2, "Two segments");

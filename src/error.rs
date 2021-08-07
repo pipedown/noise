@@ -1,10 +1,9 @@
 extern crate rocksdb;
 
-use std::{error, fmt};
-use std::num::ParseIntError;
-use std::num::ParseFloatError;
 use std::io;
-
+use std::num::ParseFloatError;
+use std::num::ParseIntError;
+use std::{error, fmt};
 
 #[derive(Debug)]
 pub enum Error {

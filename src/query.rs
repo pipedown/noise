@@ -1,25 +1,22 @@
-
 extern crate rustc_serialize;
 
-use std::str;
 use std::cmp::Ordering;
 use std::collections::HashMap;
-use std::mem::swap;
 use std::collections::VecDeque;
 use std::iter::Iterator;
+use std::mem::swap;
 use std::rc::Rc;
+use std::str;
 use std::usize;
 
-use error::Error;
-use parser::Parser;
-use json_value::JsonValue;
-use filters::QueryRuntimeFilter;
-use aggregates::AggregateFun;
-use returnable::{Returnable, RetValue, RetScore, RetHidden, ReturnPath};
-use snapshot::{Snapshot, JsonFetcher};
 use self::rustc_serialize::json::{JsonEvent, Parser as JsonParser, StackElement};
-
-
+use aggregates::AggregateFun;
+use error::Error;
+use filters::QueryRuntimeFilter;
+use json_value::JsonValue;
+use parser::Parser;
+use returnable::{RetHidden, RetScore, RetValue, ReturnPath, Returnable};
+use snapshot::{JsonFetcher, Snapshot};
 
 #[derive(Clone)]
 pub struct DocResult {
@@ -56,8 +53,7 @@ impl DocResult {
                 result_keys.append(&mut result_keys_other);
                 continue;
             }
-            self.bind_name_result
-                .insert(bind_name, result_keys_other);
+            self.bind_name_result.insert(bind_name, result_keys_other);
         }
         self.scores.append(&mut other.scores);
     }
@@ -181,7 +177,11 @@ pub struct QueryResults<'a> {
     does_group_or_aggr: bool,
     orders: Option<Vec<(Order, usize)>>,
     aggr_inits: Vec<(fn(JsonValue) -> JsonValue, usize)>,
-    aggr_actions: Vec<(fn(&mut JsonValue, JsonValue, Option<&JsonValue>), Option<JsonValue>, usize)>,
+    aggr_actions: Vec<(
+        fn(&mut JsonValue, JsonValue, Option<&JsonValue>),
+        Option<JsonValue>,
+        usize,
+    )>,
     aggr_finals: Vec<(fn(&mut JsonValue), usize)>,
     in_buffer: Vec<VecDeque<JsonValue>>,
     ordered_buffer: Vec<VecDeque<JsonValue>>,
@@ -191,11 +191,11 @@ pub struct QueryResults<'a> {
 }
 
 impl<'a> QueryResults<'a> {
-    pub fn new_query_results(query: &str,
-                             parameters: Option<String>,
-                             snapshot: Snapshot<'a>)
-                             -> Result<QueryResults<'a>, Error> {
-
+    pub fn new_query_results(
+        query: &str,
+        parameters: Option<String>,
+        snapshot: Snapshot<'a>,
+    ) -> Result<QueryResults<'a>, Error> {
         let params = if let Some(param_str) = parameters {
             QueryResults::parse_parameters(&param_str)?
         } else {
@@ -211,9 +211,11 @@ impl<'a> QueryResults<'a> {
         filter.check_double_not(false)?;
 
         if filter.is_all_not() {
-            return Err(Error::Parse("query cannot be made up of only logical not. Must have at \
+            return Err(Error::Parse(
+                "query cannot be made up of only logical not. Must have at \
                                      least one match clause not negated."
-                                            .to_string()));
+                    .to_string(),
+            ));
         }
 
         let mut ags = Vec::new();
@@ -229,8 +231,9 @@ impl<'a> QueryResults<'a> {
         let has_ordering = !orders.is_empty();
 
         returnable = if has_ordering && has_ags {
-            return Err(Error::Parse("Cannot have aggregates and ordering in the same query"
-                                        .to_string()));
+            return Err(Error::Parse(
+                "Cannot have aggregates and ordering in the same query".to_string(),
+            ));
         } else if has_ordering {
             returnable.take_order_for_matching_fields(&mut orders);
             if !orders.is_empty() {
@@ -240,21 +243,23 @@ impl<'a> QueryResults<'a> {
                     match order_info.field {
                         OrderField::FetchValue(rp) => {
                             vec.push(Box::new(RetValue {
-                                                  rp: rp,
-                                                  ag: None,
-                                                  default: order_info.default,
-                                                  order_info: Some(order),
-                                              }));
+                                rp: rp,
+                                ag: None,
+                                default: order_info.default,
+                                order_info: Some(order),
+                            }));
                         }
                         OrderField::Score => {
-                            vec.push(Box::new(RetScore { order_info: Some(order) }));
+                            vec.push(Box::new(RetScore {
+                                order_info: Some(order),
+                            }));
                         }
                     }
                 }
                 Box::new(RetHidden {
-                             unrendered: vec,
-                             visible: returnable,
-                         })
+                    unrendered: vec,
+                    visible: returnable,
+                })
             } else {
                 returnable
             }
@@ -266,9 +271,11 @@ impl<'a> QueryResults<'a> {
             // we have at least one AggregationFun. Make sure they are all set.
             for option_ag in ags.iter() {
                 if option_ag.is_none() {
-                    return Err(Error::Parse("Return keypaths must either all have \
+                    return Err(Error::Parse(
+                        "Return keypaths must either all have \
                         aggregate functions, or none can them."
-                                                    .to_string()));
+                            .to_string(),
+                    ));
                 }
             }
         }
@@ -279,7 +286,6 @@ impl<'a> QueryResults<'a> {
         // a result that the action needs to be applied to. We instead convert them
         // into several new fields with tuples of action and the slot to act on.
         // this way we don't needlesss loop over the actions where most are noops
-
 
         let mut orders = if has_ordering {
             let mut orders = Vec::new();
@@ -301,7 +307,6 @@ impl<'a> QueryResults<'a> {
         } else {
             Vec::new()
         };
-
 
         let mut does_group_or_aggr = false;
         let mut aggr_inits = Vec::new();
@@ -347,31 +352,31 @@ impl<'a> QueryResults<'a> {
         };
 
         Ok(QueryResults {
-               filter: filter,
-               doc_result_next: DocResult::new(),
-               fetcher: snapshot.new_json_fetcher(),
-               snapshot: snapshot,
-               returnable: returnable,
-               needs_ordering_and_ags: needs_ordering_and_ags,
-               done_with_ordering_and_ags: false,
-               does_group_or_aggr: does_group_or_aggr,
-               orders: Some(orders),
-               aggr_inits: aggr_inits,
-               aggr_actions: aggr_actions,
-               aggr_finals: aggr_finals,
-               in_buffer: Vec::new(),
-               ordered_buffer: Vec::new(),
-               limit: limit,
-               scoring_num_terms: qsi.num_terms,
-               scoring_query_norm: query_norm,
-           })
+            filter: filter,
+            doc_result_next: DocResult::new(),
+            fetcher: snapshot.new_json_fetcher(),
+            snapshot: snapshot,
+            returnable: returnable,
+            needs_ordering_and_ags: needs_ordering_and_ags,
+            done_with_ordering_and_ags: false,
+            does_group_or_aggr: does_group_or_aggr,
+            orders: Some(orders),
+            aggr_inits: aggr_inits,
+            aggr_actions: aggr_actions,
+            aggr_finals: aggr_finals,
+            in_buffer: Vec::new(),
+            ordered_buffer: Vec::new(),
+            limit: limit,
+            scoring_num_terms: qsi.num_terms,
+            scoring_query_norm: query_norm,
+        })
     }
 
     fn parse_parameters(params: &str) -> Result<HashMap<String, JsonValue>, Error> {
         let mut parser = JsonParser::new(params.chars());
         let err_msg: String = "Parameterized query values must be String, Number, /
         True, False, or Null"
-                .to_string();
+            .to_string();
         if parser.next().take() != Some(JsonEvent::ObjectStart) {
             return Err(Error::Parse("Parameters must be json object".to_string()));
         }
@@ -393,12 +398,14 @@ impl<'a> QueryResults<'a> {
                 }
                 Some(JsonEvent::BooleanValue(tf)) => {
                     if let Some(StackElement::Key(key)) = parser.stack().top() {
-                        map.insert(key.to_string(),
-                                   if tf {
-                                       JsonValue::True
-                                   } else {
-                                       JsonValue::False
-                                   });
+                        map.insert(
+                            key.to_string(),
+                            if tf {
+                                JsonValue::True
+                            } else {
+                                JsonValue::False
+                            },
+                        );
                     } else {
                         panic!("Top of stack isn't a key!");
                     }
@@ -434,8 +441,10 @@ impl<'a> QueryResults<'a> {
                     }
                 }
                 Some(JsonEvent::Error(error)) => {
-                    return Err(Error::Parse(format!("Error parsing parameters: {}",
-                                                    error.to_string())));
+                    return Err(Error::Parse(format!(
+                        "Error parsing parameters: {}",
+                        error.to_string()
+                    )));
                 }
                 None => {
                     break;
@@ -457,8 +466,8 @@ impl<'a> QueryResults<'a> {
                 num_terms_matched += 1;
             }
         }
-        self.scoring_query_norm * score * (num_terms_matched as f32) /
-        (self.scoring_num_terms as f32)
+        self.scoring_query_norm * score * (num_terms_matched as f32)
+            / (self.scoring_num_terms as f32)
     }
 
     fn get_next_result(&mut self) -> Option<DocResult> {
@@ -510,12 +519,13 @@ impl<'a> QueryResults<'a> {
                     Some(dr) => {
                         let score = self.compute_relevancy_score(&dr);
                         let mut results = VecDeque::new();
-                        self.returnable
-                            .fetch_result(&mut self.fetcher,
-                                          dr.seq,
-                                          score,
-                                          &dr.bind_name_result,
-                                          &mut results);
+                        self.returnable.fetch_result(
+                            &mut self.fetcher,
+                            dr.seq,
+                            score,
+                            &dr.bind_name_result,
+                            &mut results,
+                        );
                         self.in_buffer.push(results);
                         if self.in_buffer.len() == self.limit {
                             self.do_ordering_and_ags();
@@ -553,20 +563,22 @@ impl<'a> QueryResults<'a> {
             };
             let score = self.compute_relevancy_score(&dr);
             let mut results = VecDeque::new();
-            self.returnable
-                .fetch_result(&mut self.fetcher,
-                              dr.seq,
-                              score,
-                              &dr.bind_name_result,
-                              &mut results);
+            self.returnable.fetch_result(
+                &mut self.fetcher,
+                dr.seq,
+                score,
+                &dr.bind_name_result,
+                &mut results,
+            );
             Some(self.returnable.json_result(&mut results))
         }
     }
 
-    fn cmp_results(orders: &Vec<(Order, usize)>,
-                   a: &VecDeque<JsonValue>,
-                   b: &VecDeque<JsonValue>)
-                   -> Ordering {
+    fn cmp_results(
+        orders: &Vec<(Order, usize)>,
+        a: &VecDeque<JsonValue>,
+        b: &VecDeque<JsonValue>,
+    ) -> Ordering {
         for &(ref order_dir, n) in orders.iter() {
             let cmp = if *order_dir != Order::Desc {
                 b[n].cmp(&a[n])
@@ -597,8 +609,8 @@ impl<'a> QueryResults<'a> {
                 swap(&mut self.ordered_buffer, &mut self.in_buffer);
             } else {
                 //merge the ordered buffers
-                let mut new_buffer = Vec::with_capacity(self.ordered_buffer.len() +
-                                                        self.in_buffer.len());
+                let mut new_buffer =
+                    Vec::with_capacity(self.ordered_buffer.len() + self.in_buffer.len());
                 let mut option_a = self.ordered_buffer.pop();
                 let mut option_b = self.in_buffer.pop();
                 // take out for borrow check
@@ -616,7 +628,6 @@ impl<'a> QueryResults<'a> {
                                     new_buffer.push(a);
                                     option_a = self.ordered_buffer.pop();
                                     option_b = Some(b);
-
                                 }
                                 Ordering::Equal => {
                                     new_buffer.push(a);
@@ -669,7 +680,6 @@ impl<'a> QueryResults<'a> {
             }
             return;
         }
-
 
         //merge the ordered buffers
         let mut new_buffer = Vec::with_capacity(self.ordered_buffer.len() + self.in_buffer.len());
@@ -784,13 +794,11 @@ pub struct OrderInfo {
     pub default: JsonValue,
 }
 
-
-
 #[cfg(test)]
 mod tests {
     extern crate rustc_serialize;
 
-    use index::{Index, OpenOptions, Batch};
+    use index::{Batch, Index, OpenOptions};
 
     #[test]
     fn test_query_hello_world() {
@@ -816,8 +824,10 @@ mod tests {
         let mut batch = Batch::new();
         for ii in 1..100 {
             let data = ((ii % 25) + 97) as u8 as char;
-            let _ = index.add(&format!(r#"{{"_id":"{}", "data": "{}"}}"#, ii, data),
-                              &mut batch);
+            let _ = index.add(
+                &format!(r#"{{"_id":"{}", "data": "{}"}}"#, ii, data),
+                &mut batch,
+            );
         }
         index.flush(batch).unwrap();
 

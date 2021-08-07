@@ -1,4 +1,3 @@
-
 use std::cmp::Ordering;
 
 use json_value::JsonValue;
@@ -35,76 +34,56 @@ impl AggregateFun {
         match self {
             &AggregateFun::GroupAsc => panic!("cannot get aggregate fun for grouping!"),
             &AggregateFun::GroupDesc => panic!("cannot get aggregate fun for grouping!"),
-            &AggregateFun::Sum => {
-                AggregateFunImpls {
-                    init: Some(AggregateFun::sum_init),
-                    action: AggregateFun::sum,
-                    extract: None,
-                }
-            }
-            &AggregateFun::Max => {
-                AggregateFunImpls {
-                    init: None,
-                    action: AggregateFun::max,
-                    extract: None,
-                }
-            }
-            &AggregateFun::Min => {
-                AggregateFunImpls {
-                    init: None,
-                    action: AggregateFun::min,
-                    extract: None,
-                }
-            }
-            &AggregateFun::MaxArray => {
-                AggregateFunImpls {
-                    init: Some(AggregateFun::max_array_init),
-                    action: AggregateFun::max_array,
-                    extract: None,
-                }
-            }
-            &AggregateFun::MinArray => {
-                AggregateFunImpls {
-                    init: Some(AggregateFun::min_array_init),
-                    action: AggregateFun::min_array,
-                    extract: None,
-                }
-            }
-            &AggregateFun::Array => {
-                AggregateFunImpls {
-                    init: Some(AggregateFun::array_init),
-                    action: AggregateFun::array,
-                    extract: None,
-                }
-            }
-            &AggregateFun::ArrayFlat => {
-                AggregateFunImpls {
-                    init: Some(AggregateFun::array_flat_init),
-                    action: AggregateFun::array_flat,
-                    extract: None,
-                }
-            }
-            &AggregateFun::Concat => {
-                AggregateFunImpls {
-                    init: Some(AggregateFun::concat_init),
-                    action: AggregateFun::concat,
-                    extract: None,
-                }
-            }
-            &AggregateFun::Avg => {
-                AggregateFunImpls {
-                    init: Some(AggregateFun::avg_init),
-                    action: AggregateFun::avg,
-                    extract: Some(AggregateFun::avg_final),
-                }
-            }
-            &AggregateFun::Count => {
-                AggregateFunImpls {
-                    init: Some(AggregateFun::count_init),
-                    action: AggregateFun::count,
-                    extract: None,
-                }
-            }
+            &AggregateFun::Sum => AggregateFunImpls {
+                init: Some(AggregateFun::sum_init),
+                action: AggregateFun::sum,
+                extract: None,
+            },
+            &AggregateFun::Max => AggregateFunImpls {
+                init: None,
+                action: AggregateFun::max,
+                extract: None,
+            },
+            &AggregateFun::Min => AggregateFunImpls {
+                init: None,
+                action: AggregateFun::min,
+                extract: None,
+            },
+            &AggregateFun::MaxArray => AggregateFunImpls {
+                init: Some(AggregateFun::max_array_init),
+                action: AggregateFun::max_array,
+                extract: None,
+            },
+            &AggregateFun::MinArray => AggregateFunImpls {
+                init: Some(AggregateFun::min_array_init),
+                action: AggregateFun::min_array,
+                extract: None,
+            },
+            &AggregateFun::Array => AggregateFunImpls {
+                init: Some(AggregateFun::array_init),
+                action: AggregateFun::array,
+                extract: None,
+            },
+            &AggregateFun::ArrayFlat => AggregateFunImpls {
+                init: Some(AggregateFun::array_flat_init),
+                action: AggregateFun::array_flat,
+                extract: None,
+            },
+            &AggregateFun::Concat => AggregateFunImpls {
+                init: Some(AggregateFun::concat_init),
+                action: AggregateFun::concat,
+                extract: None,
+            },
+            &AggregateFun::Avg => AggregateFunImpls {
+                init: Some(AggregateFun::avg_init),
+                action: AggregateFun::avg,
+                extract: Some(AggregateFun::avg_final),
+            },
+            &AggregateFun::Count => AggregateFunImpls {
+                init: Some(AggregateFun::count_init),
+                action: AggregateFun::count,
+                extract: None,
+            },
         }
     }
 

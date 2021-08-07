@@ -12,7 +12,9 @@ fn main() {
             test_mode = true;
         }
     }
-    repl(&mut BufReader::new(io::stdin()),
-         &mut io::stdout(),
-         test_mode);
+    repl(
+        &mut BufReader::new(io::stdin()),
+        &mut io::stdout(),
+        test_mode,
+    );
 }
