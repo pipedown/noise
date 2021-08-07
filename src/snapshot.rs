@@ -1,20 +1,19 @@
-use rocksdb::{self, DBIterator, Snapshot as RocksSnapshot, IteratorMode};
+use rocksdb::{self, DBIterator, IteratorMode, Snapshot as RocksSnapshot};
 
 extern crate varint;
 
-use std::io::Cursor;
-use std::str;
-use std::mem::transmute;
-use std::iter::Peekable;
 use std::f32;
+use std::io::Cursor;
+use std::iter::Peekable;
+use std::mem::transmute;
+use std::str;
 
+use self::varint::VarintRead;
+use index::Index;
+use json_value::JsonValue;
 use key_builder::{KeyBuilder, Segment};
 use query::{DocResult, QueryScoringInfo};
-use index::Index;
 use returnable::{PathSegment, ReturnPath};
-use json_value::JsonValue;
-use self::varint::VarintRead;
-
 
 pub struct Snapshot<'a> {
     rocks: RocksSnapshot<'a>,
@@ -30,7 +29,6 @@ impl<'a> Snapshot<'a> {
             iter: self.rocks.iterator(IteratorMode::Start),
             keypathword: kb.get_kp_word_only(&term),
         }
-
     }
 
     pub fn get(&self, key: &[u8]) -> Option<rocksdb::DBVector> {
@@ -49,7 +47,9 @@ impl<'a> Snapshot<'a> {
     }
 
     pub fn new_json_fetcher(&self) -> JsonFetcher {
-        JsonFetcher { iter: self.rocks.iterator(IteratorMode::Start) }
+        JsonFetcher {
+            iter: self.rocks.iterator(IteratorMode::Start),
+        }
     }
 
     pub fn new_iterator(&self) -> DBIterator {
@@ -76,8 +76,10 @@ impl DocResultIterator {
     pub fn advance_gte(&mut self, start: &DocResult) {
         KeyBuilder::add_doc_result_to_kp_word(&mut self.keypathword, &start);
         // Seek in index to >= entry
-        self.iter
-            .set_mode(IteratorMode::From(self.keypathword.as_bytes(), rocksdb::Direction::Forward));
+        self.iter.set_mode(IteratorMode::From(
+            self.keypathword.as_bytes(),
+            rocksdb::Direction::Forward,
+        ));
         KeyBuilder::truncate_to_kp_word(&mut self.keypathword);
     }
 
@@ -91,13 +93,17 @@ impl DocResultIterator {
             let key_str = unsafe { str::from_utf8_unchecked(&key) };
             let dr = KeyBuilder::parse_doc_result_from_kp_word_key(&key_str);
 
-            Some((dr, TermPositions { pos: value.into_vec() }))
+            Some((
+                dr,
+                TermPositions {
+                    pos: value.into_vec(),
+                },
+            ))
         } else {
             None
         }
     }
 }
-
 
 pub struct TermPositions {
     pos: Vec<u8>,
@@ -146,8 +152,10 @@ impl Scorer {
     }
 
     pub fn get_value(&mut self, key: &str) -> Option<Box<[u8]>> {
-        self.iter
-            .set_mode(IteratorMode::From(key.as_bytes(), rocksdb::Direction::Forward));
+        self.iter.set_mode(IteratorMode::From(
+            key.as_bytes(),
+            rocksdb::Direction::Forward,
+        ));
         if let Some((ret_key, ret_value)) = self.iter.next() {
             if ret_key.len() == key.len() && ret_key.starts_with(key.as_bytes()) {
                 Some(ret_value)
@@ -180,17 +188,17 @@ impl Scorer {
     }
 }
 
-
 pub struct JsonFetcher {
     iter: DBIterator,
 }
 
 impl JsonFetcher {
-    pub fn fetch(&mut self,
-                 seq: u64,
-                 mut kb_base: &mut KeyBuilder,
-                 rp: &ReturnPath)
-                 -> Option<JsonValue> {
+    pub fn fetch(
+        &mut self,
+        seq: u64,
+        mut kb_base: &mut KeyBuilder,
+        rp: &ReturnPath,
+    ) -> Option<JsonValue> {
         JsonFetcher::descend_return_path(&mut self.iter, seq, &mut kb_base, &rp, 0)
     }
 
@@ -223,13 +231,13 @@ impl JsonFetcher {
         JsonValue::Array(array.into_iter().map(|(_i, json)| json).collect())
     }
 
-    fn descend_return_path(iter: &mut DBIterator,
-                           seq: u64,
-                           kb: &mut KeyBuilder,
-                           rp: &ReturnPath,
-                           mut rp_index: usize)
-                           -> Option<JsonValue> {
-
+    fn descend_return_path(
+        iter: &mut DBIterator,
+        seq: u64,
+        kb: &mut KeyBuilder,
+        rp: &ReturnPath,
+        mut rp_index: usize,
+    ) -> Option<JsonValue> {
         while let Some(segment) = rp.nth(rp_index) {
             rp_index += 1;
             match segment {
@@ -242,11 +250,13 @@ impl JsonFetcher {
                     loop {
                         kb.push_array_index(i);
                         i += 1;
-                        if let Some(json) = JsonFetcher::descend_return_path(iter,
-                                                                             seq,
-                                                                             &mut kb.clone(),
-                                                                             rp,
-                                                                             rp_index) {
+                        if let Some(json) = JsonFetcher::descend_return_path(
+                            iter,
+                            seq,
+                            &mut kb.clone(),
+                            rp,
+                            rp_index,
+                        ) {
                             vec.push(json);
                             kb.pop_array();
                         } else {
@@ -257,8 +267,10 @@ impl JsonFetcher {
                             kb.pop_array();
 
                             // Seek in index to >= entry
-                            iter.set_mode(IteratorMode::From(value_key.as_bytes(),
-                                                             rocksdb::Direction::Forward));
+                            iter.set_mode(IteratorMode::From(
+                                value_key.as_bytes(),
+                                rocksdb::Direction::Forward,
+                            ));
 
                             if let Some((key, _value)) = iter.next() {
                                 if key.starts_with(value_key.as_bytes()) {
@@ -284,17 +296,27 @@ impl JsonFetcher {
         let value_key = kb.kp_value_key(seq);
 
         // Seek in index to >= entry
-        iter.set_mode(IteratorMode::From(value_key.as_bytes(), rocksdb::Direction::Forward));
+        iter.set_mode(IteratorMode::From(
+            value_key.as_bytes(),
+            rocksdb::Direction::Forward,
+        ));
 
         let (key, value) = match iter.next() {
             Some((key, value)) => (key, value),
             None => return None,
         };
 
-        if !KeyBuilder::is_kp_value_key_prefix(&value_key, unsafe { str::from_utf8_unchecked(&key) }) {
+        if !KeyBuilder::is_kp_value_key_prefix(&value_key, unsafe {
+            str::from_utf8_unchecked(&key)
+        }) {
             return None;
         }
-        Some(JsonFetcher::do_fetch(&mut iter.peekable(), &value_key, key, value))
+        Some(JsonFetcher::do_fetch(
+            &mut iter.peekable(),
+            &value_key,
+            key,
+            value,
+        ))
     }
 
     /// When do_fetch is called it means we know we are going to find a value because
@@ -302,12 +324,12 @@ impl JsonFetcher {
     /// keypath to figure out the nested structure of the remaining keypath. So we
     /// depth first recursively parse the keypath and return the value and inserting into
     /// containers (arrays or objects) then iterate keys until the keypath no longer matches.
-    fn do_fetch(iter: &mut Peekable<&mut DBIterator>,
-                value_key: &str,
-                mut key: Box<[u8]>,
-                mut value: Box<[u8]>)
-                -> JsonValue {
-
+    fn do_fetch(
+        iter: &mut Peekable<&mut DBIterator>,
+        value_key: &str,
+        mut key: Box<[u8]>,
+        mut value: Box<[u8]>,
+    ) -> JsonValue {
         if key.len() == value_key.len() {
             // we have a key match!
             return JsonFetcher::bytes_to_json_value(value.as_ref());
@@ -403,9 +425,10 @@ impl JsonFetcher {
             }
             None => {
                 let key_str = unsafe { str::from_utf8_unchecked(&key) };
-                panic!("somehow couldn't parse key segment {} {}",
-                       value_key,
-                       key_str);
+                panic!(
+                    "somehow couldn't parse key segment {} {}",
+                    value_key, key_str
+                );
             }
         }
     }

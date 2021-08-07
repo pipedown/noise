@@ -1,14 +1,13 @@
-use index::{Index, OpenOptions, Batch};
+use index::{Batch, Index, OpenOptions};
 use json_value::{JsonValue, PrettyPrint};
 
-use std::io::{Write, BufRead};
+use std::io::{BufRead, Write};
 use std::mem;
 
-
-
 fn is_command(str: &str) -> bool {
-    let commands = ["find", "add", "create", "drop", "open", "pretty", "commit", "del",
-                    "dumpkeys", "params"];
+    let commands = [
+        "find", "add", "create", "drop", "open", "pretty", "commit", "del", "dumpkeys", "params",
+    ];
     for command in commands.iter() {
         if str.starts_with(command) {
             return true;
@@ -16,7 +15,6 @@ fn is_command(str: &str) -> bool {
     }
     false
 }
-
 
 fn next_command(r: &mut dyn BufRead, w: &mut dyn Write, test_mode: bool) -> Option<String> {
     let mut lines = String::new();
@@ -118,11 +116,13 @@ fn flush_batch(index: &mut Index, batch: &mut Batch, w: &mut dyn Write) {
     }
 }
 
-fn repl_opened(mut index: Index,
-               r: &mut dyn BufRead,
-               w: &mut dyn Write,
-               test_mode: bool,
-               mut pretty: PrettyPrint) {
+fn repl_opened(
+    mut index: Index,
+    r: &mut dyn BufRead,
+    w: &mut dyn Write,
+    test_mode: bool,
+    mut pretty: PrettyPrint,
+) {
     let mut batch = Batch::new();
     let mut params = None;
     loop {

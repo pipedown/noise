@@ -1,28 +1,30 @@
 extern crate rocksdb;
-extern crate varint;
 extern crate uuid;
+extern crate varint;
 
-use std::collections::{HashSet, BTreeMap};
-use std::str;
-use std::io::Cursor;
-use std::mem;
-use std::io::Write;
-use self::uuid::{Uuid};
+use self::uuid::Uuid;
 use std::cmp::Ordering;
+use std::collections::{BTreeMap, HashSet};
+use std::io::Cursor;
+use std::io::Write;
+use std::mem;
+use std::str;
 
-use std::sync::{Mutex, MutexGuard, LockResult};
+use std::sync::{LockResult, Mutex, MutexGuard};
 
 use self::varint::{VarintRead, VarintWrite};
 
-use rocksdb::{BlockBasedIndexType, BlockBasedOptions, MergeOperands, IteratorMode,
-    Snapshot as RocksSnapshot, CompactionDecision};
 pub use rocksdb::WriteBatch;
+use rocksdb::{
+    BlockBasedIndexType, BlockBasedOptions, CompactionDecision, IteratorMode, MergeOperands,
+    Snapshot as RocksSnapshot,
+};
 
 use error::Error;
 use json_shred::Shredder;
 use key_builder::{self, KeyBuilder};
-use snapshot::Snapshot;
 use query::QueryResults;
+use snapshot::Snapshot;
 
 const NOISE_HEADER_VERSION: u64 = 1;
 
@@ -65,7 +67,8 @@ impl Index {
         rtree_options.set_block_based_table_factory(&block_based_opts);
         rtree_options.set_comparator("noise_rtree_cmp", Index::compare_keys_rtree);
 
-        let rocks = match rocksdb::DB::open_cf(&rocks_options, name, &[&"rtree"], &[&rtree_options]) {
+        let rocks = match rocksdb::DB::open_cf(&rocks_options, name, &[&"rtree"], &[&rtree_options])
+        {
             Ok(rocks) => rocks,
             Err(error) => {
                 match open_options {
@@ -94,16 +97,18 @@ impl Index {
         let value = rocks.get(b"HDB")?.unwrap();
         assert_eq!(value.len(), 8 * 2);
         // first 8 is version
-        assert_eq!(Index::convert_bytes_to_u64(&value[..8]),
-                   NOISE_HEADER_VERSION);
+        assert_eq!(
+            Index::convert_bytes_to_u64(&value[..8]),
+            NOISE_HEADER_VERSION
+        );
         // next 8 is high seq
 
         Ok(Index {
-               name: name.to_string(),
-               high_doc_seq: Index::convert_bytes_to_u64(&value[8..]),
-               rtree: rocks.cf_handle("rtree").unwrap(),
-               rocks: rocks,
-           })
+            name: name.to_string(),
+            high_doc_seq: Index::convert_bytes_to_u64(&value[8..]),
+            rtree: rocks.cf_handle("rtree").unwrap(),
+            rocks: rocks,
+        })
     }
 
     pub fn get_name(&self) -> &str {
@@ -126,8 +131,9 @@ impl Index {
             // user supplied doc id, see if we have an existing one.
             if batch.id_str_in_batch.contains(&docid) {
                 // oops use trying to add some doc 2x to this batch.
-                return Err(Error::Write("Attempt to insert multiple docs with same _id"
-                                            .to_string()));
+                return Err(Error::Write(
+                    "Attempt to insert multiple docs with same _id".to_string(),
+                ));
             }
             if let Some((seq, existing_key_values)) = self.gather_doc_fields(&docid)? {
                 shredder.merge_existing_doc(existing_key_values);
@@ -139,9 +145,7 @@ impl Index {
             }
         } else {
             // no doc id supplied in document, so we create a random one.
-            let docid = Uuid::new_v4()
-                .to_simple()
-                .to_string();
+            let docid = Uuid::new_v4().to_simple().to_string();
             shredder.add_id(&docid)?;
             self.high_doc_seq += 1;
             (self.high_doc_seq, docid)
@@ -157,8 +161,9 @@ impl Index {
     pub fn delete(&mut self, docid: &str, batch: &mut Batch) -> Result<bool, Error> {
         if batch.id_str_in_batch.contains(docid) {
             // oops use trying to delete a doc that's in the batch. Can't happen,
-            return Err(Error::Write("Attempt to delete doc with same _id added earlier"
-                                        .to_string()));
+            return Err(Error::Write(
+                "Attempt to delete doc with same _id added earlier".to_string(),
+            ));
         }
         if let Some((seq, key_values)) = self.gather_doc_fields(docid)? {
             let mut shredder = Shredder::new();
@@ -175,9 +180,10 @@ impl Index {
         QueryResults::new_query_results(query, parameters, self.new_snapshot())
     }
 
-    fn gather_doc_fields(&self,
-                         docid: &str)
-                         -> Result<Option<(u64, BTreeMap<String, Vec<u8>>)>, Error> {
+    fn gather_doc_fields(
+        &self,
+        docid: &str,
+    ) -> Result<Option<(u64, BTreeMap<String, Vec<u8>>)>, Error> {
         if let Some(seq) = self.fetch_seq(&docid)? {
             // collect up all the fields for the existing doc
             let kb = KeyBuilder::new();
@@ -186,7 +192,10 @@ impl Index {
 
             let mut iter = self.rocks.iterator(IteratorMode::Start);
             // Seek in index to >= entry
-            iter.set_mode(IteratorMode::From(value_key.as_bytes(), rocksdb::Direction::Forward));
+            iter.set_mode(IteratorMode::From(
+                value_key.as_bytes(),
+                rocksdb::Direction::Forward,
+            ));
             loop {
                 let (key, value) = match iter.next() {
                     Some((key, value)) => (key, value),
@@ -263,7 +272,6 @@ impl Index {
     }
 
     pub fn fetch_seq(&self, id: &str) -> Result<Option<u64>, Error> {
-
         let key = format!("{}{}", key_builder::KEY_PREFIX_ID_TO_SEQ, id);
         match self.rocks.get(&key.as_bytes())? {
             // If there is an id, it's UTF-8
@@ -273,8 +281,9 @@ impl Index {
     }
 
     fn compaction_filter(_level: u32, key: &[u8], value: &[u8]) -> CompactionDecision {
-        if !(key[0] as char == key_builder::KEY_PREFIX_WORD_COUNT ||
-             key[0] as char == key_builder::KEY_PREFIX_FIELD_COUNT) {
+        if !(key[0] as char == key_builder::KEY_PREFIX_WORD_COUNT
+            || key[0] as char == key_builder::KEY_PREFIX_FIELD_COUNT)
+        {
             return CompactionDecision::Keep;
         }
         if 0 == Index::convert_bytes_to_i32(&value) {
@@ -285,11 +294,13 @@ impl Index {
     }
 
     fn compare_keys(a: &[u8], b: &[u8]) -> Ordering {
-        let value_prefixes = [key_builder::KEY_PREFIX_WORD,
-                              key_builder::KEY_PREFIX_NUMBER,
-                              key_builder::KEY_PREFIX_TRUE,
-                              key_builder::KEY_PREFIX_FALSE,
-                              key_builder::KEY_PREFIX_NULL];
+        let value_prefixes = [
+            key_builder::KEY_PREFIX_WORD,
+            key_builder::KEY_PREFIX_NUMBER,
+            key_builder::KEY_PREFIX_TRUE,
+            key_builder::KEY_PREFIX_FALSE,
+            key_builder::KEY_PREFIX_NULL,
+        ];
         if value_prefixes.contains(&(a[0] as char)) && value_prefixes.contains(&(b[0] as char)) {
             let astr = unsafe { str::from_utf8_unchecked(&a) };
             let bstr = unsafe { str::from_utf8_unchecked(&b) };
@@ -299,12 +310,14 @@ impl Index {
         }
     }
 
-    fn sum_merge(new_key: &[u8],
-                 existing_val: Option<&[u8]>,
-                 operands: &mut MergeOperands)
-                 -> Vec<u8> {
-        if !(new_key[0] as char == key_builder::KEY_PREFIX_FIELD_COUNT ||
-             new_key[0] as char == key_builder::KEY_PREFIX_WORD_COUNT) {
+    fn sum_merge(
+        new_key: &[u8],
+        existing_val: Option<&[u8]>,
+        operands: &mut MergeOperands,
+    ) -> Vec<u8> {
+        if !(new_key[0] as char == key_builder::KEY_PREFIX_FIELD_COUNT
+            || new_key[0] as char == key_builder::KEY_PREFIX_WORD_COUNT)
+        {
             panic!("unknown key type to merge!");
         }
 
@@ -319,7 +332,6 @@ impl Index {
         }
         Index::convert_i32_to_bytes(count)
     }
-
 
     /// Return the slice that is prefixed with an unsigned 32-bit varint and the offset after
     /// the slice that was read
@@ -337,7 +349,7 @@ impl Index {
     /// The keys have a length prefixed string (the Keypath), followed by the Interan Id and
     /// the bounding box around the geometry
     fn compare_keys_rtree(aa: &[u8], bb: &[u8]) -> Ordering {
-        if aa.len() == 0 && bb.len() == 0{
+        if aa.len() == 0 && bb.len() == 0 {
             return Ordering::Equal;
         } else if aa.len() == 0 {
             return Ordering::Less;
@@ -421,12 +433,12 @@ unsafe impl<T> Sync for MvccRwLock<T> {}
 #[cfg(test)]
 mod tests {
     extern crate rocksdb;
-    use super::{Index, OpenOptions, Batch, MvccRwLock};
-    use std::str;
-    use std::sync::Arc;
-    use snapshot::JsonFetcher;
+    use super::{Batch, Index, MvccRwLock, OpenOptions};
     use json_value::JsonValue;
+    use snapshot::JsonFetcher;
+    use std::str;
     use std::sync::mpsc::channel;
+    use std::sync::Arc;
     use std::thread;
 
     #[test]
@@ -495,13 +507,14 @@ mod tests {
 
         let mut batch = Batch::new();
         let _ = index
-            .add(r#"{"_id":"1", "foo":"array", "baz": [1,2,[3,4,[5]]]}"#,
-                 &mut batch)
+            .add(
+                r#"{"_id":"1", "foo":"array", "baz": [1,2,[3,4,[5]]]}"#,
+                &mut batch,
+            )
             .unwrap();
 
         index.flush(batch).unwrap();
         {
-
             let mut results = Vec::new();
             for (key, value) in index.rocks.iterator(rocksdb::IteratorMode::Start) {
                 if key[0] as char == 'V' {
@@ -510,13 +523,18 @@ mod tests {
                 }
             }
 
-            let expected = vec![("V1#._id".to_string(), JsonValue::String("1".to_string())),
-                                ("V1#.baz$0".to_string(), JsonValue::Number(1.0)),
-                                ("V1#.baz$1".to_string(), JsonValue::Number(2.0)),
-                                ("V1#.baz$2$0".to_string(), JsonValue::Number(3.0)),
-                                ("V1#.baz$2$1".to_string(), JsonValue::Number(4.0)),
-                                ("V1#.baz$2$2$0".to_string(), JsonValue::Number(5.0)),
-                                ("V1#.foo".to_string(), JsonValue::String("array".to_string()))];
+            let expected = vec![
+                ("V1#._id".to_string(), JsonValue::String("1".to_string())),
+                ("V1#.baz$0".to_string(), JsonValue::Number(1.0)),
+                ("V1#.baz$1".to_string(), JsonValue::Number(2.0)),
+                ("V1#.baz$2$0".to_string(), JsonValue::Number(3.0)),
+                ("V1#.baz$2$1".to_string(), JsonValue::Number(4.0)),
+                ("V1#.baz$2$2$0".to_string(), JsonValue::Number(5.0)),
+                (
+                    "V1#.foo".to_string(),
+                    JsonValue::String("array".to_string()),
+                ),
+            ];
             assert_eq!(results, expected);
         }
 
@@ -533,9 +551,14 @@ mod tests {
                 results.push((key_string, JsonFetcher::bytes_to_json_value(&*value)));
             }
         }
-        let expected = vec![("V1#._id".to_string(), JsonValue::String("1".to_string())),
-                            ("V1#.baz".to_string(), JsonValue::Array(vec![])),
-                            ("V1#.foo".to_string(), JsonValue::String("array".to_string()))];
+        let expected = vec![
+            ("V1#._id".to_string(), JsonValue::String("1".to_string())),
+            ("V1#.baz".to_string(), JsonValue::Array(vec![])),
+            (
+                "V1#.foo".to_string(),
+                JsonValue::String("array".to_string()),
+            ),
+        ];
         assert_eq!(results, expected);
     }
 
@@ -553,9 +576,10 @@ mod tests {
         let query = r#"find {_id:==""#.to_string() + &id + "\"} return .";
         let mut results = index.query(&query, None).unwrap();
         let json = results.next().unwrap();
-        assert_eq!(json,
-                   JsonValue::Object(vec![("_id".to_string(), JsonValue::String(id))]));
-
+        assert_eq!(
+            json,
+            JsonValue::Object(vec![("_id".to_string(), JsonValue::String(id))])
+        );
     }
 
     #[test]
@@ -580,9 +604,7 @@ mod tests {
             assert_eq!(1, receiver_w.recv().unwrap());
             println!("reader sent success 1");
 
-            index
-                .add(r#"{"_id":"1","foo":"bar"}"#, &mut batch)
-                .unwrap();
+            index.add(r#"{"_id":"1","foo":"bar"}"#, &mut batch).unwrap();
 
             index.flush(batch).unwrap();
             println!("sending to reader");
@@ -606,6 +628,5 @@ mod tests {
         assert_eq!(JsonValue::String("1".to_string()), iter.next().unwrap());
 
         sender_r.send(3).unwrap();
-
     }
 }

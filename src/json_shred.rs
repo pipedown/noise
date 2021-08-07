@@ -2,20 +2,20 @@ extern crate rocksdb;
 extern crate rustc_serialize;
 extern crate varint;
 
-use std::collections::{HashMap, BTreeMap};
-use std::mem::transmute;
-use std::io::Write;
-use std::str::Chars;
+use std::collections::{BTreeMap, HashMap};
 use std::io::Cursor;
+use std::io::Write;
+use std::mem::transmute;
+use std::str::Chars;
 use std::{self, f64, str};
 
-use self::varint::VarintWrite;
 use self::rustc_serialize::json::{JsonEvent, Parser, StackElement};
+use self::varint::VarintWrite;
 
 use error::Error;
+use index::Index;
 use key_builder::KeyBuilder;
 use stems::Stems;
-use index::Index;
 
 // Good example of using rustc_serialize:
 //   https://github.com/ajroetker/beautician/blob/master/src/lib.rs
@@ -25,8 +25,14 @@ use index::Index;
 //   https://github.com/isagalaev/ijson-rust/blob/master/src/test.rs#L11
 
 // `GeometryCollection` is left out as we will process the individual geometries of it
-const GEOJSON_TYPES: &'static [&'static str] = &["Point", "MultiPoint", "LineString",
-   "MultiLineString", "Polygon", "MultiPolygon"];
+const GEOJSON_TYPES: &'static [&'static str] = &[
+    "Point",
+    "MultiPoint",
+    "LineString",
+    "MultiLineString",
+    "Polygon",
+    "MultiPolygon",
+];
 
 enum ObjectKeyTypes {
     /// _id field
@@ -75,36 +81,43 @@ impl Shredder {
     // (2017-07-26)
     fn as_u8_slice(v: &[u64]) -> &[u8] {
         unsafe {
-            std::slice::from_raw_parts(v.as_ptr() as *const u8,
-                                       v.len() * std::mem::size_of::<u64>())
+            std::slice::from_raw_parts(
+                v.as_ptr() as *const u8,
+                v.len() * std::mem::size_of::<u64>(),
+            )
         }
     }
 
-    fn add_rtree_entries(kb: &mut KeyBuilder,
-                         bbox: &[u8],
-                         docseq: u64,
-                         batch: &mut rocksdb::WriteBatch,
-                         column_family: rocksdb::ColumnFamily,
-                         delete: bool)
-                         -> Result<(), Error> {
+    fn add_rtree_entries(
+        kb: &mut KeyBuilder,
+        bbox: &[u8],
+        docseq: u64,
+        batch: &mut rocksdb::WriteBatch,
+        column_family: rocksdb::ColumnFamily,
+        delete: bool,
+    ) -> Result<(), Error> {
         // Add/delete the key that is used for R-tree lookups
         let rtree_key = kb.rtree_key(docseq, bbox);
         if delete {
             batch.delete_cf(column_family, &rtree_key.as_slice())?;
         } else {
-            batch.put_cf(column_family, &rtree_key.as_slice(),
-                Shredder::as_u8_slice(kb.arraypath.as_slice()))?;
+            batch.put_cf(
+                column_family,
+                &rtree_key.as_slice(),
+                Shredder::as_u8_slice(kb.arraypath.as_slice()),
+            )?;
         }
 
         Ok(())
     }
 
-   fn add_number_entries(kb: &mut KeyBuilder,
-                          number: &[u8],
-                          docseq: u64,
-                          batch: &mut rocksdb::WriteBatch,
-                          delete: bool)
-                          -> Result<(), Error> {
+    fn add_number_entries(
+        kb: &mut KeyBuilder,
+        number: &[u8],
+        docseq: u64,
+        batch: &mut rocksdb::WriteBatch,
+        delete: bool,
+    ) -> Result<(), Error> {
         // Add/delete the key that is used for range lookups
         let number_key = kb.number_key(docseq);
         if delete {
@@ -117,12 +130,13 @@ impl Shredder {
         Ok(())
     }
 
-    fn add_bool_null_entries(kb: &mut KeyBuilder,
-                             prefix: char,
-                             docseq: u64,
-                             batch: &mut rocksdb::WriteBatch,
-                             delete: bool)
-                             -> Result<(), Error> {
+    fn add_bool_null_entries(
+        kb: &mut KeyBuilder,
+        prefix: char,
+        docseq: u64,
+        batch: &mut rocksdb::WriteBatch,
+        delete: bool,
+    ) -> Result<(), Error> {
         let key = kb.bool_null_key(prefix, docseq);
         if delete {
             batch.delete(&key.as_bytes())?;
@@ -134,12 +148,13 @@ impl Shredder {
         Ok(())
     }
 
-    fn add_stemmed_entries(kb: &mut KeyBuilder,
-                           text: &str,
-                           docseq: u64,
-                           batch: &mut rocksdb::WriteBatch,
-                           delete: bool)
-                           -> Result<(), Error> {
+    fn add_stemmed_entries(
+        kb: &mut KeyBuilder,
+        text: &str,
+        docseq: u64,
+        batch: &mut rocksdb::WriteBatch,
+        delete: bool,
+    ) -> Result<(), Error> {
         let stems = Stems::new(text);
         let mut word_to_word_positions = HashMap::new();
         let mut total_words: i32 = 0;
@@ -150,14 +165,13 @@ impl Shredder {
 
         for stem in stems {
             total_words += 1;
-            let &mut (ref mut word_positions, ref mut count) =
-                word_to_word_positions
-                    .entry(stem.stemmed)
-                    .or_insert((Cursor::new(Vec::new()), 0));
+            let &mut (ref mut word_positions, ref mut count) = word_to_word_positions
+                .entry(stem.stemmed)
+                .or_insert((Cursor::new(Vec::new()), 0));
             if !delete {
                 assert!(word_positions
-                            .write_unsigned_varint_32(stem.word_pos)
-                            .is_ok());
+                    .write_unsigned_varint_32(stem.word_pos)
+                    .is_ok());
             }
             *count += 1;
         }
@@ -213,17 +227,19 @@ impl Shredder {
         Ok(())
     }
 
-    fn maybe_add_value(&mut self,
-                       parser: &Parser<Chars>,
-                       code: char,
-                       value: &[u8])
-                       -> Result<(), Error> {
+    fn maybe_add_value(
+        &mut self,
+        parser: &Parser<Chars>,
+        code: char,
+        value: &[u8],
+    ) -> Result<(), Error> {
         match self.extract_key(parser.stack().top()) {
             ObjectKeyTypes::Id => {
                 if code != 's' && self.kb.kp_segments_len() == 1 {
                     //nested fields can be _id, not root fields
-                    return Err(Error::Shred("Expected string for `_id` field, got another type"
-                                                .to_string()));
+                    return Err(Error::Shred(
+                        "Expected string for `_id` field, got another type".to_string(),
+                    ));
                 }
                 self.doc_id = Some(unsafe { str::from_utf8_unchecked(value) }.to_string());
                 self.kb.pop_object_key();
@@ -233,9 +249,9 @@ impl Shredder {
             }
             ObjectKeyTypes::Key(key) => {
                 if key == "type" {
-                    let is_valid_type = GEOJSON_TYPES.iter().position(|&tt| {
-                        tt == unsafe{ str::from_utf8_unchecked(&value) }
-                    });
+                    let is_valid_type = GEOJSON_TYPES
+                        .iter()
+                        .position(|&tt| tt == unsafe { str::from_utf8_unchecked(&value) });
                     if is_valid_type.is_some() {
                         self.maybe_geometry += 1;
                     }
@@ -275,13 +291,16 @@ impl Shredder {
     // Don't push them if they are reserved fields (starting with underscore)
     // It is called when the value is an array or object. If it is a primitive type, then
     // `extract_key` is called.
-    fn maybe_push_key(&mut self, stack_element: Option<StackElement>) ->
-            Result<Option<String>, Error> {
+    fn maybe_push_key(
+        &mut self,
+        stack_element: Option<StackElement>,
+    ) -> Result<Option<String>, Error> {
         match stack_element {
             Some(StackElement::Key(key)) => {
                 if self.kb.kp_segments_len() == 1 && key == "_id" {
-                    return Err(Error::Shred("Expected string for `_id` field, got another type"
-                                            .to_string()));
+                    return Err(Error::Shred(
+                        "Expected string for `_id` field, got another type".to_string(),
+                    ));
                 } else {
                     // Pop the dummy object that makes ObjectEnd happy
                     // or the previous object key
@@ -290,16 +309,17 @@ impl Shredder {
                     *self.object_keys_indexed.last_mut().unwrap() = true;
                 }
                 Ok(Some(key.to_string()))
-            },
+            }
             _ => Ok(None),
         }
     }
 
-    pub fn add_all_to_batch(&mut self,
-                            seq: u64,
-                            batch: &mut rocksdb::WriteBatch,
-                            rtree: rocksdb::ColumnFamily)
-                            -> Result<(), Error> {
+    pub fn add_all_to_batch(
+        &mut self,
+        seq: u64,
+        batch: &mut rocksdb::WriteBatch,
+        rtree: rocksdb::ColumnFamily,
+    ) -> Result<(), Error> {
         for (key, value) in &self.existing_key_value_to_delete {
             self.kb.clear();
             self.kb
@@ -313,19 +333,23 @@ impl Shredder {
                     Shredder::add_number_entries(&mut self.kb, &value, seq, batch, true)?;
                 }
                 'T' | 'F' | 'N' => {
-                    Shredder::add_bool_null_entries(&mut self.kb,
-                                                         value[0] as char,
-                                                         seq,
-                                                         batch,
-                                                         true)?;
+                    Shredder::add_bool_null_entries(
+                        &mut self.kb,
+                        value[0] as char,
+                        seq,
+                        batch,
+                        true,
+                    )?;
                 }
                 'r' => {
-                    Shredder::add_rtree_entries(&mut self.kb,
-                                                     &value[1..],
-                                                     seq,
-                                                     batch,
-                                                     rtree,
-                                                     true)?;
+                    Shredder::add_rtree_entries(
+                        &mut self.kb,
+                        &value[1..],
+                        seq,
+                        batch,
+                        rtree,
+                        true,
+                    )?;
                 }
                 _ => {}
             }
@@ -349,19 +373,23 @@ impl Shredder {
                     Shredder::add_number_entries(&mut self.kb, &value, seq, batch, false)?;
                 }
                 'T' | 'F' | 'N' => {
-                    Shredder::add_bool_null_entries(&mut self.kb,
-                                                         value[0] as char,
-                                                         seq,
-                                                         batch,
-                                                         false)?;
+                    Shredder::add_bool_null_entries(
+                        &mut self.kb,
+                        value[0] as char,
+                        seq,
+                        batch,
+                        false,
+                    )?;
                 }
                 'r' => {
-                    Shredder::add_rtree_entries(&mut self.kb,
-                                                     &value[1..],
-                                                     seq,
-                                                     batch,
-                                                     rtree,
-                                                     false)?;
+                    Shredder::add_rtree_entries(
+                        &mut self.kb,
+                        &value[1..],
+                        seq,
+                        batch,
+                        rtree,
+                        false,
+                    )?;
                 }
                 _ => {}
             }
@@ -383,12 +411,13 @@ impl Shredder {
         Ok(())
     }
 
-    pub fn delete_existing_doc(&mut self,
-                               docid: &str,
-                               seq: u64,
-                               existing: BTreeMap<String, Vec<u8>>,
-                               batch: &mut rocksdb::WriteBatch)
-                               -> Result<(), Error> {
+    pub fn delete_existing_doc(
+        &mut self,
+        docid: &str,
+        seq: u64,
+        existing: BTreeMap<String, Vec<u8>>,
+        batch: &mut rocksdb::WriteBatch,
+    ) -> Result<(), Error> {
         self.doc_id = Some(docid.to_string());
         for (key, value) in existing.into_iter() {
             self.kb.clear();
@@ -403,11 +432,13 @@ impl Shredder {
                     Shredder::add_number_entries(&mut self.kb, &value, seq, batch, true)?;
                 }
                 'T' | 'F' | 'N' => {
-                    Shredder::add_bool_null_entries(&mut self.kb,
-                                                         value[0] as char,
-                                                         seq,
-                                                         batch,
-                                                         true)?;
+                    Shredder::add_bool_null_entries(
+                        &mut self.kb,
+                        value[0] as char,
+                        seq,
+                        batch,
+                        true,
+                    )?;
                 }
                 _ => {}
             }
@@ -476,14 +507,18 @@ impl Shredder {
                     }
                     if self.maybe_geometry == 2 {
                         let mut encoded_bbox = Vec::new();
-                        encoded_bbox.extend_from_slice(
-                            &unsafe{ transmute::<f64, [u8; 8]>(self.bounding_box[0]) });
-                        encoded_bbox.extend_from_slice(
-                            &unsafe{ transmute::<f64, [u8; 8]>(self.bounding_box[2]) });
-                        encoded_bbox.extend_from_slice(
-                            &unsafe{ transmute::<f64, [u8; 8]>(self.bounding_box[1]) });
-                        encoded_bbox.extend_from_slice(
-                            &unsafe{ transmute::<f64, [u8; 8]>(self.bounding_box[3]) });
+                        encoded_bbox.extend_from_slice(&unsafe {
+                            transmute::<f64, [u8; 8]>(self.bounding_box[0])
+                        });
+                        encoded_bbox.extend_from_slice(&unsafe {
+                            transmute::<f64, [u8; 8]>(self.bounding_box[2])
+                        });
+                        encoded_bbox.extend_from_slice(&unsafe {
+                            transmute::<f64, [u8; 8]>(self.bounding_box[1])
+                        });
+                        encoded_bbox.extend_from_slice(&unsafe {
+                            transmute::<f64, [u8; 8]>(self.bounding_box[3])
+                        });
 
                         let _ = self.add_value('r', &encoded_bbox.as_slice());
                     }
@@ -594,7 +629,6 @@ mod tests {
         result
     }
 
-
     #[test]
     fn test_shred_nested() {
         let mut shredder = super::Shredder::new();
@@ -608,16 +642,20 @@ mod tests {
         let mut batch = rocksdb::WriteBatch::default();
         shredder.shred(json).unwrap();
         shredder.add_id("foo").unwrap();
-        shredder.add_all_to_batch(docseq, &mut batch, rtree).unwrap();
+        shredder
+            .add_all_to_batch(docseq, &mut batch, rtree)
+            .unwrap();
 
         index.rocks.write(batch).unwrap();
         let result = positions_from_rocks(&index.rocks);
 
-        let expected = vec![("W._id!foo#123,".to_string(), vec![0]),
-                            ("W.some$!array#123,0".to_string(), vec![0]),
-                            ("W.some$!data#123,1".to_string(), vec![0]),
-                            ("W.some$$!also#123,2,0".to_string(), vec![0]),
-                            ("W.some$$!nest#123,2,1".to_string(), vec![0])];
+        let expected = vec![
+            ("W._id!foo#123,".to_string(), vec![0]),
+            ("W.some$!array#123,0".to_string(), vec![0]),
+            ("W.some$!data#123,1".to_string(), vec![0]),
+            ("W.some$$!also#123,2,0".to_string(), vec![0]),
+            ("W.some$$!nest#123,2,1".to_string(), vec![0]),
+        ];
         assert_eq!(result, expected);
     }
 
@@ -634,16 +672,22 @@ mod tests {
         let mut batch = rocksdb::WriteBatch::default();
         shredder.shred(json).unwrap();
         shredder.add_id("foo").unwrap();
-        shredder.add_all_to_batch(docseq, &mut batch, rtree).unwrap();
+        shredder
+            .add_all_to_batch(docseq, &mut batch, rtree)
+            .unwrap();
 
         index.rocks.write(batch).unwrap();
         let result = values_from_rocks(&index.rocks);
 
-        let expected = vec![("V123#._id".to_string(), JsonValue::String("foo".to_string())),
-                            ("V123#.a.a".to_string(), JsonValue::String("b".to_string()))];
+        let expected = vec![
+            (
+                "V123#._id".to_string(),
+                JsonValue::String("foo".to_string()),
+            ),
+            ("V123#.a.a".to_string(), JsonValue::String("b".to_string())),
+        ];
         assert_eq!(result, expected);
     }
-
 
     #[test]
     // NOTE vmx 2016-12-06: This test is intentionally made to fail (hence ignored) as the current
@@ -662,18 +706,22 @@ mod tests {
 
         let mut batch = rocksdb::WriteBatch::default();
         shredder.shred(json).unwrap();
-        shredder.add_all_to_batch(docseq, &mut batch, rtree).unwrap();
+        shredder
+            .add_all_to_batch(docseq, &mut batch, rtree)
+            .unwrap();
 
         index.rocks.write(batch).unwrap();
         let result = positions_from_rocks(&index.rocks);
-        let expected = vec![("W.A$.B!b1#1234,1".to_string(), vec![0]),
-                            ("W.A$.B!b2vmx#1234,0".to_string(), vec![0]),
-                            ("W.A$.B!three#1234,0".to_string(), vec![10]),
-                            ("W.A$.B!two#1234,0".to_string(), vec![6]),
-                            ("W.A$.C!..#1234,0".to_string(), vec![0]),
-                            ("W.A$.C!..#1234,1".to_string(), vec![0]),
-                            ("W.A$.C!c2#1234,0".to_string(), vec![2]),
-                            ("W.A$.C!c2#1234,1".to_string(), vec![2])];
+        let expected = vec![
+            ("W.A$.B!b1#1234,1".to_string(), vec![0]),
+            ("W.A$.B!b2vmx#1234,0".to_string(), vec![0]),
+            ("W.A$.B!three#1234,0".to_string(), vec![10]),
+            ("W.A$.B!two#1234,0".to_string(), vec![6]),
+            ("W.A$.C!..#1234,0".to_string(), vec![0]),
+            ("W.A$.C!..#1234,1".to_string(), vec![0]),
+            ("W.A$.C!c2#1234,0".to_string(), vec![2]),
+            ("W.A$.C!c2#1234,1".to_string(), vec![2]),
+        ];
         assert_eq!(result, expected);
     }
 
@@ -691,7 +739,9 @@ mod tests {
         let mut batch = rocksdb::WriteBatch::default();
         shredder.shred(json).unwrap();
         shredder.add_id("foo").unwrap();
-        shredder.add_all_to_batch(docseq, &mut batch, rtree).unwrap();
+        shredder
+            .add_all_to_batch(docseq, &mut batch, rtree)
+            .unwrap();
 
         index.rocks.write(batch).unwrap();
         let result = positions_from_rocks(&index.rocks);

@@ -1,8 +1,8 @@
 extern crate noise_search;
 
-use std::io::{Read, Write, BufReader};
-use std::fs::{self, File};
 use std::env;
+use std::fs::{self, File};
+use std::io::{BufReader, Read, Write};
 
 use noise_search::repl::repl;
 
@@ -33,11 +33,7 @@ fn test_repl() {
             continue;
         }
         total += 1;
-        let test_name = path.file_name()
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .to_string();
+        let test_name = path.file_name().unwrap().to_str().unwrap().to_string();
         println!("About to run test {} ", test_name);
         let mut file = File::open(path.clone()).unwrap();
         let mut file_buffer = Vec::new();
@@ -50,26 +46,21 @@ fn test_repl() {
         if file_buffer != test_result_buffer {
             failures += 1;
             path.set_extension("reject");
-            let reject = path.file_name()
-                .unwrap()
-                .to_str()
-                .unwrap()
-                .to_string();
+            let reject = path.file_name().unwrap().to_str().unwrap().to_string();
 
             let mut file = File::create(path.clone()).unwrap();
             file.write_all(&test_result_buffer).unwrap();
             file.sync_all().unwrap();
 
-            println!("Repl test {} failure. Failing output written to {} in repl-tests dir.",
-                     test_name,
-                     reject);
+            println!(
+                "Repl test {} failure. Failing output written to {} in repl-tests dir.",
+                test_name, reject
+            );
         } else {
-            println!("{} successful",
-                     path.file_name()
-                         .unwrap()
-                         .to_str()
-                         .unwrap()
-                         .to_string());
+            println!(
+                "{} successful",
+                path.file_name().unwrap().to_str().unwrap().to_string()
+            );
         }
     }
     if total == 0 {

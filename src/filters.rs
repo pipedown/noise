@@ -1,20 +1,20 @@
 extern crate varint;
 
-use std::{self, mem, str};
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::collections::HashSet;
 use std::io::Cursor;
 use std::rc::Rc;
+use std::{self, mem, str};
 
 use self::varint::VarintRead;
 
 use error::Error;
+use json_value::JsonValue;
 use key_builder::KeyBuilder;
 use query::{DocResult, QueryScoringInfo};
-use json_value::JsonValue;
-use snapshot::{Snapshot, DocResultIterator, Scorer, JsonFetcher, AllDocsIterator};
 use rocksdb::{self, DBIterator, IteratorMode};
+use snapshot::{AllDocsIterator, DocResultIterator, JsonFetcher, Scorer, Snapshot};
 
 pub trait QueryRuntimeFilter {
     fn first_result(&mut self, start: &DocResult) -> Option<DocResult>;
@@ -28,7 +28,6 @@ pub trait QueryRuntimeFilter {
     fn is_all_not(&self) -> bool;
 }
 
-
 #[derive(PartialEq)]
 pub enum RangeOperator {
     Inclusive(f64),
@@ -40,15 +39,15 @@ pub enum RangeOperator {
     Null,
 }
 
-
-
 pub struct AllDocsFilter {
     iter: AllDocsIterator,
 }
 
 impl AllDocsFilter {
     pub fn new(snapshot: &Snapshot) -> AllDocsFilter {
-        AllDocsFilter { iter: snapshot.new_all_docs_iterator() }
+        AllDocsFilter {
+            iter: snapshot.new_all_docs_iterator(),
+        }
     }
 }
 
@@ -86,11 +85,12 @@ pub struct StemmedWordFilter {
 }
 
 impl StemmedWordFilter {
-    pub fn new(snapshot: &Snapshot,
-               stemmed_word: &str,
-               kb: &KeyBuilder,
-               boost: f32)
-               -> StemmedWordFilter {
+    pub fn new(
+        snapshot: &Snapshot,
+        stemmed_word: &str,
+        kb: &KeyBuilder,
+        boost: f32,
+    ) -> StemmedWordFilter {
         StemmedWordFilter {
             iter: snapshot.new_term_doc_result_iterator(stemmed_word, kb),
             scorer: snapshot.new_scorer(stemmed_word, kb, boost),
@@ -137,11 +137,12 @@ pub struct StemmedWordPosFilter {
 }
 
 impl StemmedWordPosFilter {
-    pub fn new(snapshot: &Snapshot,
-               stemmed_word: &str,
-               kb: &KeyBuilder,
-               boost: f32)
-               -> StemmedWordPosFilter {
+    pub fn new(
+        snapshot: &Snapshot,
+        stemmed_word: &str,
+        kb: &KeyBuilder,
+        boost: f32,
+    ) -> StemmedWordPosFilter {
         StemmedWordPosFilter {
             iter: snapshot.new_term_doc_result_iterator(stemmed_word, kb),
             scorer: snapshot.new_scorer(&stemmed_word, &kb, boost),
@@ -254,7 +255,6 @@ impl StemmedPhraseFilter {
     }
 }
 
-
 impl QueryRuntimeFilter for StemmedPhraseFilter {
     fn first_result(&mut self, start: &DocResult) -> Option<DocResult> {
         let base_result = self.filters[0].first_result(start);
@@ -281,7 +281,6 @@ impl QueryRuntimeFilter for StemmedPhraseFilter {
     }
 }
 
-
 pub struct ExactMatchFilter {
     iter: DBIterator,
     filter: StemmedPhraseFilter,
@@ -292,12 +291,13 @@ pub struct ExactMatchFilter {
 }
 
 impl ExactMatchFilter {
-    pub fn new(snapshot: &Snapshot,
-               filter: StemmedPhraseFilter,
-               kb: KeyBuilder,
-               phrase: String,
-               case_sensitive: bool)
-               -> ExactMatchFilter {
+    pub fn new(
+        snapshot: &Snapshot,
+        filter: StemmedPhraseFilter,
+        kb: KeyBuilder,
+        phrase: String,
+        case_sensitive: bool,
+    ) -> ExactMatchFilter {
         ExactMatchFilter {
             iter: snapshot.new_iterator(),
             filter: filter,
@@ -316,8 +316,10 @@ impl ExactMatchFilter {
         loop {
             let value_key = self.kb.kp_value_key_from_doc_result(&dr);
 
-            self.iter
-                .set_mode(IteratorMode::From(value_key.as_bytes(), rocksdb::Direction::Forward));
+            self.iter.set_mode(IteratorMode::From(
+                value_key.as_bytes(),
+                rocksdb::Direction::Forward,
+            ));
 
             if let Some((key, value)) = self.iter.next() {
                 debug_assert!(key.starts_with(value_key.as_bytes())); // must always be true!
@@ -393,11 +395,12 @@ pub struct RangeFilter {
 }
 
 impl RangeFilter {
-    pub fn new(snapshot: &Snapshot,
-               kb: KeyBuilder,
-               min: Option<RangeOperator>,
-               max: Option<RangeOperator>)
-               -> RangeFilter {
+    pub fn new(
+        snapshot: &Snapshot,
+        kb: KeyBuilder,
+        min: Option<RangeOperator>,
+        max: Option<RangeOperator>,
+    ) -> RangeFilter {
         RangeFilter {
             iter: snapshot.new_iterator(),
             kb: kb,
@@ -416,8 +419,9 @@ impl QueryRuntimeFilter for RangeFilter {
             // `min` and `max` have the save type, so picking one is OK
             let range_operator = self.min.as_ref().or(self.max.as_ref()).unwrap();
             match range_operator {
-                &RangeOperator::Inclusive(_) |
-                &RangeOperator::Exclusive(_) => self.kb.number_key(start.seq),
+                &RangeOperator::Inclusive(_) | &RangeOperator::Exclusive(_) => {
+                    self.kb.number_key(start.seq)
+                }
                 &RangeOperator::True => self.kb.bool_null_key('T', start.seq),
                 &RangeOperator::False => self.kb.bool_null_key('F', start.seq),
                 &RangeOperator::Null => self.kb.bool_null_key('N', start.seq),
@@ -425,8 +429,10 @@ impl QueryRuntimeFilter for RangeFilter {
         };
         // NOTE vmx 2017-04-13: Iterating over keys is really similar to the
         // `DocResultIterator` in `snapshot.rs`. It should probablly be unified.
-        self.iter
-            .set_mode(IteratorMode::From(value_key.as_bytes(), rocksdb::Direction::Forward));
+        self.iter.set_mode(IteratorMode::From(
+            value_key.as_bytes(),
+            rocksdb::Direction::Forward,
+        ));
         KeyBuilder::truncate_to_kp_word(&mut value_key);
         self.keypath = value_key;
         self.next_result()
@@ -442,8 +448,10 @@ impl QueryRuntimeFilter for RangeFilter {
             let key_str = unsafe { str::from_utf8_unchecked(&key) };
 
             // The key already matched, hence it's a valid doc result. Return it.
-            if self.min == Some(RangeOperator::True) || self.min == Some(RangeOperator::False) ||
-               self.min == Some(RangeOperator::Null) {
+            if self.min == Some(RangeOperator::True)
+                || self.min == Some(RangeOperator::False)
+                || self.min == Some(RangeOperator::Null)
+            {
                 let mut dr = KeyBuilder::parse_doc_result_from_kp_word_key(&key_str);
                 if self.term_ordinal.is_some() {
                     dr.add_score(self.term_ordinal.unwrap(), 1.0);
@@ -510,15 +518,12 @@ pub struct BboxFilter<'a> {
 }
 
 impl<'a> BboxFilter<'a> {
-    pub fn new(snapshot: Rc<Snapshot<'a>>,
-               kb: KeyBuilder,
-               bbox: [f64; 4])
-               -> BboxFilter<'a> {
+    pub fn new(snapshot: Rc<Snapshot<'a>>, kb: KeyBuilder, bbox: [f64; 4]) -> BboxFilter<'a> {
         let mut bbox_vec = Vec::with_capacity(32);
-        bbox_vec.extend_from_slice(&unsafe{ mem::transmute::<f64, [u8; 8]>(bbox[0]) });
-        bbox_vec.extend_from_slice(&unsafe{ mem::transmute::<f64, [u8; 8]>(bbox[2]) });
-        bbox_vec.extend_from_slice(&unsafe{ mem::transmute::<f64, [u8; 8]>(bbox[1]) });
-        bbox_vec.extend_from_slice(&unsafe{ mem::transmute::<f64, [u8; 8]>(bbox[3]) });
+        bbox_vec.extend_from_slice(&unsafe { mem::transmute::<f64, [u8; 8]>(bbox[0]) });
+        bbox_vec.extend_from_slice(&unsafe { mem::transmute::<f64, [u8; 8]>(bbox[2]) });
+        bbox_vec.extend_from_slice(&unsafe { mem::transmute::<f64, [u8; 8]>(bbox[1]) });
+        bbox_vec.extend_from_slice(&unsafe { mem::transmute::<f64, [u8; 8]>(bbox[3]) });
 
         BboxFilter {
             snapshot: snapshot,
@@ -531,16 +536,17 @@ impl<'a> BboxFilter<'a> {
 
     /// Function to deserialize the Arraypaths
     fn from_u8_slice(slice: &[u8]) -> Vec<u64> {
-        let u64_slice = unsafe {
-            std::slice::from_raw_parts(slice.as_ptr() as *const u64, slice.len() / 8)
-        };
+        let u64_slice =
+            unsafe { std::slice::from_raw_parts(slice.as_ptr() as *const u64, slice.len() / 8) };
         u64_slice.to_vec()
     }
 }
 
 impl<'a> QueryRuntimeFilter for BboxFilter<'a> {
     fn first_result(&mut self, start: &DocResult) -> Option<DocResult> {
-        let query = self.kb.rtree_query_key(start.seq, std::u64::MAX, &self.bbox);
+        let query = self
+            .kb
+            .rtree_query_key(start.seq, std::u64::MAX, &self.bbox);
         self.iter = Some(self.snapshot.new_rtree_iterator(&query));
         self.next_result()
     }
@@ -586,7 +592,6 @@ impl<'a> QueryRuntimeFilter for BboxFilter<'a> {
         false
     }
 }
-
 
 pub struct DistanceFilter {
     filters: Vec<StemmedWordPosFilter>,
@@ -663,8 +668,8 @@ impl DistanceFilter {
                     Err(start) => start,
                 };
 
-                let end = match base_positions.binary_search_by_key(&(pos + dis),
-                                                                    |&(pos2, _)| pos2) {
+                let end = match base_positions.binary_search_by_key(&(pos + dis), |&(pos2, _)| pos2)
+                {
                     Ok(end) => end,
                     Err(end) => end,
                 };
@@ -740,7 +745,6 @@ impl QueryRuntimeFilter for DistanceFilter {
     }
 }
 
-
 pub struct AndFilter<'a> {
     filters: Vec<Box<dyn QueryRuntimeFilter + 'a>>,
     current_filter: usize,
@@ -748,7 +752,10 @@ pub struct AndFilter<'a> {
 }
 
 impl<'a> AndFilter<'a> {
-    pub fn new(filters: Vec<Box<dyn QueryRuntimeFilter + 'a>>, array_depth: usize) -> AndFilter<'a> {
+    pub fn new(
+        filters: Vec<Box<dyn QueryRuntimeFilter + 'a>>,
+        array_depth: usize,
+    ) -> AndFilter<'a> {
         AndFilter {
             filters: filters,
             current_filter: 0,
@@ -846,10 +853,7 @@ impl<'a> FilterWithResult<'a> {
         }
         if self.result.is_none() {
             self.result = self.filter.first_result(start);
-        } else if self.result
-                      .as_ref()
-                      .unwrap()
-                      .less(start, self.array_depth) {
+        } else if self.result.as_ref().unwrap().less(start, self.array_depth) {
             self.result = self.filter.first_result(start);
         }
         if self.result.is_none() {
@@ -888,10 +892,11 @@ pub struct OrFilter<'a> {
 }
 
 impl<'a> OrFilter<'a> {
-    pub fn new(left: Box<dyn QueryRuntimeFilter + 'a>,
-               right: Box<dyn QueryRuntimeFilter + 'a>,
-               array_depth: usize)
-               -> OrFilter<'a> {
+    pub fn new(
+        left: Box<dyn QueryRuntimeFilter + 'a>,
+        right: Box<dyn QueryRuntimeFilter + 'a>,
+        array_depth: usize,
+    ) -> OrFilter<'a> {
         OrFilter {
             left: FilterWithResult {
                 filter: left,
@@ -980,7 +985,6 @@ impl<'a> QueryRuntimeFilter for OrFilter<'a> {
     }
 }
 
-
 pub struct NotFilter<'a> {
     iter: DBIterator,
     filter: Box<dyn QueryRuntimeFilter + 'a>,
@@ -989,10 +993,11 @@ pub struct NotFilter<'a> {
 }
 
 impl<'a> NotFilter<'a> {
-    pub fn new(snapshot: &Snapshot,
-               filter: Box<dyn QueryRuntimeFilter + 'a>,
-               kb: KeyBuilder)
-               -> NotFilter<'a> {
+    pub fn new(
+        snapshot: &Snapshot,
+        filter: Box<dyn QueryRuntimeFilter + 'a>,
+        kb: KeyBuilder,
+    ) -> NotFilter<'a> {
         NotFilter {
             iter: snapshot.new_iterator(),
             filter: filter,
@@ -1013,9 +1018,10 @@ impl<'a> NotFilter<'a> {
                 // if not, it means other elements did a regular match and skipped them, then we
                 // ran off the end of the array.
                 let value_key = self.kb.kp_value_key_from_doc_result(&dr);
-                self.iter
-                    .set_mode(IteratorMode::From(value_key.as_bytes(),
-                                                 rocksdb::Direction::Forward));
+                self.iter.set_mode(IteratorMode::From(
+                    value_key.as_bytes(),
+                    rocksdb::Direction::Forward,
+                ));
                 if let Some((key, _value)) = self.iter.next() {
                     let key_str = unsafe { str::from_utf8_unchecked(&key) };
                     KeyBuilder::is_kp_value_key_prefix(&value_key, &key_str)
@@ -1033,8 +1039,10 @@ impl<'a> NotFilter<'a> {
             let mut kb = KeyBuilder::new();
             kb.push_object_key("_id");
             let value_key = kb.kp_value_key_from_doc_result(dr);
-            self.iter
-                .set_mode(IteratorMode::From(value_key.as_bytes(), rocksdb::Direction::Forward));
+            self.iter.set_mode(IteratorMode::From(
+                value_key.as_bytes(),
+                rocksdb::Direction::Forward,
+            ));
             if let Some((key, _value)) = self.iter.next() {
                 let key_str = unsafe { str::from_utf8_unchecked(&key) };
                 value_key == key_str
@@ -1086,9 +1094,11 @@ impl<'a> QueryRuntimeFilter for NotFilter<'a> {
 
     fn check_double_not(&self, parent_is_neg: bool) -> Result<(), Error> {
         if parent_is_neg {
-            return Err(Error::Parse("Logical not (\"!\") is nested inside of another logical not. \
+            return Err(Error::Parse(
+                "Logical not (\"!\") is nested inside of another logical not. \
                                      This is not allowed."
-                                            .to_string()));
+                    .to_string(),
+            ));
         }
         self.filter.check_double_not(true)?;
         Ok(())
@@ -1108,10 +1118,11 @@ pub struct BindFilter<'a> {
 }
 
 impl<'a> BindFilter<'a> {
-    pub fn new(bind_var_name: String,
-               filter: Box<dyn QueryRuntimeFilter + 'a>,
-               kb: KeyBuilder)
-               -> BindFilter {
+    pub fn new(
+        bind_var_name: String,
+        filter: Box<dyn QueryRuntimeFilter + 'a>,
+        kb: KeyBuilder,
+    ) -> BindFilter {
         BindFilter {
             bind_var_name: bind_var_name,
             filter: filter,
