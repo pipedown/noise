@@ -4,7 +4,7 @@ use std::str;
 
 use error::Error;
 
-#[derive(PartialEq, PartialOrd, Clone, Debug)]
+#[derive(PartialEq, Clone, Debug)]
 pub enum JsonValue {
     Number(f64),
     String(String),
@@ -34,8 +34,8 @@ impl JsonValue {
     }
 
     fn cmp_f64(a: &JsonValue, b: &JsonValue) -> Ordering {
-        if let &JsonValue::Number(a_val) = a {
-            if let &JsonValue::Number(b_val) = b {
+        if let JsonValue::Number(a_val) = *a {
+            if let JsonValue::Number(b_val) = *b {
                 if a_val < b_val {
                     Ordering::Less
                 } else if a_val > b_val {
@@ -52,10 +52,10 @@ impl JsonValue {
     }
 
     fn cmp_string(a: &JsonValue, b: &JsonValue) -> Ordering {
-        if let &JsonValue::String(ref a_val) = a {
-            if let &JsonValue::String(ref b_val) = b {
+        if let JsonValue::String(ref a_val) = *a {
+            if let JsonValue::String(ref b_val) = *b {
                 // Note we eventually want to switch to a collation library like ICU
-                a_val.cmp(&b_val)
+                a_val.cmp(b_val)
             } else {
                 panic!("cast error in cmp_string");
             }
@@ -65,10 +65,10 @@ impl JsonValue {
     }
 
     fn cmp_array(a: &JsonValue, b: &JsonValue) -> Ordering {
-        if let &JsonValue::Array(ref a_val) = a {
-            if let &JsonValue::Array(ref b_val) = b {
+        if let JsonValue::Array(ref a_val) = *a {
+            if let JsonValue::Array(ref b_val) = *b {
                 for (a_el, b_el) in a_val.iter().zip(b_val.iter()) {
-                    let order = a_el.cmp(&b_el);
+                    let order = a_el.cmp(b_el);
                     if order != Ordering::Equal {
                         return order;
                     }
@@ -85,8 +85,8 @@ impl JsonValue {
     }
 
     fn cmp_object(a: &JsonValue, b: &JsonValue) -> Ordering {
-        if let &JsonValue::Object(ref a_val) = a {
-            if let &JsonValue::Object(ref b_val) = b {
+        if let JsonValue::Object(ref a_val) = *a {
+            if let JsonValue::Object(ref b_val) = *b {
                 for (a_el, b_el) in a_val.iter().zip(b_val.iter()) {
                     // compare key
                     let mut order = a_el.0.cmp(&b_el.0);
@@ -111,28 +111,28 @@ impl JsonValue {
     }
 
     fn type_sort_order(&self) -> (usize, fn(&JsonValue, &JsonValue) -> Ordering) {
-        match self {
-            &JsonValue::Null => (0, JsonValue::cmp_always_equal),
-            &JsonValue::False => (1, JsonValue::cmp_always_equal),
-            &JsonValue::True => (2, JsonValue::cmp_always_equal),
-            &JsonValue::Number(_) => (3, JsonValue::cmp_f64),
-            &JsonValue::String(_) => (4, JsonValue::cmp_string),
-            &JsonValue::Array(_) => (5, JsonValue::cmp_array),
-            &JsonValue::Object(_) => (6, JsonValue::cmp_object),
+        match *self {
+            JsonValue::Null => (0, JsonValue::cmp_always_equal),
+            JsonValue::False => (1, JsonValue::cmp_always_equal),
+            JsonValue::True => (2, JsonValue::cmp_always_equal),
+            JsonValue::Number(_) => (3, JsonValue::cmp_f64),
+            JsonValue::String(_) => (4, JsonValue::cmp_string),
+            JsonValue::Array(_) => (5, JsonValue::cmp_array),
+            JsonValue::Object(_) => (6, JsonValue::cmp_object),
         }
     }
 
     pub fn render(&self, write: &mut dyn Write, pretty: &mut PrettyPrint) -> Result<(), Error> {
-        match self {
-            &JsonValue::Number(ref num) => {
+        match *self {
+            JsonValue::Number(ref num) => {
                 write.write_all(pretty.prefix())?;
                 write.write_all(num.to_string().as_bytes())?;
             }
-            &JsonValue::String(ref string) => {
+            JsonValue::String(ref string) => {
                 write.write_all(pretty.prefix())?;
-                write.write_all(JsonValue::str_to_literal(&string).as_bytes())?
+                write.write_all(JsonValue::str_to_literal(string).as_bytes())?
             }
-            &JsonValue::Array(ref array) => {
+            JsonValue::Array(ref array) => {
                 if array.is_empty() {
                     write.write_all(pretty.prefix())?;
                     write.write_all("[]".as_bytes())?;
@@ -144,11 +144,8 @@ impl JsonValue {
                 pretty.push();
 
                 let mut iter = array.iter().peekable();
-                loop {
-                    match iter.next() {
-                        Some(json) => json.render(write, pretty)?,
-                        None => break,
-                    }
+                while let Some(json) = iter.next() {
+                    json.render(write, pretty)?;
                     if iter.peek().is_some() {
                         write.write_all(",".as_bytes())?;
                     }
@@ -158,7 +155,7 @@ impl JsonValue {
                 write.write_all(pretty.prefix())?;
                 write.write_all("]".as_bytes())?;
             }
-            &JsonValue::Object(ref object) => {
+            JsonValue::Object(ref object) => {
                 if object.is_empty() {
                     write.write_all(pretty.prefix())?;
                     write.write_all("{}".as_bytes())?;
@@ -170,17 +167,12 @@ impl JsonValue {
                 pretty.push();
 
                 let mut iter = object.iter().peekable();
-                loop {
-                    match iter.next() {
-                        Some(&(ref key, ref json)) => {
-                            write.write_all(pretty.prefix())?;
-                            write.write_all(JsonValue::str_to_literal(&key).as_bytes())?;
-                            write.write_all(":".as_bytes())?;
-                            pretty.next_prefix_is_space();
-                            json.render(write, pretty)?;
-                        }
-                        None => break,
-                    }
+                while let Some(&(ref key, ref json)) = iter.next() {
+                    write.write_all(pretty.prefix())?;
+                    write.write_all(JsonValue::str_to_literal(key).as_bytes())?;
+                    write.write_all(":".as_bytes())?;
+                    pretty.next_prefix_is_space();
+                    json.render(write, pretty)?;
                     if iter.peek().is_some() {
                         write.write_all(",".as_bytes())?;
                     }
@@ -190,15 +182,15 @@ impl JsonValue {
                 write.write_all(pretty.prefix())?;
                 write.write_all("}".as_bytes())?;
             }
-            &JsonValue::True => {
+            JsonValue::True => {
                 write.write_all(pretty.prefix())?;
                 write.write_all("true".as_bytes())?
             }
-            &JsonValue::False => {
+            JsonValue::False => {
                 write.write_all(pretty.prefix())?;
                 write.write_all("false".as_bytes())?
             }
-            &JsonValue::Null => {
+            JsonValue::Null => {
                 write.write_all(pretty.prefix())?;
                 write.write_all("null".as_bytes())?
             }
@@ -218,6 +210,12 @@ impl Ord for JsonValue {
             Ordering::Greater => Ordering::Greater,
             Ordering::Equal => self_cmp_fun(self, other),
         }
+    }
+}
+
+impl PartialOrd for JsonValue {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
     }
 }
 

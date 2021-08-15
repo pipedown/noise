@@ -24,8 +24,11 @@ use stems::Stems;
 // Another parser pased on rustc_serializ:
 //   https://github.com/isagalaev/ijson-rust/blob/master/src/test.rs#L11
 
+/// Key-value pairs, where the key is the path to the value, the value is the actual value.
+pub(crate) type KeyValues = BTreeMap<String, Vec<u8>>;
+
 // `GeometryCollection` is left out as we will process the individual geometries of it
-const GEOJSON_TYPES: &'static [&'static str] = &[
+const GEOJSON_TYPES: &[&str] = &[
     "Point",
     "MultiPoint",
     "LineString",
@@ -48,8 +51,8 @@ pub struct Shredder {
     kb: KeyBuilder,
     doc_id: Option<String>,
     object_keys_indexed: Vec<bool>,
-    shredded_key_values: BTreeMap<String, Vec<u8>>,
-    existing_key_value_to_delete: BTreeMap<String, Vec<u8>>,
+    shredded_key_values: KeyValues,
+    existing_key_value_to_delete: KeyValues,
     // Whether the current object is a GeoJSON geometry or not. It's a counter that increases
     // the more of the geometry was seen. It is increased for the following cases:
     //  - a `type` field with a valid GeoJSON geometry type as value
@@ -99,11 +102,11 @@ impl Shredder {
         // Add/delete the key that is used for R-tree lookups
         let rtree_key = kb.rtree_key(docseq, bbox);
         if delete {
-            batch.delete_cf(column_family, &rtree_key.as_slice())?;
+            batch.delete_cf(column_family, rtree_key.as_slice())?;
         } else {
             batch.put_cf(
                 column_family,
-                &rtree_key.as_slice(),
+                rtree_key.as_slice(),
                 Shredder::as_u8_slice(kb.arraypath.as_slice()),
             )?;
         }
@@ -121,10 +124,10 @@ impl Shredder {
         // Add/delete the key that is used for range lookups
         let number_key = kb.number_key(docseq);
         if delete {
-            batch.delete(&number_key.as_bytes())?;
+            batch.delete(number_key.as_bytes())?;
         } else {
             // The number contains the `f` prefix
-            batch.put(&number_key.as_bytes(), &number[1..])?;
+            batch.put(number_key.as_bytes(), &number[1..])?;
         }
 
         Ok(())
@@ -139,10 +142,10 @@ impl Shredder {
     ) -> Result<(), Error> {
         let key = kb.bool_null_key(prefix, docseq);
         if delete {
-            batch.delete(&key.as_bytes())?;
+            batch.delete(key.as_bytes())?;
         } else {
             // No need to store any value as the key already contains it
-            batch.put(&key.as_bytes(), &[])?;
+            batch.put(key.as_bytes(), &[])?;
         }
 
         Ok(())
@@ -245,13 +248,13 @@ impl Shredder {
                 self.kb.pop_object_key();
                 self.kb.push_object_key("_id");
                 *self.object_keys_indexed.last_mut().unwrap() = true;
-                self.add_value(code, &value)?;
+                self.add_value(code, value)?;
             }
             ObjectKeyTypes::Key(key) => {
                 if key == "type" {
                     let is_valid_type = GEOJSON_TYPES
                         .iter()
-                        .position(|&tt| tt == unsafe { str::from_utf8_unchecked(&value) });
+                        .position(|&tt| tt == unsafe { str::from_utf8_unchecked(value) });
                     if is_valid_type.is_some() {
                         self.maybe_geometry += 1;
                     }
@@ -261,10 +264,10 @@ impl Shredder {
                 self.kb.pop_object_key();
                 self.kb.push_object_key(&key);
                 *self.object_keys_indexed.last_mut().unwrap() = true;
-                self.add_value(code, &value)?;
+                self.add_value(code, value)?;
             }
             ObjectKeyTypes::NoKey => {
-                self.add_value(code, &value)?;
+                self.add_value(code, value)?;
                 self.kb.inc_top_array_index();
             }
         }
@@ -323,14 +326,14 @@ impl Shredder {
         for (key, value) in &self.existing_key_value_to_delete {
             self.kb.clear();
             self.kb
-                .parse_kp_value_no_seq(KeyBuilder::kp_value_no_seq_from_str(&key));
+                .parse_kp_value_no_seq(KeyBuilder::kp_value_no_seq_from_str(key));
             match value[0] as char {
                 's' => {
                     let text = unsafe { str::from_utf8_unchecked(&value[1..]) };
                     Shredder::add_stemmed_entries(&mut self.kb, text, seq, batch, true)?;
                 }
                 'f' => {
-                    Shredder::add_number_entries(&mut self.kb, &value, seq, batch, true)?;
+                    Shredder::add_number_entries(&mut self.kb, value, seq, batch, true)?;
                 }
                 'T' | 'F' | 'N' => {
                     Shredder::add_bool_null_entries(
@@ -356,21 +359,21 @@ impl Shredder {
             // If it was a bounding box calculated for the R-tree, it's not part of the
             // shredded original JSON document
             if value[0] as char != 'r' {
-                batch.delete(&key.as_bytes())?;
+                batch.delete(key.as_bytes())?;
             }
         }
         self.existing_key_value_to_delete = BTreeMap::new();
 
         for (key, value) in &self.shredded_key_values {
             self.kb.clear();
-            self.kb.parse_kp_value_no_seq(&key);
+            self.kb.parse_kp_value_no_seq(key);
             match value[0] as char {
                 's' => {
                     let text = unsafe { str::from_utf8_unchecked(&value[1..]) };
                     Shredder::add_stemmed_entries(&mut self.kb, text, seq, batch, false)?;
                 }
                 'f' => {
-                    Shredder::add_number_entries(&mut self.kb, &value, seq, batch, false)?;
+                    Shredder::add_number_entries(&mut self.kb, value, seq, batch, false)?;
                 }
                 'T' | 'F' | 'N' => {
                     Shredder::add_bool_null_entries(
@@ -397,13 +400,13 @@ impl Shredder {
             // be part of the shredded original JSON document
             if value[0] as char != 'r' {
                 let key = self.kb.kp_value_key(seq);
-                batch.put(&key.as_bytes(), &value.as_ref())?;
+                batch.put(key.as_bytes(), value.as_ref())?;
             }
         }
         self.shredded_key_values = BTreeMap::new();
 
         let key = KeyBuilder::id_to_seq_key(self.doc_id.as_ref().unwrap());
-        batch.put(&key.into_bytes(), &seq.to_string().as_bytes())?;
+        batch.put(&key.into_bytes(), seq.to_string().as_bytes())?;
 
         let key = KeyBuilder::seq_key(seq);
         batch.put(&key.into_bytes(), b"")?;
@@ -415,7 +418,7 @@ impl Shredder {
         &mut self,
         docid: &str,
         seq: u64,
-        existing: BTreeMap<String, Vec<u8>>,
+        existing: KeyValues,
         batch: &mut rocksdb::WriteBatch,
     ) -> Result<(), Error> {
         self.doc_id = Some(docid.to_string());
@@ -442,7 +445,7 @@ impl Shredder {
                 }
                 _ => {}
             }
-            batch.delete(&key.as_bytes())?;
+            batch.delete(key.as_bytes())?;
         }
         let key = KeyBuilder::id_to_seq_key(self.doc_id.as_ref().unwrap());
         batch.delete(&key.into_bytes())?;
@@ -452,7 +455,7 @@ impl Shredder {
         Ok(())
     }
 
-    pub fn merge_existing_doc(&mut self, existing: BTreeMap<String, Vec<u8>>) {
+    pub fn merge_existing_doc(&mut self, existing: KeyValues) {
         // we found doc with the same id already stored on disk. We need to delete
         // the doc. But any fields that are the same we can just keep around
         // and don't even need to reindex.
@@ -481,7 +484,7 @@ impl Shredder {
         self.doc_id = Some(id.to_string());
         self.kb.clear();
         self.kb.push_object_key("_id");
-        self.add_value('s', &id.as_bytes())?;
+        self.add_value('s', id.as_bytes())?;
         Ok(())
     }
 
@@ -520,7 +523,7 @@ impl Shredder {
                             transmute::<f64, [u8; 8]>(self.bounding_box[3])
                         });
 
-                        let _ = self.add_value('r', &encoded_bbox.as_slice());
+                        let _ = self.add_value('r', encoded_bbox.as_slice());
                     }
                     // Reset the values as it either wasn't a valid geometry, or it was already
                     // succcessfully processed
@@ -536,6 +539,7 @@ impl Shredder {
                     }
                     self.kb.push_array();
                 }
+                #[allow(clippy::branches_sharing_code)] // false positive
                 Some(JsonEvent::ArrayEnd) => {
                     if self.kb.peek_array_index() == 0 {
                         // this means we never wrote a value because the object was empty.
@@ -548,7 +552,7 @@ impl Shredder {
                     self.kb.inc_top_array_index();
                 }
                 Some(JsonEvent::StringValue(value)) => {
-                    self.maybe_add_value(&parser, 's', &value.as_bytes())?;
+                    self.maybe_add_value(&parser, 's', value.as_bytes())?;
                 }
                 Some(JsonEvent::BooleanValue(tf)) => {
                     let code = if tf { 'T' } else { 'F' };
@@ -605,7 +609,7 @@ mod tests {
         for (key, value) in rocks.iterator(rocksdb::IteratorMode::Start) {
             if key[0] as char == 'W' {
                 let mut vec = Vec::with_capacity(value.len());
-                vec.extend(value.into_iter());
+                vec.extend(value.iter());
                 let mut bytes = Cursor::new(vec);
                 let mut positions = Vec::new();
                 while let Ok(pos) = bytes.read_unsigned_varint_32() {

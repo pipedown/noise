@@ -10,7 +10,7 @@ use std::str;
 use std::usize;
 
 use self::rustc_serialize::json::{JsonEvent, Parser as JsonParser, StackElement};
-use aggregates::AggregateFun;
+use aggregates::{AggregateActionFun, AggregateExtractFun, AggregateFun, AggregateInitFun};
 use error::Error;
 use filters::QueryRuntimeFilter;
 use json_value::JsonValue;
@@ -117,16 +117,6 @@ impl DocResult {
         }
     }
 
-    // arraypaths must be the same length
-    pub fn cmp(&self, other: &DocResult) -> Ordering {
-        debug_assert_eq!(self.arraypath.len(), other.arraypath.len());
-        match self.seq.cmp(&other.seq) {
-            Ordering::Less => Ordering::Less,
-            Ordering::Greater => Ordering::Greater,
-            Ordering::Equal => self.arraypath.cmp(&other.arraypath),
-        }
-    }
-
     pub fn increment_last(&mut self, array_depth: usize) {
         if array_depth == 0 {
             self.seq += 1;
@@ -149,6 +139,12 @@ impl DocResult {
     }
 }
 
+impl Default for DocResult {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PartialEq for DocResult {
     fn eq(&self, other: &DocResult) -> bool {
         if self.seq != other.seq {
@@ -160,6 +156,24 @@ impl PartialEq for DocResult {
 }
 
 impl Eq for DocResult {}
+
+impl Ord for DocResult {
+    /// arraypaths must be the same length.
+    fn cmp(&self, other: &Self) -> Ordering {
+        debug_assert_eq!(self.arraypath.len(), other.arraypath.len());
+        match self.seq.cmp(&other.seq) {
+            Ordering::Less => Ordering::Less,
+            Ordering::Greater => Ordering::Greater,
+            Ordering::Equal => self.arraypath.cmp(&other.arraypath),
+        }
+    }
+}
+
+impl PartialOrd for DocResult {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
 
 pub struct QueryScoringInfo {
     pub num_terms: usize,
@@ -176,13 +190,9 @@ pub struct QueryResults<'a> {
     done_with_ordering_and_ags: bool,
     does_group_or_aggr: bool,
     orders: Option<Vec<(Order, usize)>>,
-    aggr_inits: Vec<(fn(JsonValue) -> JsonValue, usize)>,
-    aggr_actions: Vec<(
-        fn(&mut JsonValue, JsonValue, Option<&JsonValue>),
-        Option<JsonValue>,
-        usize,
-    )>,
-    aggr_finals: Vec<(fn(&mut JsonValue), usize)>,
+    aggr_inits: Vec<(AggregateInitFun, usize)>,
+    aggr_actions: Vec<(AggregateActionFun, Option<JsonValue>, usize)>,
+    aggr_finals: Vec<(AggregateExtractFun, usize)>,
     in_buffer: Vec<VecDeque<JsonValue>>,
     ordered_buffer: Vec<VecDeque<JsonValue>>,
     limit: usize,
@@ -243,7 +253,7 @@ impl<'a> QueryResults<'a> {
                     match order_info.field {
                         OrderField::FetchValue(rp) => {
                             vec.push(Box::new(RetValue {
-                                rp: rp,
+                                rp,
                                 ag: None,
                                 default: order_info.default,
                                 order_info: Some(order),
@@ -352,21 +362,21 @@ impl<'a> QueryResults<'a> {
         };
 
         Ok(QueryResults {
-            filter: filter,
+            filter,
             doc_result_next: DocResult::new(),
             fetcher: snapshot.new_json_fetcher(),
-            snapshot: snapshot,
-            returnable: returnable,
-            needs_ordering_and_ags: needs_ordering_and_ags,
+            snapshot,
+            returnable,
+            needs_ordering_and_ags,
             done_with_ordering_and_ags: false,
-            does_group_or_aggr: does_group_or_aggr,
+            does_group_or_aggr,
             orders: Some(orders),
-            aggr_inits: aggr_inits,
-            aggr_actions: aggr_actions,
-            aggr_finals: aggr_finals,
+            aggr_inits,
+            aggr_actions,
+            aggr_finals,
             in_buffer: Vec::new(),
             ordered_buffer: Vec::new(),
-            limit: limit,
+            limit,
             scoring_num_terms: qsi.num_terms,
             scoring_query_norm: query_norm,
         })
@@ -493,18 +503,13 @@ impl<'a> QueryResults<'a> {
     }
 
     pub fn get_next_id(&mut self) -> Option<String> {
-        let seq = self.get_next();
-        match seq {
-            Some(seq) => {
-                let key = format!("V{}#._id", seq);
-                match self.snapshot.get(&key.as_bytes()) {
-                    // If there is an id, it's UTF-8. Strip off type leading byte
-                    Some(id) => Some(id.to_utf8().unwrap()[1..].to_string()),
-                    None => None,
-                }
-            }
-            None => None,
-        }
+        self.get_next().and_then(|seq| {
+            let key = format!("V{}#._id", seq);
+            // If there is an id, it's UTF-8. Strip off type leading byte
+            self.snapshot
+                .get(key.as_bytes())
+                .map(|id| id.to_utf8().unwrap()[1..].to_string())
+        })
     }
 
     pub fn next_result(&mut self) -> Option<JsonValue> {
@@ -575,7 +580,7 @@ impl<'a> QueryResults<'a> {
     }
 
     fn cmp_results(
-        orders: &Vec<(Order, usize)>,
+        orders: &[(Order, usize)],
         a: &VecDeque<JsonValue>,
         b: &VecDeque<JsonValue>,
     ) -> Ordering {
@@ -599,7 +604,7 @@ impl<'a> QueryResults<'a> {
         let orders = self.orders.take().unwrap();
         if !orders.is_empty() {
             self.in_buffer
-                .sort_by(|a, b| QueryResults::cmp_results(&orders, &a, &b));
+                .sort_by(|a, b| QueryResults::cmp_results(&orders, a, b));
         }
         // put back
         self.orders = Some(orders);
@@ -832,11 +837,8 @@ mod tests {
         index.flush(batch).unwrap();
 
         let mut query_results = index.query(r#"find {data: == "u"}"#, None).unwrap();
-        loop {
-            match query_results.get_next_id() {
-                Some(result) => println!("result: {}", result),
-                None => break,
-            }
+        while let Some(result) = query_results.get_next_id() {
+            println!("result: {}", result);
         }
     }
 }

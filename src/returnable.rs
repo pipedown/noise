@@ -39,8 +39,8 @@ impl ReturnPath {
     pub fn to_key(&self) -> String {
         let mut key = String::new();
         for seg in self.path.iter() {
-            match seg {
-                &PathSegment::ObjectKey(ref str) => {
+            match *seg {
+                PathSegment::ObjectKey(ref str) => {
                     key.push('.');
                     for cc in str.chars() {
                         // Escape chars that conflict with delimiters
@@ -50,11 +50,11 @@ impl ReturnPath {
                         key.push(cc);
                     }
                 }
-                &PathSegment::Array(ref i) => {
+                PathSegment::Array(ref i) => {
                     key.push('$');
                     key.push_str(&i.to_string());
                 }
-                &PathSegment::ArrayAll => {
+                PathSegment::ArrayAll => {
                     key.push_str("$*");
                 }
             }
@@ -68,6 +68,12 @@ impl ReturnPath {
         } else {
             Some(&self.path[i])
         }
+    }
+}
+
+impl Default for ReturnPath {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -169,13 +175,13 @@ impl Returnable for RetArray {
         bind_var_keys: &HashMap<String, Vec<String>>,
         result: &mut VecDeque<JsonValue>,
     ) {
-        for ref slot in self.slots.iter() {
+        for slot in self.slots.iter() {
             slot.fetch_result(fetcher, seq, score, bind_var_keys, result);
         }
     }
 
     fn get_aggregate_funs(&self, funs: &mut Vec<Option<(AggregateFun, Option<JsonValue>)>>) {
-        for ref slot in self.slots.iter() {
+        for slot in self.slots.iter() {
             slot.get_aggregate_funs(funs);
         }
     }
@@ -217,7 +223,7 @@ impl Returnable for RetHidden {
         bind_var_keys: &HashMap<String, Vec<String>>,
         result: &mut VecDeque<JsonValue>,
     ) {
-        for ref unrendered in self.unrendered.iter() {
+        for unrendered in self.unrendered.iter() {
             unrendered.fetch_result(fetcher, seq, score, bind_var_keys, result);
         }
 
@@ -360,7 +366,7 @@ impl Returnable for RetBind {
             let mut array = Vec::with_capacity(value_keys.len());
             for base_key in value_keys {
                 let mut kb = KeyBuilder::new();
-                kb.parse_kp_value_no_seq(KeyBuilder::kp_value_no_seq_from_str(&base_key));
+                kb.parse_kp_value_no_seq(KeyBuilder::kp_value_no_seq_from_str(base_key));
 
                 if let Some(json) = fetcher.fetch(seq, &mut kb, &self.extra_rp) {
                     array.push(json);

@@ -37,7 +37,7 @@ impl<'a> Iterator for Stems<'a> {
         // we loop though until we find alphabetic chars. That becomes our stem word.
         let mut non_alpha = String::new(); // will contain any non-alphabetic chars
                                            // returned iff no other alphabetic chars
-        while let Some((_pos, word)) = self.words.next() {
+        for (_pos, word) in &mut self.words {
             let normalized = word.nfkc().collect::<String>();
             if normalized.chars().next().unwrap().is_alphabetic() {
                 let pos = self.word_position;
@@ -46,37 +46,19 @@ impl<'a> Iterator for Stems<'a> {
                     word_pos: pos as u32,
                     stemmed: self.stemmer.stem(&normalized.to_lowercase()),
                 });
-            } else {
-                if self.word_position == 0 {
-                    non_alpha.push_str(&normalized);
-                }
+            } else if self.word_position == 0 {
+                non_alpha.push_str(&normalized);
             }
         }
-        if non_alpha.is_empty() {
-            if self.word_position == 0 {
-                self.word_position = 1;
-                // in this case we were passed an empty string
-                // so we don't just return None, but we return
-                // an empty string Stemmed word.
-                // otherwise searching fields for empty strings
-                // wouldn't be possible.
-                return Some(StemmedWord {
-                    word_pos: 0,
-                    stemmed: String::new(),
-                });
-            } else {
-                return None;
-            }
+
+        if self.word_position == 0 {
+            self.word_position = 1;
+            Some(StemmedWord {
+                word_pos: 0,
+                stemmed: non_alpha,
+            })
         } else {
-            if self.word_position == 0 {
-                self.word_position = 1;
-                return Some(StemmedWord {
-                    word_pos: 0,
-                    stemmed: non_alpha,
-                });
-            } else {
-                return None;
-            }
+            None
         }
     }
 }
