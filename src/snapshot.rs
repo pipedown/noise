@@ -21,13 +21,13 @@ pub struct Snapshot<'a> {
 
 impl<'a> Snapshot<'a> {
     pub fn new(rocks: RocksSnapshot) -> Snapshot {
-        Snapshot { rocks: rocks }
+        Snapshot { rocks }
     }
 
     pub fn new_term_doc_result_iterator(&self, term: &str, kb: &KeyBuilder) -> DocResultIterator {
         DocResultIterator {
             iter: self.rocks.iterator(IteratorMode::Start),
-            keypathword: kb.get_kp_word_only(&term),
+            keypathword: kb.get_kp_word_only(term),
         }
     }
 
@@ -39,7 +39,7 @@ impl<'a> Snapshot<'a> {
         Scorer {
             iter: self.rocks.iterator(IteratorMode::Start),
             idf: f32::NAN,
-            boost: boost,
+            boost,
             kb: kb.clone(),
             term: term.to_string(),
             term_ordinal: 0,
@@ -63,7 +63,7 @@ impl<'a> Snapshot<'a> {
     pub fn new_all_docs_iterator(&self) -> AllDocsIterator {
         let mut iter = self.rocks.iterator(IteratorMode::Start);
         iter.set_mode(IteratorMode::From(b"S", rocksdb::Direction::Forward));
-        AllDocsIterator { iter: iter }
+        AllDocsIterator { iter }
     }
 }
 
@@ -74,7 +74,7 @@ pub struct DocResultIterator {
 
 impl DocResultIterator {
     pub fn advance_gte(&mut self, start: &DocResult) {
-        KeyBuilder::add_doc_result_to_kp_word(&mut self.keypathword, &start);
+        KeyBuilder::add_doc_result_to_kp_word(&mut self.keypathword, start);
         // Seek in index to >= entry
         self.iter.set_mode(IteratorMode::From(
             self.keypathword.as_bytes(),
@@ -91,7 +91,7 @@ impl DocResultIterator {
             }
 
             let key_str = unsafe { str::from_utf8_unchecked(&key) };
-            let dr = KeyBuilder::parse_doc_result_from_kp_word_key(&key_str);
+            let dr = KeyBuilder::parse_doc_result_from_kp_word_key(key_str);
 
             Some((
                 dr,
@@ -199,7 +199,7 @@ impl JsonFetcher {
         mut kb_base: &mut KeyBuilder,
         rp: &ReturnPath,
     ) -> Option<JsonValue> {
-        JsonFetcher::descend_return_path(&mut self.iter, seq, &mut kb_base, &rp, 0)
+        JsonFetcher::descend_return_path(&mut self.iter, seq, &mut kb_base, rp, 0)
     }
 
     pub fn bytes_to_json_value(bytes: &[u8]) -> JsonValue {
@@ -240,11 +240,11 @@ impl JsonFetcher {
     ) -> Option<JsonValue> {
         while let Some(segment) = rp.nth(rp_index) {
             rp_index += 1;
-            match segment {
-                &PathSegment::ObjectKey(ref string) => {
+            match *segment {
+                PathSegment::ObjectKey(ref string) => {
                     kb.push_object_key(string);
                 }
-                &PathSegment::ArrayAll => {
+                PathSegment::ArrayAll => {
                     let mut i = 0;
                     let mut vec = Vec::new();
                     loop {
@@ -287,7 +287,7 @@ impl JsonFetcher {
                         }
                     }
                 }
-                &PathSegment::Array(ref index) => {
+                PathSegment::Array(ref index) => {
                     kb.push_array_index(*index);
                 }
             }
@@ -337,7 +337,7 @@ impl JsonFetcher {
         let segment = {
             let key_str = unsafe { str::from_utf8_unchecked(&key) };
             let remaining = &key_str[value_key.len()..];
-            KeyBuilder::parse_first_kp_value_segment(&remaining)
+            KeyBuilder::parse_first_kp_value_segment(remaining)
         };
 
         match segment {
@@ -356,10 +356,10 @@ impl JsonFetcher {
                                 return JsonValue::Object(object);
                             }
 
-                            let key_str = unsafe { str::from_utf8_unchecked(&k) };
+                            let key_str = unsafe { str::from_utf8_unchecked(k) };
                             let remaining = &key_str[value_key.len()..];
 
-                            KeyBuilder::parse_first_kp_value_segment(&remaining)
+                            KeyBuilder::parse_first_kp_value_segment(remaining)
                         }
                         None => return JsonValue::Object(object),
                     };
@@ -398,10 +398,10 @@ impl JsonFetcher {
                                 return JsonFetcher::return_array(array);
                             }
 
-                            let key_str = unsafe { str::from_utf8_unchecked(&k) };
+                            let key_str = unsafe { str::from_utf8_unchecked(k) };
                             let remaining = &key_str[value_key.len()..];
 
-                            KeyBuilder::parse_first_kp_value_segment(&remaining)
+                            KeyBuilder::parse_first_kp_value_segment(remaining)
                         }
                         None => return JsonFetcher::return_array(array),
                     };

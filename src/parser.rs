@@ -1,3 +1,5 @@
+#![allow(clippy::collapsible_else_if)]
+
 use std;
 use std::collections::HashMap;
 use std::iter::Iterator;
@@ -20,6 +22,9 @@ use returnable::{
 };
 use snapshot::Snapshot;
 use stems::Stems;
+
+/// A boost value of 1.0 is equal to no boosting.
+const NO_BOOST: f32 = 1.0;
 
 struct Aggregate {
     fun: AggregateFun,
@@ -45,11 +50,11 @@ impl<'a, 'c> Parser<'a, 'c> {
         snapshot: Rc<Snapshot<'a>>,
     ) -> Parser<'a, 'c> {
         Parser {
-            query: query,
+            query,
             offset: 0,
-            params: params,
+            params,
             kb: KeyBuilder::new(),
-            snapshot: snapshot,
+            snapshot,
             needs_scoring: false,
         }
     }
@@ -136,7 +141,7 @@ impl<'a, 'c> Parser<'a, 'c> {
                 }
             }
         }
-        if result.len() > 0 {
+        if !result.is_empty() {
             self.offset += result.len();
             self.ws();
             Some(result)
@@ -152,8 +157,8 @@ impl<'a, 'c> Parser<'a, 'c> {
                 if vec.len() == 4 {
                     let mut bbox = [0f64; 4];
                     for (ii, value) in vec.iter().enumerate() {
-                        match value {
-                            &JsonValue::Number(num) => bbox[ii] = num,
+                        match *value {
+                            JsonValue::Number(num) => bbox[ii] = num,
                             _ => return Err(Error::Parse(error_message.to_string())),
                         }
                     }
@@ -189,7 +194,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         if self.consume_no_ws("@") {
             if let Some(field) = self.consume_field() {
                 if let Some(param) = self.params.get(&field) {
-                    if let &JsonValue::String(ref string) = param {
+                    if let JsonValue::String(ref string) = *param {
                         Ok(Some(string.to_string()))
                     } else {
                         Err(Error::Parse(format!(
@@ -214,7 +219,7 @@ impl<'a, 'c> Parser<'a, 'c> {
     fn consume_integer(&mut self) -> Result<Option<i64>, Error> {
         let mut result = String::new();
         for char in self.query[self.offset..].chars() {
-            if char >= '0' && char <= '9' {
+            if ('0'..='9').contains(&char) {
                 result.push(char);
             } else {
                 break;
@@ -391,10 +396,10 @@ impl<'a, 'c> Parser<'a, 'c> {
             if let Some(num) = self.consume_number()? {
                 Ok(num as f32)
             } else {
-                return Err(Error::Parse("Expected number after ^ symbol.".to_string()));
+                Err(Error::Parse("Expected number after ^ symbol.".to_string()))
             }
         } else {
-            Ok(1.0)
+            Ok(NO_BOOST)
         }
     }
 
@@ -403,10 +408,10 @@ impl<'a, 'c> Parser<'a, 'c> {
         filter: Box<dyn QueryRuntimeFilter + 'a>,
     ) -> Result<Box<dyn QueryRuntimeFilter + 'a>, Error> {
         let boost = self.consume_boost()?;
-        if boost != 1.0 {
-            Ok(Box::new(BoostFilter::new(filter, boost)))
-        } else {
+        if boost == NO_BOOST {
             Ok(filter)
+        } else {
+            Ok(Box::new(BoostFilter::new(filter, boost)))
         }
     }
 
@@ -451,7 +456,7 @@ impl<'a, 'c> Parser<'a, 'c> {
                 } else {
                     break 'outer;
                 }
-            } else if c >= '1' && c <= '9' {
+            } else if ('1'..='9').contains(&c) {
                 result.push(c);
                 if let Some(c) = chars.next() {
                     c
@@ -469,7 +474,7 @@ impl<'a, 'c> Parser<'a, 'c> {
             if !leading_zero {
                 // no more digits allowed if first digit is zero
                 loop {
-                    c = if c >= '0' && c <= '9' {
+                    c = if ('0'..='9').contains(&c) {
                         result.push(c);
                         if let Some(c) = chars.next() {
                             c
@@ -499,7 +504,7 @@ impl<'a, 'c> Parser<'a, 'c> {
             // parse mantissa
             let mut found_mantissa = false;
             loop {
-                c = if c >= '0' && c <= '9' {
+                c = if ('0'..='9').contains(&c) {
                     result.push(c);
                     found_mantissa = true;
 
@@ -545,7 +550,7 @@ impl<'a, 'c> Parser<'a, 'c> {
             // parse exponent digits
             let mut found_exponent = false;
             loop {
-                c = if c >= '0' && c <= '9' {
+                c = if ('0'..='9').contains(&c) {
                     result.push(c);
                     found_exponent = true;
                     if let Some(c) = chars.next() {
@@ -585,12 +590,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         self.offset += 1;
         {
             let mut chars = self.query[self.offset..].chars();
-            'outer: loop {
-                let char = if let Some(char) = chars.next() {
-                    char
-                } else {
-                    break;
-                };
+            'outer: while let Some(char) = chars.next() {
                 if char == '\\' {
                     self.offset += 1;
 
@@ -788,11 +788,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         } else if self.could_consume("{") {
             Some(self.object()?)
         } else {
-            if let Some(filter) = self.bind_var()? {
-                Some(filter)
-            } else {
-                None
-            }
+            self.bind_var()?
         };
 
         if let Some(filter) = opt_filter {
@@ -1046,11 +1042,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         } else if self.could_consume("{") {
             Some(self.object()?)
         } else {
-            if let Some(filter) = self.bind_var()? {
-                Some(filter)
-            } else {
-                None
-            }
+            self.bind_var()?
         };
 
         if let Some(filter) = opt_filter {
@@ -1118,9 +1110,9 @@ impl<'a, 'c> Parser<'a, 'c> {
                         rp.to_key(),
                         OrderInfo {
                             field: OrderField::FetchValue(rp),
-                            order: order,
+                            order,
                             order_to_apply: n,
-                            default: default,
+                            default,
                         },
                     );
                 } else {
@@ -1143,7 +1135,7 @@ impl<'a, 'c> Parser<'a, 'c> {
                         OrderInfo {
                             field: OrderField::Score,
                             order_to_apply: n,
-                            order: order,
+                            order,
                             default: JsonValue::Null,
                         },
                     );
@@ -1176,7 +1168,7 @@ impl<'a, 'c> Parser<'a, 'c> {
             let mut rp = ReturnPath::new();
             rp.push_object_key("_id".to_string());
             Ok(Box::new(RetValue {
-                rp: rp,
+                rp,
                 ag: None,
                 default: JsonValue::Null,
                 order_info: None,
@@ -1187,41 +1179,33 @@ impl<'a, 'c> Parser<'a, 'c> {
     fn ret_object(&mut self) -> Result<Box<dyn Returnable>, Error> {
         self.must_consume("{")?;
         let mut fields: Vec<(String, Box<dyn Returnable>)> = Vec::new();
-        loop {
-            if let Some(field) = self.consume_key()? {
-                self.must_consume(":")?;
-                if let Some(ret_value) = self.ret_value()? {
-                    fields.push((field, ret_value));
-                    if !self.consume(",") {
-                        break;
-                    }
-                } else {
-                    return Err(Error::Parse("Expected key to return.".to_string()));
+        while let Some(field) = self.consume_key()? {
+            self.must_consume(":")?;
+            if let Some(ret_value) = self.ret_value()? {
+                fields.push((field, ret_value));
+                if !self.consume(",") {
+                    break;
                 }
             } else {
-                break;
+                return Err(Error::Parse("Expected key to return.".to_string()));
             }
         }
 
         self.must_consume("}")?;
-        Ok(Box::new(RetObject { fields: fields }))
+        Ok(Box::new(RetObject { fields }))
     }
 
     fn ret_array(&mut self) -> Result<Box<dyn Returnable>, Error> {
         self.must_consume("[")?;
         let mut slots = Vec::new();
-        loop {
-            if let Some(ret_value) = self.ret_value()? {
-                slots.push(ret_value);
-                if !self.consume(",") {
-                    break;
-                }
-            } else {
+        while let Some(ret_value) = self.ret_value()? {
+            slots.push(ret_value);
+            if !self.consume(",") {
                 break;
             }
         }
         self.must_consume("]")?;
-        Ok(Box::new(RetArray { slots: slots }))
+        Ok(Box::new(RetArray { slots }))
     }
 
     fn ret_value(&mut self) -> Result<Option<Box<dyn Returnable>>, Error> {
@@ -1254,16 +1238,16 @@ impl<'a, 'c> Parser<'a, 'c> {
             let default = self.consume_default()?.unwrap_or(JsonValue::Null);
             match aggregate.bind_name {
                 Some(bind_name) => Ok(Some(Box::new(RetBind {
-                    bind_name: bind_name,
+                    bind_name,
                     extra_rp: aggregate.keypath,
                     ag: Some((aggregate.fun, aggregate.sep)),
-                    default: default,
+                    default,
                     order_info: None,
                 }))),
                 None => Ok(Some(Box::new(RetValue {
                     rp: aggregate.keypath,
                     ag: Some((aggregate.fun, aggregate.sep)),
-                    default: default,
+                    default,
                     order_info: None,
                 }))),
             }
@@ -1276,19 +1260,19 @@ impl<'a, 'c> Parser<'a, 'c> {
             let default = self.consume_default()?.unwrap_or(JsonValue::Null);
 
             Ok(Some(Box::new(RetBind {
-                bind_name: bind_name,
+                bind_name,
                 extra_rp: rp,
                 ag: None,
-                default: default,
+                default,
                 order_info: None,
             })))
         } else if let Some(rp) = self.consume_keypath()? {
             let default = self.consume_default()?.unwrap_or(JsonValue::Null);
 
             Ok(Some(Box::new(RetValue {
-                rp: rp,
+                rp,
                 ag: None,
-                default: default,
+                default,
                 order_info: None,
             })))
         } else if self.could_consume("{") {
@@ -1318,9 +1302,9 @@ impl<'a, 'c> Parser<'a, 'c> {
                 }
                 Ok(i as usize)
             } else {
-                return Err(Error::Parse(
+                Err(Error::Parse(
                     "limit expects an integer greater than 0".to_string(),
-                ));
+                ))
             }
         } else {
             Ok(usize::MAX)
@@ -1415,7 +1399,7 @@ impl<'a, 'c> Parser<'a, 'c> {
 
     pub fn build_filter(&mut self) -> Result<Box<dyn QueryRuntimeFilter + 'a>, Error> {
         self.ws();
-        Ok(self.find()?)
+        self.find()
     }
 
     pub fn non_ws_left(&mut self) -> Result<(), Error> {

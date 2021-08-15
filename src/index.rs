@@ -21,7 +21,7 @@ use rocksdb::{
 };
 
 use error::Error;
-use json_shred::Shredder;
+use json_shred::{KeyValues, Shredder};
 use key_builder::{self, KeyBuilder};
 use query::QueryResults;
 use snapshot::Snapshot;
@@ -49,6 +49,12 @@ impl Batch {
     }
 }
 
+impl Default for Batch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub enum OpenOptions {
     Create,
 }
@@ -67,7 +73,7 @@ impl Index {
         rtree_options.set_block_based_table_factory(&block_based_opts);
         rtree_options.set_comparator("noise_rtree_cmp", Index::compare_keys_rtree);
 
-        let rocks = match rocksdb::DB::open_cf(&rocks_options, name, &[&"rtree"], &[&rtree_options])
+        let rocks = match rocksdb::DB::open_cf(&rocks_options, name, &["rtree"], &[&rtree_options])
         {
             Ok(rocks) => rocks,
             Err(error) => {
@@ -83,10 +89,8 @@ impl Index {
                 rocks.create_cf("rtree", &rtree_options)?;
 
                 let mut bytes = Vec::with_capacity(8 * 2);
-                bytes
-                    .write(&Index::convert_u64_to_bytes(NOISE_HEADER_VERSION))
-                    .unwrap();
-                bytes.write(&Index::convert_u64_to_bytes(0)).unwrap();
+                bytes.write_all(&Index::convert_u64_to_bytes(NOISE_HEADER_VERSION))?;
+                bytes.write_all(&Index::convert_u64_to_bytes(0))?;
                 rocks.put_opt(b"HDB", &bytes, &rocksdb::WriteOptions::new())?;
 
                 rocks
@@ -107,7 +111,7 @@ impl Index {
             name: name.to_string(),
             high_doc_seq: Index::convert_bytes_to_u64(&value[8..]),
             rtree: rocks.cf_handle("rtree").unwrap(),
-            rocks: rocks,
+            rocks,
         })
     }
 
@@ -151,7 +155,7 @@ impl Index {
             (self.high_doc_seq, docid)
         };
         // now everything needs to be added to the batch,
-        shredder.add_all_to_batch(seq, &mut batch.wb, self.rtree.clone())?;
+        shredder.add_all_to_batch(seq, &mut batch.wb, self.rtree)?;
         batch.id_str_in_batch.insert(docid.clone());
 
         Ok(docid)
@@ -180,11 +184,8 @@ impl Index {
         QueryResults::new_query_results(query, parameters, self.new_snapshot())
     }
 
-    fn gather_doc_fields(
-        &self,
-        docid: &str,
-    ) -> Result<Option<(u64, BTreeMap<String, Vec<u8>>)>, Error> {
-        if let Some(seq) = self.fetch_seq(&docid)? {
+    fn gather_doc_fields(&self, docid: &str) -> Result<Option<(u64, KeyValues)>, Error> {
+        if let Some(seq) = self.fetch_seq(docid)? {
             // collect up all the fields for the existing doc
             let kb = KeyBuilder::new();
             let value_key = kb.kp_value_key(seq);
@@ -196,22 +197,17 @@ impl Index {
                 value_key.as_bytes(),
                 rocksdb::Direction::Forward,
             ));
-            loop {
-                let (key, value) = match iter.next() {
-                    Some((key, value)) => (key, value),
-                    None => break,
-                };
-
+            for (key, value) in iter {
                 if !key.starts_with(value_key.as_bytes()) {
                     break;
                 }
                 let key = unsafe { str::from_utf8_unchecked(&key) }.to_string();
-                let value = value.iter().map(|i| *i).collect();
+                let value = value.iter().copied().collect();
                 key_values.insert(key, value);
             }
-            return Ok(Some((seq, key_values)));
+            Ok(Some((seq, key_values)))
         } else {
-            return Ok(None);
+            Ok(None)
         }
     }
 
@@ -220,12 +216,8 @@ impl Index {
         // Flush can only be called if the index is open
 
         let mut bytes = Vec::with_capacity(8 * 2);
-        bytes
-            .write(&Index::convert_u64_to_bytes(NOISE_HEADER_VERSION))
-            .unwrap();
-        bytes
-            .write(&Index::convert_u64_to_bytes(self.high_doc_seq))
-            .unwrap();
+        bytes.write_all(&Index::convert_u64_to_bytes(NOISE_HEADER_VERSION))?;
+        bytes.write_all(&Index::convert_u64_to_bytes(self.high_doc_seq))?;
         batch.wb.put(b"HDB", &bytes)?;
 
         let status = self.rocks.write(batch.wb)?;
@@ -260,7 +252,7 @@ impl Index {
 
     pub fn convert_bytes_to_i32(bytes: &[u8]) -> i32 {
         let mut vec = Vec::with_capacity(bytes.len());
-        vec.extend(bytes.into_iter());
+        vec.extend(bytes.iter());
         let mut read = Cursor::new(vec);
         read.read_signed_varint_32().unwrap()
     }
@@ -273,7 +265,7 @@ impl Index {
 
     pub fn fetch_seq(&self, id: &str) -> Result<Option<u64>, Error> {
         let key = format!("{}{}", key_builder::KEY_PREFIX_ID_TO_SEQ, id);
-        match self.rocks.get(&key.as_bytes())? {
+        match self.rocks.get(key.as_bytes())? {
             // If there is an id, it's UTF-8
             Some(bytes) => Ok(Some(bytes.to_utf8().unwrap().parse().unwrap())),
             None => Ok(None),
@@ -286,7 +278,7 @@ impl Index {
         {
             return CompactionDecision::Keep;
         }
-        if 0 == Index::convert_bytes_to_i32(&value) {
+        if 0 == Index::convert_bytes_to_i32(value) {
             CompactionDecision::Remove
         } else {
             CompactionDecision::Keep
@@ -302,8 +294,8 @@ impl Index {
             key_builder::KEY_PREFIX_NULL,
         ];
         if value_prefixes.contains(&(a[0] as char)) && value_prefixes.contains(&(b[0] as char)) {
-            let astr = unsafe { str::from_utf8_unchecked(&a) };
-            let bstr = unsafe { str::from_utf8_unchecked(&b) };
+            let astr = unsafe { str::from_utf8_unchecked(a) };
+            let bstr = unsafe { str::from_utf8_unchecked(b) };
             KeyBuilder::compare_keys(astr, bstr)
         } else {
             a.cmp(b)
@@ -322,13 +314,13 @@ impl Index {
         }
 
         let mut count = if let Some(bytes) = existing_val {
-            Index::convert_bytes_to_i32(&bytes)
+            Index::convert_bytes_to_i32(bytes)
         } else {
             0
         };
 
         for bytes in operands {
-            count += Index::convert_bytes_to_i32(&bytes);
+            count += Index::convert_bytes_to_i32(bytes);
         }
         Index::convert_i32_to_bytes(count)
     }
@@ -349,11 +341,11 @@ impl Index {
     /// The keys have a length prefixed string (the Keypath), followed by the Interan Id and
     /// the bounding box around the geometry
     fn compare_keys_rtree(aa: &[u8], bb: &[u8]) -> Ordering {
-        if aa.len() == 0 && bb.len() == 0 {
+        if aa.is_empty() && bb.is_empty() {
             return Ordering::Equal;
-        } else if aa.len() == 0 {
+        } else if aa.is_empty() {
             return Ordering::Less;
-        } else if bb.len() == 0 {
+        } else if bb.is_empty() {
             return Ordering::Greater;
         }
 
@@ -398,7 +390,7 @@ impl Index {
             }
         }
         // No early return, the values are fully equal
-        return Ordering::Equal;
+        Ordering::Equal
     }
 }
 

@@ -2,6 +2,10 @@ use std::cmp::Ordering;
 
 use json_value::JsonValue;
 
+pub type AggregateInitFun = fn(JsonValue) -> JsonValue;
+pub type AggregateActionFun = fn(&mut JsonValue, JsonValue, Option<&JsonValue>);
+pub type AggregateExtractFun = fn(&mut JsonValue);
+
 #[derive(PartialEq, Eq, Clone)]
 pub enum AggregateFun {
     GroupAsc,
@@ -20,66 +24,66 @@ pub enum AggregateFun {
 
 pub struct AggregateFunImpls {
     // Initalizes for a computing the aggregate action (optional)
-    pub init: Option<fn(JsonValue) -> JsonValue>,
+    pub init: Option<AggregateInitFun>,
 
     // The actual aggregate action function
-    pub action: fn(&mut JsonValue, JsonValue, Option<&JsonValue>),
+    pub action: AggregateActionFun,
 
     // extracts the final aggregate value (optional)
-    pub extract: Option<fn(&mut JsonValue)>,
+    pub extract: Option<AggregateExtractFun>,
 }
 
 impl AggregateFun {
     pub fn get_fun_impls(&self) -> AggregateFunImpls {
-        match self {
-            &AggregateFun::GroupAsc => panic!("cannot get aggregate fun for grouping!"),
-            &AggregateFun::GroupDesc => panic!("cannot get aggregate fun for grouping!"),
-            &AggregateFun::Sum => AggregateFunImpls {
+        match *self {
+            AggregateFun::GroupAsc => panic!("cannot get aggregate fun for grouping!"),
+            AggregateFun::GroupDesc => panic!("cannot get aggregate fun for grouping!"),
+            AggregateFun::Sum => AggregateFunImpls {
                 init: Some(AggregateFun::sum_init),
                 action: AggregateFun::sum,
                 extract: None,
             },
-            &AggregateFun::Max => AggregateFunImpls {
+            AggregateFun::Max => AggregateFunImpls {
                 init: None,
                 action: AggregateFun::max,
                 extract: None,
             },
-            &AggregateFun::Min => AggregateFunImpls {
+            AggregateFun::Min => AggregateFunImpls {
                 init: None,
                 action: AggregateFun::min,
                 extract: None,
             },
-            &AggregateFun::MaxArray => AggregateFunImpls {
+            AggregateFun::MaxArray => AggregateFunImpls {
                 init: Some(AggregateFun::max_array_init),
                 action: AggregateFun::max_array,
                 extract: None,
             },
-            &AggregateFun::MinArray => AggregateFunImpls {
+            AggregateFun::MinArray => AggregateFunImpls {
                 init: Some(AggregateFun::min_array_init),
                 action: AggregateFun::min_array,
                 extract: None,
             },
-            &AggregateFun::Array => AggregateFunImpls {
+            AggregateFun::Array => AggregateFunImpls {
                 init: Some(AggregateFun::array_init),
                 action: AggregateFun::array,
                 extract: None,
             },
-            &AggregateFun::ArrayFlat => AggregateFunImpls {
+            AggregateFun::ArrayFlat => AggregateFunImpls {
                 init: Some(AggregateFun::array_flat_init),
                 action: AggregateFun::array_flat,
                 extract: None,
             },
-            &AggregateFun::Concat => AggregateFunImpls {
+            AggregateFun::Concat => AggregateFunImpls {
                 init: Some(AggregateFun::concat_init),
                 action: AggregateFun::concat,
                 extract: None,
             },
-            &AggregateFun::Avg => AggregateFunImpls {
+            AggregateFun::Avg => AggregateFunImpls {
                 init: Some(AggregateFun::avg_init),
                 action: AggregateFun::avg,
                 extract: Some(AggregateFun::avg_final),
             },
-            &AggregateFun::Count => AggregateFunImpls {
+            AggregateFun::Count => AggregateFunImpls {
                 init: Some(AggregateFun::count_init),
                 action: AggregateFun::count,
                 extract: None,
@@ -96,7 +100,7 @@ impl AggregateFun {
     fn sum(existing: &mut JsonValue, new: JsonValue, user_arg: Option<&JsonValue>) {
         match new {
             JsonValue::Number(new) => {
-                if let &mut JsonValue::Number(ref mut existing) = existing {
+                if let JsonValue::Number(ref mut existing) = *existing {
                     *existing += new;
                 }
             }
@@ -135,12 +139,10 @@ impl AggregateFun {
             for v in vec {
                 AggregateFun::max_array(existing, v, user_arg);
             }
-        } else {
-            if let &mut JsonValue::Array(_) = existing {
-                *existing = new;
-            } else if (*existing).cmp(&new) == Ordering::Less {
-                *existing = new;
-            }
+        } else if let JsonValue::Array(_) = *existing {
+            *existing = new;
+        } else if (*existing).cmp(&new) == Ordering::Less {
+            *existing = new;
         }
     }
 
@@ -158,12 +160,10 @@ impl AggregateFun {
             for v in vec {
                 AggregateFun::min_array(existing, v, user_arg);
             }
-        } else {
-            if let &mut JsonValue::Array(_) = existing {
-                *existing = new;
-            } else if (*existing).cmp(&new) == Ordering::Greater {
-                *existing = new;
-            }
+        } else if let JsonValue::Array(_) = *existing {
+            *existing = new;
+        } else if (*existing).cmp(&new) == Ordering::Greater {
+            *existing = new;
         }
     }
 
@@ -172,7 +172,7 @@ impl AggregateFun {
     }
 
     fn array(existing: &mut JsonValue, new: JsonValue, _user_arg: Option<&JsonValue>) {
-        if let &mut JsonValue::Array(ref mut existing) = existing {
+        if let JsonValue::Array(ref mut existing) = *existing {
             existing.push(new);
         }
     }
@@ -188,10 +188,8 @@ impl AggregateFun {
             for v in vec.into_iter() {
                 AggregateFun::array_flat(existing, v, user_arg);
             }
-        } else {
-            if let &mut JsonValue::Array(ref mut existing) = existing {
-                existing.push(new);
-            }
+        } else if let JsonValue::Array(ref mut existing) = *existing {
+            existing.push(new);
         }
     }
 
@@ -204,10 +202,10 @@ impl AggregateFun {
     }
 
     fn concat(existing: &mut JsonValue, new: JsonValue, user_arg: Option<&JsonValue>) {
-        if let &mut JsonValue::String(ref mut existing) = existing {
+        if let JsonValue::String(ref mut existing) = *existing {
             if let JsonValue::String(new) = new {
                 if let Some(&JsonValue::String(ref user_arg)) = user_arg {
-                    existing.push_str(&user_arg);
+                    existing.push_str(user_arg);
                     existing.push_str(&new);
                 }
             }
@@ -228,15 +226,15 @@ impl AggregateFun {
 
     fn avg(existing: &mut JsonValue, new: JsonValue, user_arg: Option<&JsonValue>) {
         if let JsonValue::Number(new) = new {
-            if let &mut JsonValue::Array(ref mut array) = existing {
-                let mut avg = if let &JsonValue::Number(ref avg) = &array[0] {
+            if let JsonValue::Array(ref mut array) = *existing {
+                let mut avg = if let JsonValue::Number(ref avg) = array[0] {
                     *avg
                 } else {
                     // can't happen but compiler need this here
                     1.0
                 };
 
-                let mut count = if let &JsonValue::Number(ref count) = &array[1] {
+                let mut count = if let JsonValue::Number(ref count) = array[1] {
                     *count
                 } else {
                     // can't happen but compiler need this here
@@ -256,9 +254,9 @@ impl AggregateFun {
     }
 
     fn avg_final(existing: &mut JsonValue) {
-        let json = if let &mut JsonValue::Array(ref mut array) = existing {
-            if let &JsonValue::Number(ref avg) = &array[0] {
-                if let &JsonValue::Number(ref count) = &array[1] {
+        let json = if let JsonValue::Array(ref mut array) = *existing {
+            if let JsonValue::Number(ref avg) = array[0] {
+                if let JsonValue::Number(ref count) = array[1] {
                     if *count == 0.0 {
                         JsonValue::Null
                     } else {
@@ -284,7 +282,7 @@ impl AggregateFun {
     }
 
     fn count(existing: &mut JsonValue, _: JsonValue, _user_arg: Option<&JsonValue>) {
-        if let &mut JsonValue::Number(ref mut num) = existing {
+        if let JsonValue::Number(ref mut num) = *existing {
             *num += 1.0;
         }
     }
