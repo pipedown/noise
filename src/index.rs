@@ -149,7 +149,7 @@ impl Index {
             }
         } else {
             // no doc id supplied in document, so we create a random one.
-            let docid = Uuid::new_v4().to_simple().to_string();
+            let docid = Uuid::new_v4().simple().to_string();
             shredder.add_id(&docid)?;
             self.high_doc_seq += 1;
             (self.high_doc_seq, docid)
