@@ -5,7 +5,6 @@ extern crate varint;
 use std::collections::{BTreeMap, HashMap};
 use std::io::Cursor;
 use std::io::Write;
-use std::mem::transmute;
 use std::str::Chars;
 use std::{self, f64, str};
 
@@ -510,18 +509,10 @@ impl Shredder {
                     }
                     if self.maybe_geometry == 2 {
                         let mut encoded_bbox = Vec::new();
-                        encoded_bbox.extend_from_slice(&unsafe {
-                            transmute::<f64, [u8; 8]>(self.bounding_box[0])
-                        });
-                        encoded_bbox.extend_from_slice(&unsafe {
-                            transmute::<f64, [u8; 8]>(self.bounding_box[2])
-                        });
-                        encoded_bbox.extend_from_slice(&unsafe {
-                            transmute::<f64, [u8; 8]>(self.bounding_box[1])
-                        });
-                        encoded_bbox.extend_from_slice(&unsafe {
-                            transmute::<f64, [u8; 8]>(self.bounding_box[3])
-                        });
+                        encoded_bbox.extend_from_slice(&self.bounding_box[0].to_le_bytes());
+                        encoded_bbox.extend_from_slice(&self.bounding_box[2].to_le_bytes());
+                        encoded_bbox.extend_from_slice(&self.bounding_box[1].to_le_bytes());
+                        encoded_bbox.extend_from_slice(&self.bounding_box[3].to_le_bytes());
 
                         let _ = self.add_value('r', encoded_bbox.as_slice());
                     }
@@ -561,18 +552,18 @@ impl Shredder {
                 Some(JsonEvent::I64Value(i)) => {
                     let f = i as f64;
                     self.calc_mbb(f);
-                    let bytes = unsafe { transmute::<f64, [u8; 8]>(f) };
+                    let bytes = f.to_le_bytes();
                     self.maybe_add_value(&parser, 'f', &bytes[..])?;
                 }
                 Some(JsonEvent::U64Value(u)) => {
                     let f = u as f64;
                     self.calc_mbb(f);
-                    let bytes = unsafe { transmute::<f64, [u8; 8]>(f) };
+                    let bytes = f.to_le_bytes();
                     self.maybe_add_value(&parser, 'f', &bytes[..])?;
                 }
                 Some(JsonEvent::F64Value(f)) => {
                     self.calc_mbb(f);
-                    let bytes = unsafe { transmute::<f64, [u8; 8]>(f) };
+                    let bytes = f.to_le_bytes();
                     self.maybe_add_value(&parser, 'f', &bytes[..])?;
                 }
                 Some(JsonEvent::NullValue) => {

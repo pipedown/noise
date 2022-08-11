@@ -12,7 +12,7 @@ pub struct Stems<'a> {
     word_position: usize,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Eq, Debug, PartialEq)]
 pub struct StemmedWord {
     // Where the stemmed word starts
     pub word_pos: u32,

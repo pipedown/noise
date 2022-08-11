@@ -116,8 +116,8 @@ impl QueryRuntimeFilter for StemmedWordFilter {
         }
     }
 
-    fn prepare_relevancy_scoring(&mut self, mut qsi: &mut QueryScoringInfo) {
-        self.scorer.init(&mut qsi);
+    fn prepare_relevancy_scoring(&mut self, qsi: &mut QueryScoringInfo) {
+        self.scorer.init(qsi);
     }
 
     fn check_double_not(&self, _parent_is_neg: bool) -> Result<(), Error> {
@@ -167,8 +167,8 @@ impl StemmedWordPosFilter {
         }
     }
 
-    fn prepare_relevancy_scoring(&mut self, mut qsi: &mut QueryScoringInfo) {
-        self.scorer.init(&mut qsi);
+    fn prepare_relevancy_scoring(&mut self, qsi: &mut QueryScoringInfo) {
+        self.scorer.init(qsi);
     }
 }
 
@@ -256,9 +256,9 @@ impl QueryRuntimeFilter for StemmedPhraseFilter {
         self.result(base_result)
     }
 
-    fn prepare_relevancy_scoring(&mut self, mut qsi: &mut QueryScoringInfo) {
+    fn prepare_relevancy_scoring(&mut self, qsi: &mut QueryScoringInfo) {
         for f in self.filters.iter_mut() {
-            f.prepare_relevancy_scoring(&mut qsi);
+            f.prepare_relevancy_scoring(qsi);
         }
     }
 
@@ -408,7 +408,7 @@ impl QueryRuntimeFilter for RangeFilter {
     fn first_result(&mut self, start: &DocResult) -> Option<DocResult> {
         let mut value_key = {
             // `min` and `max` have the save type, so picking one is OK
-            let range_operator = self.min.as_ref().or_else(|| self.max.as_ref()).unwrap();
+            let range_operator = self.min.as_ref().or(self.max.as_ref()).unwrap();
             match range_operator {
                 &RangeOperator::Inclusive(_) | &RangeOperator::Exclusive(_) => {
                     self.kb.number_key(start.seq)
@@ -511,10 +511,10 @@ pub struct BboxFilter<'a> {
 impl<'a> BboxFilter<'a> {
     pub fn new(snapshot: Rc<Snapshot<'a>>, kb: KeyBuilder, bbox: [f64; 4]) -> BboxFilter<'a> {
         let mut bbox_vec = Vec::with_capacity(32);
-        bbox_vec.extend_from_slice(&unsafe { mem::transmute::<f64, [u8; 8]>(bbox[0]) });
-        bbox_vec.extend_from_slice(&unsafe { mem::transmute::<f64, [u8; 8]>(bbox[2]) });
-        bbox_vec.extend_from_slice(&unsafe { mem::transmute::<f64, [u8; 8]>(bbox[1]) });
-        bbox_vec.extend_from_slice(&unsafe { mem::transmute::<f64, [u8; 8]>(bbox[3]) });
+        bbox_vec.extend_from_slice(&bbox[0].to_le_bytes());
+        bbox_vec.extend_from_slice(&bbox[2].to_le_bytes());
+        bbox_vec.extend_from_slice(&bbox[1].to_le_bytes());
+        bbox_vec.extend_from_slice(&bbox[3].to_le_bytes());
 
         BboxFilter {
             snapshot,
@@ -709,9 +709,9 @@ impl QueryRuntimeFilter for DistanceFilter {
         self.result(base_result)
     }
 
-    fn prepare_relevancy_scoring(&mut self, mut qsi: &mut QueryScoringInfo) {
+    fn prepare_relevancy_scoring(&mut self, qsi: &mut QueryScoringInfo) {
         for f in self.filters.iter_mut() {
-            f.prepare_relevancy_scoring(&mut qsi);
+            f.prepare_relevancy_scoring(qsi);
         }
     }
 
@@ -784,9 +784,9 @@ impl<'a> QueryRuntimeFilter for AndFilter<'a> {
         self.result(base_result)
     }
 
-    fn prepare_relevancy_scoring(&mut self, mut qsi: &mut QueryScoringInfo) {
+    fn prepare_relevancy_scoring(&mut self, qsi: &mut QueryScoringInfo) {
         for f in self.filters.iter_mut() {
-            f.prepare_relevancy_scoring(&mut qsi);
+            f.prepare_relevancy_scoring(qsi);
         }
     }
 
@@ -934,9 +934,9 @@ impl<'a> QueryRuntimeFilter for OrFilter<'a> {
         self.take_smallest()
     }
 
-    fn prepare_relevancy_scoring(&mut self, mut qsi: &mut QueryScoringInfo) {
-        self.left.filter.prepare_relevancy_scoring(&mut qsi);
-        self.right.filter.prepare_relevancy_scoring(&mut qsi);
+    fn prepare_relevancy_scoring(&mut self, qsi: &mut QueryScoringInfo) {
+        self.left.filter.prepare_relevancy_scoring(qsi);
+        self.right.filter.prepare_relevancy_scoring(qsi);
     }
 
     fn check_double_not(&self, parent_is_neg: bool) -> Result<(), Error> {
@@ -1147,8 +1147,8 @@ impl<'a> QueryRuntimeFilter for BindFilter<'a> {
         }
     }
 
-    fn prepare_relevancy_scoring(&mut self, mut qsi: &mut QueryScoringInfo) {
-        self.filter.prepare_relevancy_scoring(&mut qsi);
+    fn prepare_relevancy_scoring(&mut self, qsi: &mut QueryScoringInfo) {
+        self.filter.prepare_relevancy_scoring(qsi);
     }
 
     fn check_double_not(&self, parent_is_neg: bool) -> Result<(), Error> {
@@ -1190,8 +1190,8 @@ impl<'a> QueryRuntimeFilter for BoostFilter<'a> {
         }
     }
 
-    fn prepare_relevancy_scoring(&mut self, mut qsi: &mut QueryScoringInfo) {
-        self.filter.prepare_relevancy_scoring(&mut qsi);
+    fn prepare_relevancy_scoring(&mut self, qsi: &mut QueryScoringInfo) {
+        self.filter.prepare_relevancy_scoring(qsi);
     }
 
     fn check_double_not(&self, parent_is_neg: bool) -> Result<(), Error> {

@@ -196,10 +196,10 @@ impl JsonFetcher {
     pub fn fetch(
         &mut self,
         seq: u64,
-        mut kb_base: &mut KeyBuilder,
+        kb_base: &mut KeyBuilder,
         rp: &ReturnPath,
     ) -> Option<JsonValue> {
-        JsonFetcher::descend_return_path(&mut self.iter, seq, &mut kb_base, rp, 0)
+        JsonFetcher::descend_return_path(&mut self.iter, seq, kb_base, rp, 0)
     }
 
     pub fn bytes_to_json_value(bytes: &[u8]) -> JsonValue {

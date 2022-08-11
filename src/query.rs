@@ -451,10 +451,7 @@ impl<'a> QueryResults<'a> {
                     }
                 }
                 Some(JsonEvent::Error(error)) => {
-                    return Err(Error::Parse(format!(
-                        "Error parsing parameters: {}",
-                        error.to_string()
-                    )));
+                    return Err(Error::Parse(format!("Error parsing parameters: {}", error)));
                 }
                 None => {
                     break;

@@ -89,8 +89,8 @@ impl Index {
                 rocks.create_cf("rtree", &rtree_options)?;
 
                 let mut bytes = Vec::with_capacity(8 * 2);
-                bytes.write_all(&Index::convert_u64_to_bytes(NOISE_HEADER_VERSION))?;
-                bytes.write_all(&Index::convert_u64_to_bytes(0))?;
+                bytes.write_all(&NOISE_HEADER_VERSION.to_le_bytes())?;
+                bytes.write_all(&0u64.to_le_bytes())?;
                 rocks.put_opt(b"HDB", &bytes, &rocksdb::WriteOptions::new())?;
 
                 rocks
@@ -125,8 +125,7 @@ impl Index {
 
     //This deletes the Rockdbs instance from disk
     pub fn drop(name: &str) -> Result<(), Error> {
-        let ret = rocksdb::DB::destroy(&rocksdb::Options::default(), name)?;
-        Ok(ret)
+        rocksdb::DB::destroy(&rocksdb::Options::default(), name).map_err(Into::into)
     }
 
     pub fn add(&mut self, json: &str, batch: &mut Batch) -> Result<String, Error> {
@@ -202,7 +201,7 @@ impl Index {
                     break;
                 }
                 let key = unsafe { str::from_utf8_unchecked(&key) }.to_string();
-                let value = value.iter().copied().collect();
+                let value = value.to_vec();
                 key_values.insert(key, value);
             }
             Ok(Some((seq, key_values)))
@@ -216,12 +215,11 @@ impl Index {
         // Flush can only be called if the index is open
 
         let mut bytes = Vec::with_capacity(8 * 2);
-        bytes.write_all(&Index::convert_u64_to_bytes(NOISE_HEADER_VERSION))?;
-        bytes.write_all(&Index::convert_u64_to_bytes(self.high_doc_seq))?;
+        bytes.write_all(&NOISE_HEADER_VERSION.to_le_bytes())?;
+        bytes.write_all(&self.high_doc_seq.to_le_bytes())?;
         batch.wb.put(b"HDB", &bytes)?;
 
-        let status = self.rocks.write(batch.wb)?;
-        Ok(status)
+        self.rocks.write(batch.wb).map_err(Into::into)
     }
 
     pub fn all_keys(&self) -> Result<Vec<String>, Error> {
@@ -242,12 +240,6 @@ impl Index {
             buffer[n] = *b;
         }
         unsafe { mem::transmute(buffer) }
-    }
-
-    /// Should not be used generally since it not varint. Used for header fields
-    /// since only one header is in the database it's not a problem with excess size.
-    fn convert_u64_to_bytes(val: u64) -> [u8; 8] {
-        unsafe { mem::transmute(val) }
     }
 
     pub fn convert_bytes_to_i32(bytes: &[u8]) -> i32 {

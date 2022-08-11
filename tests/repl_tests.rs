@@ -57,10 +57,7 @@ fn test_repl() {
                 test_name, reject
             );
         } else {
-            println!(
-                "{} successful",
-                path.file_name().unwrap().to_str().unwrap().to_string()
-            );
+            println!("{} successful", path.file_name().unwrap().to_str().unwrap());
         }
     }
     if total == 0 {
