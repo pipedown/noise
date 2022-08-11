@@ -4,7 +4,7 @@ extern crate varint;
 use query::DocResult;
 use std::cmp::Ordering;
 use std::io::Cursor;
-use std::{mem, str};
+use std::str;
 
 use self::varint::VarintWrite;
 
@@ -129,10 +129,10 @@ impl KeyBuilder {
         let mut key = Vec::new();
         let mut keypath_len = Cursor::new(Vec::new());
         let _ = keypath_len.write_unsigned_varint_32(keypath.len() as u32);
-        key.append(&mut keypath_len.get_mut());
+        key.append(keypath_len.get_mut());
         key.extend_from_slice(keypath.as_bytes());
-        key.extend_from_slice(&unsafe { mem::transmute::<u64, [u8; 8]>(seq_min) });
-        key.extend_from_slice(&unsafe { mem::transmute::<u64, [u8; 8]>(seq_max) });
+        key.extend_from_slice(&seq_min.to_le_bytes());
+        key.extend_from_slice(&seq_max.to_le_bytes());
         key.extend_from_slice(bbox);
         key
     }
@@ -150,11 +150,11 @@ impl KeyBuilder {
         let mut key = Vec::new();
         let mut keypath_len = Cursor::new(Vec::new());
         let _ = keypath_len.write_unsigned_varint_32(keypath.len() as u32);
-        key.append(&mut keypath_len.get_mut());
+        key.append(keypath_len.get_mut());
         key.extend_from_slice(keypath.as_bytes());
         // The Internal Id is always only a single value, hence don't store a range, but only
         // that single valye as first dimension
-        key.extend_from_slice(&unsafe { mem::transmute::<u64, [u8; 8]>(seq) });
+        key.extend_from_slice(&seq.to_le_bytes());
         key.extend_from_slice(bbox);
         key
     }
