@@ -11,10 +11,10 @@ use std::{self, f64, str};
 use self::rustc_serialize::json::{JsonEvent, Parser, StackElement};
 use self::varint::VarintWrite;
 
-use error::Error;
-use index::Index;
-use key_builder::KeyBuilder;
-use stems::Stems;
+use crate::error::Error;
+use crate::index::Index;
+use crate::key_builder::KeyBuilder;
+use crate::stems::Stems;
 
 // Good example of using rustc_serialize:
 //   https://github.com/ajroetker/beautician/blob/master/src/lib.rs
@@ -591,9 +591,9 @@ mod tests {
     use std::io::Cursor;
     use std::str;
 
-    use index::{Index, OpenOptions};
-    use json_value::JsonValue;
-    use snapshot::JsonFetcher;
+    use crate::index::{Index, OpenOptions};
+    use crate::json_value::JsonValue;
+    use crate::snapshot::JsonFetcher;
 
     fn positions_from_rocks(rocks: &rocksdb::DB) -> Vec<(String, Vec<u32>)> {
         let mut result = Vec::new();

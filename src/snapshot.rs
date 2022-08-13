@@ -9,11 +9,11 @@ use std::mem::transmute;
 use std::str;
 
 use self::varint::VarintRead;
-use index::Index;
-use json_value::JsonValue;
-use key_builder::{KeyBuilder, Segment};
-use query::{DocResult, QueryScoringInfo};
-use returnable::{PathSegment, ReturnPath};
+use crate::index::Index;
+use crate::json_value::JsonValue;
+use crate::key_builder::{KeyBuilder, Segment};
+use crate::query::{DocResult, QueryScoringInfo};
+use crate::returnable::{PathSegment, ReturnPath};
 
 pub struct Snapshot<'a> {
     rocks: RocksSnapshot<'a>,

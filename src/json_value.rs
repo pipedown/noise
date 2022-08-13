@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 use std::io::Write;
 use std::str;
 
-use error::Error;
+use crate::error::Error;
 
 #[derive(PartialEq, Clone, Debug)]
 pub enum JsonValue {

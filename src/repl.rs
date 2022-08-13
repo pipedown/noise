@@ -1,5 +1,5 @@
-use index::{Batch, Index, OpenOptions};
-use json_value::{JsonValue, PrettyPrint};
+use crate::index::{Batch, Index, OpenOptions};
+use crate::json_value::{JsonValue, PrettyPrint};
 
 use std::io::{BufRead, Write};
 use std::mem;

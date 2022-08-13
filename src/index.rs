@@ -20,11 +20,11 @@ use rocksdb::{
     Snapshot as RocksSnapshot,
 };
 
-use error::Error;
-use json_shred::{KeyValues, Shredder};
-use key_builder::{self, KeyBuilder};
-use query::QueryResults;
-use snapshot::Snapshot;
+use crate::error::Error;
+use crate::json_shred::{KeyValues, Shredder};
+use crate::key_builder::{self, KeyBuilder};
+use crate::query::QueryResults;
+use crate::snapshot::Snapshot;
 
 const NOISE_HEADER_VERSION: u64 = 1;
 
@@ -418,8 +418,8 @@ unsafe impl<T> Sync for MvccRwLock<T> {}
 mod tests {
     extern crate rocksdb;
     use super::{Batch, Index, MvccRwLock, OpenOptions};
-    use json_value::JsonValue;
-    use snapshot::JsonFetcher;
+    use crate::json_value::JsonValue;
+    use crate::snapshot::JsonFetcher;
     use std::str;
     use std::sync::mpsc::channel;
     use std::sync::Arc;
