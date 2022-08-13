@@ -1,6 +1,6 @@
 use std::cmp::Ordering;
 
-use json_value::JsonValue;
+use crate::json_value::JsonValue;
 
 pub type AggregateInitFun = fn(JsonValue) -> JsonValue;
 pub type AggregateActionFun = fn(&mut JsonValue, JsonValue, Option<&JsonValue>);

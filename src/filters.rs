@@ -9,12 +9,12 @@ use std::{self, mem, str};
 
 use self::varint::VarintRead;
 
-use error::Error;
-use json_value::JsonValue;
-use key_builder::KeyBuilder;
-use query::{DocResult, QueryScoringInfo};
+use crate::error::Error;
+use crate::json_value::JsonValue;
+use crate::key_builder::KeyBuilder;
+use crate::query::{DocResult, QueryScoringInfo};
+use crate::snapshot::{AllDocsIterator, DocResultIterator, JsonFetcher, Scorer, Snapshot};
 use rocksdb::{self, DBIterator, IteratorMode};
-use snapshot::{AllDocsIterator, DocResultIterator, JsonFetcher, Scorer, Snapshot};
 
 pub trait QueryRuntimeFilter {
     fn first_result(&mut self, start: &DocResult) -> Option<DocResult>;

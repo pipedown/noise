@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 use std::collections::VecDeque;
 
-use aggregates::AggregateFun;
-use json_value::JsonValue;
-use key_builder::KeyBuilder;
-use query::OrderInfo;
-use snapshot::JsonFetcher;
+use crate::aggregates::AggregateFun;
+use crate::json_value::JsonValue;
+use crate::key_builder::KeyBuilder;
+use crate::query::OrderInfo;
+use crate::snapshot::JsonFetcher;
 
 #[derive(Clone)]
 pub enum PathSegment {

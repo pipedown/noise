@@ -10,13 +10,13 @@ use std::str;
 use std::usize;
 
 use self::rustc_serialize::json::{JsonEvent, Parser as JsonParser, StackElement};
-use aggregates::{AggregateActionFun, AggregateExtractFun, AggregateFun, AggregateInitFun};
-use error::Error;
-use filters::QueryRuntimeFilter;
-use json_value::JsonValue;
-use parser::Parser;
-use returnable::{RetHidden, RetScore, RetValue, ReturnPath, Returnable};
-use snapshot::{JsonFetcher, Snapshot};
+use crate::aggregates::{AggregateActionFun, AggregateExtractFun, AggregateFun, AggregateInitFun};
+use crate::error::Error;
+use crate::filters::QueryRuntimeFilter;
+use crate::json_value::JsonValue;
+use crate::parser::Parser;
+use crate::returnable::{RetHidden, RetScore, RetValue, ReturnPath, Returnable};
+use crate::snapshot::{JsonFetcher, Snapshot};
 
 #[derive(Clone)]
 pub struct DocResult {
@@ -800,7 +800,7 @@ pub struct OrderInfo {
 mod tests {
     extern crate rustc_serialize;
 
-    use index::{Batch, Index, OpenOptions};
+    use crate::index::{Batch, Index, OpenOptions};
 
     #[test]
     fn test_query_hello_world() {

@@ -1,27 +1,26 @@
 #![allow(clippy::collapsible_else_if)]
 
-use std;
 use std::collections::HashMap;
 use std::iter::Iterator;
 use std::rc::Rc;
 use std::str;
 use std::usize;
 
-use aggregates::AggregateFun;
-use error::Error;
-use filters::{
+use crate::aggregates::AggregateFun;
+use crate::error::Error;
+use crate::filters::{
     AllDocsFilter, AndFilter, BboxFilter, BindFilter, BoostFilter, DistanceFilter,
     ExactMatchFilter, NotFilter, OrFilter, QueryRuntimeFilter, RangeFilter, RangeOperator,
     StemmedPhraseFilter, StemmedWordFilter, StemmedWordPosFilter,
 };
-use json_value::JsonValue;
-use key_builder::KeyBuilder;
-use query::{Order, OrderField, OrderInfo};
-use returnable::{
+use crate::json_value::JsonValue;
+use crate::key_builder::KeyBuilder;
+use crate::query::{Order, OrderField, OrderInfo};
+use crate::returnable::{
     RetArray, RetBind, RetLiteral, RetObject, RetScore, RetValue, ReturnPath, Returnable,
 };
-use snapshot::Snapshot;
-use stems::Stems;
+use crate::snapshot::Snapshot;
+use crate::stems::Stems;
 
 /// A boost value of 1.0 is equal to no boosting.
 const NO_BOOST: f32 = 1.0;
@@ -1421,7 +1420,7 @@ mod tests {
 
     use super::Parser;
 
-    use index::{Index, OpenOptions};
+    use crate::index::{Index, OpenOptions};
     use std::collections::HashMap;
     use std::rc::Rc;
 

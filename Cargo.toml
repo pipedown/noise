@@ -8,6 +8,7 @@ license = "MIT OR Apache-2.0"
 readme = "README.md"
 description = "Nested Object Inverted Search Engine"
 build = "build.rs"
+edition = "2021"
 
 [lib]
 name = "noise_search"

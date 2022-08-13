@@ -1,7 +1,7 @@
 extern crate unicode_normalization;
 extern crate varint;
 
-use query::DocResult;
+use crate::query::DocResult;
 use std::cmp::Ordering;
 use std::io::Cursor;
 use std::str;
@@ -553,7 +553,7 @@ impl Default for KeyBuilder {
 #[cfg(test)]
 mod tests {
     use super::KeyBuilder;
-    use query::DocResult;
+    use crate::query::DocResult;
 
     #[test]
     fn test_segments_push() {
