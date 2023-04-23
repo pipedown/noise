@@ -326,7 +326,19 @@ impl Returnable for RetValue {
     }
 
     fn take_order_for_matching_fields(&mut self, map: &mut HashMap<String, OrderInfo>) {
-        self.order_info = map.remove(&self.rp.to_key());
+        // Compare the default values of the to be removed order info with the default value for
+        // the return value. If they are equal, the order can be safely removed, as the ordering
+        // of the result will be the same.
+        // If they are not equal, then we need to keep the order else the final result would be
+        // sorted by the values of the result and not of the orde clause.
+        let keypath = &self.rp.to_key();
+        let remove_order = match map.get(keypath) {
+            Some(order_info) => order_info.default == self.default,
+            None => false,
+        };
+        if remove_order {
+            self.order_info = map.remove(keypath);
+        }
     }
 
     fn get_ordering(&mut self, orders: &mut Vec<Option<OrderInfo>>) {
