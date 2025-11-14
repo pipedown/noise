@@ -1,27 +1,18 @@
 extern crate rocksdb;
-extern crate rustc_serialize;
 extern crate varint;
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::Cursor;
 use std::io::Write;
-use std::str::Chars;
 use std::{self, f64, str};
 
-use self::rustc_serialize::json::{JsonEvent, Parser, StackElement};
 use self::varint::VarintWrite;
+use serde_json::{self, Value as SerdeJsonValue};
 
 use crate::error::Error;
 use crate::index::Index;
 use crate::key_builder::KeyBuilder;
 use crate::stems::Stems;
-
-// Good example of using rustc_serialize:
-//   https://github.com/ajroetker/beautician/blob/master/src/lib.rs
-// Callback based JSON streaming parser:
-//   https://github.com/gyscos/json-streamer.rs
-// Another parser pased on rustc_serializ:
-//   https://github.com/isagalaev/ijson-rust/blob/master/src/test.rs#L11
 
 /// Key-value pairs, where the key is the path to the value, the value is the actual value.
 pub(crate) type KeyValues = BTreeMap<String, Vec<u8>>;
@@ -46,23 +37,34 @@ enum ObjectKeyTypes {
 }
 
 #[derive(Debug)]
+struct GeometryState {
+    seen_type: bool,
+    seen_coordinates: bool,
+    coordinates_depth: u32,
+    is_first: bool,
+    bounding_box: [f64; 4],
+}
+
+impl GeometryState {
+    fn new() -> Self {
+        GeometryState {
+            seen_type: false,
+            seen_coordinates: false,
+            coordinates_depth: 0,
+            is_first: true,
+            bounding_box: [f64::MAX, f64::MAX, f64::MIN, f64::MIN],
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct Shredder {
     kb: KeyBuilder,
     doc_id: Option<String>,
     object_keys_indexed: Vec<bool>,
     shredded_key_values: KeyValues,
     existing_key_value_to_delete: KeyValues,
-    // Whether the current object is a GeoJSON geometry or not. It's a counter that increases
-    // the more of the geometry was seen. It is increased for the following cases:
-    //  - a `type` field with a valid GeoJSON geometry type as value
-    //  - a `coordinates` field with an array with numbers. It is not verified if the coordinates
-    //    actually match the type.
-    // So if it is equal to 2, it is considered being a proper GeoJSON geometry
-    maybe_geometry: u8,
-    // Currently only 2D GeoJSON is supported. Hence only distinguish between first and other
-    // coordinates
-    is_first: bool,
-    bounding_box: [f64; 4],
+    geometry_stack: Vec<GeometryState>,
 }
 
 impl Shredder {
@@ -73,9 +75,7 @@ impl Shredder {
             object_keys_indexed: Vec::new(),
             shredded_key_values: BTreeMap::new(),
             existing_key_value_to_delete: BTreeMap::new(),
-            maybe_geometry: 0,
-            is_first: true,
-            bounding_box: [f64::MAX, f64::MAX, f64::MIN, f64::MIN],
+            geometry_stack: Vec::new(),
         }
     }
 
@@ -208,15 +208,17 @@ impl Shredder {
     }
 
     fn calc_mbb(&mut self, value: f64) {
-        if self.maybe_geometry > 0 {
-            if self.is_first {
-                self.bounding_box[0] = self.bounding_box[0].min(value);
-                self.bounding_box[2] = self.bounding_box[0].max(value);
-            } else {
-                self.bounding_box[1] = self.bounding_box[1].min(value);
-                self.bounding_box[3] = self.bounding_box[3].max(value);
+        if let Some(state) = self.geometry_stack.last_mut() {
+            if state.coordinates_depth > 0 {
+                if state.is_first {
+                    state.bounding_box[0] = state.bounding_box[0].min(value);
+                    state.bounding_box[2] = state.bounding_box[0].max(value);
+                } else {
+                    state.bounding_box[1] = state.bounding_box[1].min(value);
+                    state.bounding_box[3] = state.bounding_box[3].max(value);
+                }
+                state.is_first = !state.is_first;
             }
-            self.is_first = !self.is_first;
         }
     }
 
@@ -229,13 +231,8 @@ impl Shredder {
         Ok(())
     }
 
-    fn maybe_add_value(
-        &mut self,
-        parser: &Parser<Chars>,
-        code: char,
-        value: &[u8],
-    ) -> Result<(), Error> {
-        match self.extract_key(parser.stack().top()) {
+    fn maybe_add_value(&mut self, key: Option<&str>, code: char, value: &[u8]) -> Result<(), Error> {
+        match self.extract_key(key) {
             ObjectKeyTypes::Id => {
                 if code != 's' && self.kb.kp_segments_len() == 1 {
                     //nested fields can be _id, not root fields
@@ -250,14 +247,6 @@ impl Shredder {
                 self.add_value(code, value)?;
             }
             ObjectKeyTypes::Key(key) => {
-                if key == "type" {
-                    let is_valid_type = GEOJSON_TYPES
-                        .iter()
-                        .position(|&tt| tt == unsafe { str::from_utf8_unchecked(value) });
-                    if is_valid_type.is_some() {
-                        self.maybe_geometry += 1;
-                    }
-                }
                 // Pop the dummy object that makes ObjectEnd happy
                 // or the previous object key
                 self.kb.pop_object_key();
@@ -276,9 +265,9 @@ impl Shredder {
     // Extract key if it exists and indicates if it's a special type of key
     // It is called when the value is a primitive type. If it is an array or object, then
     // `maybe_push_key` is called.
-    fn extract_key(&mut self, stack_element: Option<StackElement>) -> ObjectKeyTypes {
-        match stack_element {
-            Some(StackElement::Key(key)) => {
+    fn extract_key(&mut self, key: Option<&str>) -> ObjectKeyTypes {
+        match key {
+            Some(key) => {
                 if self.kb.kp_segments_len() == 1 && key == "_id" {
                     ObjectKeyTypes::Id
                 } else {
@@ -293,12 +282,9 @@ impl Shredder {
     // Don't push them if they are reserved fields (starting with underscore)
     // It is called when the value is an array or object. If it is a primitive type, then
     // `extract_key` is called.
-    fn maybe_push_key(
-        &mut self,
-        stack_element: Option<StackElement>,
-    ) -> Result<Option<String>, Error> {
-        match stack_element {
-            Some(StackElement::Key(key)) => {
+    fn maybe_push_key(&mut self, key: Option<&str>) -> Result<Option<String>, Error> {
+        match key {
+            Some(key) => {
                 if self.kb.kp_segments_len() == 1 && key == "_id" {
                     return Err(Error::Shred(
                         "Expected string for `_id` field, got another type".to_string(),
@@ -314,6 +300,120 @@ impl Shredder {
             }
             _ => Ok(None),
         }
+    }
+
+    fn walk_value(&mut self, key: Option<&str>, value: &SerdeJsonValue) -> Result<(), Error> {
+        match value {
+            SerdeJsonValue::Object(map) => self.walk_object(key, map),
+            SerdeJsonValue::Array(values) => self.walk_array(key, values),
+            SerdeJsonValue::String(text) => {
+                if let Some("type") = key {
+                    if GEOJSON_TYPES
+                        .iter()
+                        .any(|&tt| tt == text.as_str())
+                    {
+                        if let Some(state) = self.geometry_stack.last_mut() {
+                            state.seen_type = true;
+                        }
+                    }
+                }
+                self.maybe_add_value(key, 's', text.as_bytes())
+            }
+            SerdeJsonValue::Bool(tf) => {
+                let code = if *tf { 'T' } else { 'F' };
+                self.maybe_add_value(key, code, &[])
+            }
+            SerdeJsonValue::Number(num) => {
+                if let Some(i) = num.as_i64() {
+                    let f = i as f64;
+                    self.calc_mbb(f);
+                    self.maybe_add_value(key, 'f', &f.to_le_bytes())
+                } else if let Some(u) = num.as_u64() {
+                    let f = u as f64;
+                    self.calc_mbb(f);
+                    self.maybe_add_value(key, 'f', &f.to_le_bytes())
+                } else if let Some(f) = num.as_f64() {
+                    self.calc_mbb(f);
+                    self.maybe_add_value(key, 'f', &f.to_le_bytes())
+                } else {
+                    Err(Error::Shred("Unable to parse number value".to_string()))
+                }
+            }
+            SerdeJsonValue::Null => self.maybe_add_value(key, 'N', &[]),
+        }
+    }
+
+    fn walk_object(
+        &mut self,
+        key: Option<&str>,
+        map: &serde_json::Map<String, SerdeJsonValue>,
+    ) -> Result<(), Error> {
+        self.maybe_push_key(key)?;
+        self.kb.push_object_key("");
+        self.object_keys_indexed.push(false);
+        self.geometry_stack.push(GeometryState::new());
+
+        for (child_key, child_value) in map.iter() {
+            self.walk_value(Some(child_key), child_value)?;
+        }
+
+        self.kb.pop_object_key();
+        let indexed = self.object_keys_indexed.pop().unwrap_or(false);
+        if self.kb.kp_segments_len() > 0 && !indexed {
+            self.maybe_add_value(key, 'o', &[])?;
+        }
+
+        if let Some(state) = self.geometry_stack.pop() {
+            if state.seen_type && state.seen_coordinates {
+                let mut encoded_bbox = Vec::new();
+                encoded_bbox.extend_from_slice(&state.bounding_box[0].to_le_bytes());
+                encoded_bbox.extend_from_slice(&state.bounding_box[2].to_le_bytes());
+                encoded_bbox.extend_from_slice(&state.bounding_box[1].to_le_bytes());
+                encoded_bbox.extend_from_slice(&state.bounding_box[3].to_le_bytes());
+                let _ = self.add_value('r', encoded_bbox.as_slice());
+            }
+        }
+
+        self.kb.inc_top_array_index();
+        Ok(())
+    }
+
+    fn walk_array(&mut self, key: Option<&str>, values: &[SerdeJsonValue]) -> Result<(), Error> {
+        self.maybe_push_key(key)?;
+        let mut increased_depth = false;
+        if let Some(state) = self.geometry_stack.last_mut() {
+            if key == Some("coordinates") {
+                state.seen_coordinates = true;
+                state.coordinates_depth += 1;
+                increased_depth = true;
+            } else if state.coordinates_depth > 0 {
+                state.coordinates_depth += 1;
+                increased_depth = true;
+            }
+        }
+        self.kb.push_array();
+
+        if values.is_empty() {
+            self.kb.pop_array();
+            self.maybe_add_value(key, 'a', &[])?;
+            self.kb.inc_top_array_index();
+            return Ok(());
+        }
+
+        for value in values {
+            self.walk_value(None, value)?;
+        }
+
+        self.kb.pop_array();
+        if increased_depth {
+            if let Some(state) = self.geometry_stack.last_mut() {
+                if state.coordinates_depth > 0 {
+                    state.coordinates_depth -= 1;
+                }
+            }
+        }
+        self.kb.inc_top_array_index();
+        Ok(())
     }
 
     pub fn add_all_to_batch(
@@ -488,95 +588,17 @@ impl Shredder {
     }
 
     pub fn shred(&mut self, json: &str) -> Result<Option<String>, Error> {
-        let mut parser = Parser::new(json.chars());
-        loop {
-            // Get the next token, so that in case of an `ObjectStart` the key is already
-            // on the stack.
-            match parser.next().take() {
-                Some(JsonEvent::ObjectStart) => {
-                    self.maybe_push_key(parser.stack().top())?;
-                    // Just push something to make `ObjectEnd` happy
-                    self.kb.push_object_key("");
-                    self.object_keys_indexed.push(false);
-                }
-                Some(JsonEvent::ObjectEnd) => {
-                    self.kb.pop_object_key();
-                    if self.kb.kp_segments_len() > 0 && !self.object_keys_indexed.pop().unwrap() {
-                        // this means we never wrote a key because the object was empty.
-                        // So preserve the empty object by writing a special value.
-                        // but not for the root object. it will always have _id field added.
-                        self.maybe_add_value(&parser, 'o', &[])?;
-                    }
-                    if self.maybe_geometry == 2 {
-                        let mut encoded_bbox = Vec::new();
-                        encoded_bbox.extend_from_slice(&self.bounding_box[0].to_le_bytes());
-                        encoded_bbox.extend_from_slice(&self.bounding_box[2].to_le_bytes());
-                        encoded_bbox.extend_from_slice(&self.bounding_box[1].to_le_bytes());
-                        encoded_bbox.extend_from_slice(&self.bounding_box[3].to_le_bytes());
+        self.doc_id = None;
+        self.kb.clear();
+        self.object_keys_indexed.clear();
+        self.shredded_key_values.clear();
+        self.existing_key_value_to_delete.clear();
+        self.geometry_stack.clear();
 
-                        let _ = self.add_value('r', encoded_bbox.as_slice());
-                    }
-                    // Reset the values as it either wasn't a valid geometry, or it was already
-                    // succcessfully processed
-                    self.maybe_geometry = 0;
-                    self.bounding_box = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
+        let value: SerdeJsonValue =
+            serde_json::from_str(json).map_err(|err| Error::Shred(err.to_string()))?;
+        self.walk_value(None, &value)?;
 
-                    self.kb.inc_top_array_index();
-                }
-                Some(JsonEvent::ArrayStart) => {
-                    let key = self.maybe_push_key(parser.stack().top())?;
-                    if key == Some("coordinates".to_string()) {
-                        self.maybe_geometry += 1;
-                    }
-                    self.kb.push_array();
-                }
-                #[allow(clippy::branches_sharing_code)] // false positive
-                Some(JsonEvent::ArrayEnd) => {
-                    if self.kb.peek_array_index() == 0 {
-                        // this means we never wrote a value because the object was empty.
-                        // So preserve the empty array by writing a special value.
-                        self.kb.pop_array();
-                        self.maybe_add_value(&parser, 'a', &[])?;
-                    } else {
-                        self.kb.pop_array();
-                    }
-                    self.kb.inc_top_array_index();
-                }
-                Some(JsonEvent::StringValue(value)) => {
-                    self.maybe_add_value(&parser, 's', value.as_bytes())?;
-                }
-                Some(JsonEvent::BooleanValue(tf)) => {
-                    let code = if tf { 'T' } else { 'F' };
-                    self.maybe_add_value(&parser, code, &[])?;
-                }
-                Some(JsonEvent::I64Value(i)) => {
-                    let f = i as f64;
-                    self.calc_mbb(f);
-                    let bytes = f.to_le_bytes();
-                    self.maybe_add_value(&parser, 'f', &bytes[..])?;
-                }
-                Some(JsonEvent::U64Value(u)) => {
-                    let f = u as f64;
-                    self.calc_mbb(f);
-                    let bytes = f.to_le_bytes();
-                    self.maybe_add_value(&parser, 'f', &bytes[..])?;
-                }
-                Some(JsonEvent::F64Value(f)) => {
-                    self.calc_mbb(f);
-                    let bytes = f.to_le_bytes();
-                    self.maybe_add_value(&parser, 'f', &bytes[..])?;
-                }
-                Some(JsonEvent::NullValue) => {
-                    self.maybe_add_value(&parser, 'N', &[])?;
-                }
-                Some(JsonEvent::Error(error)) => {
-                    return Err(Error::Shred(error.to_string()));
-                }
-                None => {
-                    break;
-                }
-            };
-        }
         Ok(self.doc_id.clone())
     }
 }

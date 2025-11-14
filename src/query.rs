@@ -1,5 +1,3 @@
-extern crate rustc_serialize;
-
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::collections::VecDeque;
@@ -9,7 +7,6 @@ use std::rc::Rc;
 use std::str;
 use std::usize;
 
-use self::rustc_serialize::json::{JsonEvent, Parser as JsonParser, StackElement};
 use crate::aggregates::{AggregateActionFun, AggregateExtractFun, AggregateFun, AggregateInitFun};
 use crate::error::Error;
 use crate::filters::QueryRuntimeFilter;
@@ -17,6 +14,7 @@ use crate::json_value::JsonValue;
 use crate::parser::Parser;
 use crate::returnable::{RetHidden, RetScore, RetValue, ReturnPath, Returnable};
 use crate::snapshot::{JsonFetcher, Snapshot};
+use serde_json::Value as SerdeJsonValue;
 
 #[derive(Clone)]
 pub struct DocResult {
@@ -224,7 +222,7 @@ impl<'a> QueryResults<'a> {
             return Err(Error::Parse(
                 "query cannot be made up of only logical not. Must have at \
                                      least one match clause not negated."
-                    .to_string(),
+                    .to_owned(),
             ));
         }
 
@@ -242,7 +240,7 @@ impl<'a> QueryResults<'a> {
 
         returnable = if has_ordering && has_ags {
             return Err(Error::Parse(
-                "Cannot have aggregates and ordering in the same query".to_string(),
+                "Cannot have aggregates and ordering in the same query".to_owned(),
             ));
         } else if has_ordering {
             returnable.take_order_for_matching_fields(&mut orders);
@@ -282,9 +280,8 @@ impl<'a> QueryResults<'a> {
             for option_ag in ags.iter() {
                 if option_ag.is_none() {
                     return Err(Error::Parse(
-                        "Return keypaths must either all have \
-                        aggregate functions, or none can them."
-                            .to_string(),
+                        "Return keypaths must either all have aggregate functions, or none can them."
+                            .to_owned(),
                     ));
                 }
             }
@@ -383,81 +380,39 @@ impl<'a> QueryResults<'a> {
     }
 
     fn parse_parameters(params: &str) -> Result<HashMap<String, JsonValue>, Error> {
-        let mut parser = JsonParser::new(params.chars());
         let err_msg: String = "Parameterized query values must be String, Number, /
         True, False, or Null"
-            .to_string();
-        if parser.next().take() != Some(JsonEvent::ObjectStart) {
-            return Err(Error::Parse("Parameters must be json object".to_string()));
-        }
+            .to_owned();
+        let value: SerdeJsonValue =
+            serde_json::from_str(params).map_err(|err| Error::Parse(err.to_string()))?;
+        let object = match value {
+            SerdeJsonValue::Object(map) => map,
+            _ => return Err(Error::Parse("Parameters must be json object".to_owned())),
+        };
+
         let mut map: HashMap<String, JsonValue> = HashMap::new();
-        loop {
-            // Get the next token, so that in case of an `ObjectStart` the key is already
-            // on the stack.
-            match parser.next().take() {
-                Some(JsonEvent::ObjectStart) => return Err(Error::Parse(err_msg)),
-                Some(JsonEvent::ObjectEnd) => (),
-                Some(JsonEvent::ArrayStart) => return Err(Error::Parse(err_msg)),
-                Some(JsonEvent::ArrayEnd) => (),
-                Some(JsonEvent::StringValue(value)) => {
-                    if let Some(StackElement::Key(key)) = parser.stack().top() {
-                        map.insert(key.to_string(), JsonValue::String(value));
+        for (key, json_value) in object {
+            let parsed_value = match json_value {
+                SerdeJsonValue::String(text) => JsonValue::String(text),
+                SerdeJsonValue::Number(number) => {
+                    if let Some(f) = number.as_f64() {
+                        JsonValue::Number(f)
+                    } else if let Some(i) = number.as_i64() {
+                        JsonValue::Number(i as f64)
+                    } else if let Some(u) = number.as_u64() {
+                        JsonValue::Number(u as f64)
                     } else {
-                        panic!("Top of stack isn't a key!");
+                        return Err(Error::Parse(err_msg.clone()));
                     }
                 }
-                Some(JsonEvent::BooleanValue(tf)) => {
-                    if let Some(StackElement::Key(key)) = parser.stack().top() {
-                        map.insert(
-                            key.to_string(),
-                            if tf {
-                                JsonValue::True
-                            } else {
-                                JsonValue::False
-                            },
-                        );
-                    } else {
-                        panic!("Top of stack isn't a key!");
-                    }
-                }
-                Some(JsonEvent::I64Value(i)) => {
-                    let f = i as f64;
-                    if let Some(StackElement::Key(key)) = parser.stack().top() {
-                        map.insert(key.to_string(), JsonValue::Number(f));
-                    } else {
-                        panic!("Top of stack isn't a key!");
-                    }
-                }
-                Some(JsonEvent::U64Value(u)) => {
-                    let f = u as f64;
-                    if let Some(StackElement::Key(key)) = parser.stack().top() {
-                        map.insert(key.to_string(), JsonValue::Number(f));
-                    } else {
-                        panic!("Top of stack isn't a key!");
-                    }
-                }
-                Some(JsonEvent::F64Value(f)) => {
-                    if let Some(StackElement::Key(key)) = parser.stack().top() {
-                        map.insert(key.to_string(), JsonValue::Number(f));
-                    } else {
-                        panic!("Top of stack isn't a key!");
-                    }
-                }
-                Some(JsonEvent::NullValue) => {
-                    if let Some(StackElement::Key(key)) = parser.stack().top() {
-                        map.insert(key.to_string(), JsonValue::Null);
-                    } else {
-                        panic!("Top of stack isn't a key!");
-                    }
-                }
-                Some(JsonEvent::Error(error)) => {
-                    return Err(Error::Parse(format!("Error parsing parameters: {}", error)));
-                }
-                None => {
-                    break;
-                }
+                SerdeJsonValue::Bool(true) => JsonValue::True,
+                SerdeJsonValue::Bool(false) => JsonValue::False,
+                SerdeJsonValue::Null => JsonValue::Null,
+                _ => return Err(Error::Parse(err_msg.clone())),
             };
+            map.insert(key, parsed_value);
         }
+
         Ok(map)
     }
 
@@ -798,8 +753,6 @@ pub struct OrderInfo {
 
 #[cfg(test)]
 mod tests {
-    extern crate rustc_serialize;
-
     use crate::index::{Batch, Index, OpenOptions};
 
     #[test]
