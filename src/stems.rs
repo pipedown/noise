@@ -21,7 +21,7 @@ pub struct StemmedWord {
 }
 
 impl<'a> Stems<'a> {
-    pub fn new(text: &str) -> Stems {
+    pub fn new(text: &'a str) -> Stems<'a> {
         Stems {
             words: text.split_word_bound_indices(),
             stemmer: Stemmer::new("english").unwrap(),

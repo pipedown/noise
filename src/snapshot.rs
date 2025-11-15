@@ -2,10 +2,10 @@ use rocksdb::{self, DBIterator, IteratorMode, Snapshot as RocksSnapshot};
 
 extern crate varint;
 
+use std::convert::TryInto;
 use std::f32;
 use std::io::Cursor;
 use std::iter::Peekable;
-use std::mem::transmute;
 use std::str;
 
 use self::varint::VarintRead;
@@ -210,11 +210,11 @@ impl JsonFetcher {
             }
             'f' => {
                 assert!(bytes.len() == 9);
-                let mut bytes2: [u8; 8] = [0; 8];
-                for (n, b) in bytes[1..9].iter().enumerate() {
-                    bytes2[n] = *b;
-                }
-                let double: f64 = unsafe { transmute(bytes2) };
+                let double = f64::from_le_bytes(
+                    bytes[1..9]
+                        .try_into()
+                        .expect("number bytes must be 8 long"),
+                );
                 JsonValue::Number(double)
             }
             'T' => JsonValue::True,

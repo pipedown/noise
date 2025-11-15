@@ -119,6 +119,15 @@ impl KeyBuilder {
     pub fn parse_seq_key(key: &str) -> Option<u64> {
         key.strip_prefix('S')?.parse().ok()
     }
+    
+    /// Get the keypath as a concatenated string
+    pub fn keypath_string(&self) -> String {
+        let mut keypath = String::with_capacity(100);
+        for segment in &self.keypath {
+            keypath.push_str(segment);
+        }
+        keypath
+    }
 
     /// Build key to query an R-tree
     pub fn rtree_query_key(&self, seq_min: u64, seq_max: u64, bbox: &[u8]) -> Vec<u8> {

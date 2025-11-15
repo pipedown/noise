@@ -13,3 +13,4 @@ pub mod repl;
 mod returnable;
 mod snapshot;
 mod stems;
+mod test_geometry;

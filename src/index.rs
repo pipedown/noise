@@ -4,10 +4,10 @@ extern crate varint;
 
 use self::uuid::Uuid;
 use std::cmp::Ordering;
+use std::convert::TryInto;
 use std::collections::{BTreeMap, HashSet};
 use std::io::Cursor;
 use std::io::Write;
-use std::mem;
 use std::str;
 
 use std::sync::{LockResult, Mutex, MutexGuard};
@@ -119,7 +119,7 @@ impl Index {
         &self.name
     }
 
-    pub fn new_snapshot(&self) -> Snapshot {
+    pub fn new_snapshot(&self) -> Snapshot<'_> {
         Snapshot::new(RocksSnapshot::new(&self.rocks))
     }
 
@@ -179,7 +179,11 @@ impl Index {
     }
 
     /// Query the index with the string and use the parameters for values if passed.
-    pub fn query(&self, query: &str, parameters: Option<String>) -> Result<QueryResults, Error> {
+    pub fn query(
+        &self,
+        query: &str,
+        parameters: Option<String>,
+    ) -> Result<QueryResults<'_>, Error> {
         QueryResults::new_query_results(query, parameters, self.new_snapshot())
     }
 
@@ -235,14 +239,17 @@ impl Index {
     /// since only one header is in the database it's not a problem with excess size.
     fn convert_bytes_to_u64(bytes: &[u8]) -> u64 {
         debug_assert!(bytes.len() == 8);
-        let mut buffer = [0; 8];
-        for (n, b) in bytes.iter().enumerate() {
-            buffer[n] = *b;
-        }
-        unsafe { mem::transmute(buffer) }
+        u64::from_le_bytes(
+            bytes
+                .try_into()
+                .expect("convert_bytes_to_u64 requires exactly 8 bytes"),
+        )
     }
 
     pub fn convert_bytes_to_i32(bytes: &[u8]) -> i32 {
+        if bytes.is_empty() {
+            return 0;
+        }
         let mut vec = Vec::with_capacity(bytes.len());
         vec.extend(bytes.iter());
         let mut read = Cursor::new(vec);
@@ -299,6 +306,11 @@ impl Index {
         existing_val: Option<&[u8]>,
         operands: &mut MergeOperands,
     ) -> Vec<u8> {
+        // Safety check: ensure new_key is not empty
+        if new_key.is_empty() {
+            return Vec::new();
+        }
+        
         if !(new_key[0] as char == key_builder::KEY_PREFIX_FIELD_COUNT
             || new_key[0] as char == key_builder::KEY_PREFIX_WORD_COUNT)
         {
@@ -306,13 +318,19 @@ impl Index {
         }
 
         let mut count = if let Some(bytes) = existing_val {
-            Index::convert_bytes_to_i32(bytes)
+            if bytes.is_empty() {
+                0
+            } else {
+                Index::convert_bytes_to_i32(bytes)
+            }
         } else {
             0
         };
 
         for bytes in operands {
-            count += Index::convert_bytes_to_i32(bytes);
+            if !bytes.is_empty() {
+                count += Index::convert_bytes_to_i32(bytes);
+            }
         }
         Index::convert_i32_to_bytes(count)
     }
@@ -352,28 +370,38 @@ impl Index {
         }
 
         // Keypaths are the same, compare the Internal Ids value
-        let seq_aa = unsafe {
-            let array = *(aa[(offset_aa)..].as_ptr() as *const [_; 8]);
-            mem::transmute::<[u8; 8], u64>(array)
-        };
-        let seq_bb = unsafe {
-            let array = *(bb[(offset_bb)..].as_ptr() as *const [_; 8]);
-            mem::transmute::<[u8; 8], u64>(array)
-        };
+        let seq_aa = u64::from_le_bytes(
+            aa[offset_aa..offset_aa + 8]
+                .try_into()
+                .expect("sequence bytes"),
+        );
+        let seq_bb = u64::from_le_bytes(
+            bb[offset_bb..offset_bb + 8]
+                .try_into()
+                .expect("sequence bytes"),
+        );
         let seq_compare = seq_aa.cmp(&seq_bb);
         if seq_compare != Ordering::Equal {
             return seq_compare;
         }
 
         // Internal Ids are the same, compare the bounding box
-        let bbox_aa = unsafe {
-            let array = *(aa[(offset_aa + 8)..].as_ptr() as *const [_; 32]);
-            mem::transmute::<[u8; 32], [f64; 4]>(array)
-        };
-        let bbox_bb = unsafe {
-            let array = *(bb[(offset_bb + 8)..].as_ptr() as *const [_; 32]);
-            mem::transmute::<[u8; 32], [f64; 4]>(array)
-        };
+        let mut bbox_aa = [0.0_f64; 4];
+        let mut bbox_bb = [0.0_f64; 4];
+        for idx in 0..4 {
+            let start_aa = offset_aa + 8 + (idx * 8);
+            bbox_aa[idx] = f64::from_le_bytes(
+                aa[start_aa..start_aa + 8]
+                    .try_into()
+                    .expect("bbox bytes"),
+            );
+            let start_bb = offset_bb + 8 + (idx * 8);
+            bbox_bb[idx] = f64::from_le_bytes(
+                bb[start_bb..start_bb + 8]
+                    .try_into()
+                    .expect("bbox bytes"),
+            );
+        }
 
         for (value_aa, value_bb) in bbox_aa.iter().zip(bbox_bb.iter()) {
             let value_compare = value_aa.partial_cmp(value_bb).unwrap();
@@ -406,7 +434,7 @@ impl<T> MvccRwLock<T> {
         unsafe { &*self.raw }
     }
 
-    pub fn write(&self) -> LockResult<MutexGuard<Box<T>>> {
+    pub fn write(&self) -> LockResult<MutexGuard<'_, Box<T>>> {
         self.lock.lock()
     }
 }

@@ -3,9 +3,10 @@ extern crate varint;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::collections::HashSet;
+use std::convert::TryInto;
 use std::io::Cursor;
 use std::rc::Rc;
-use std::{self, mem, str};
+use std::{self, str};
 
 use self::varint::VarintRead;
 
@@ -451,10 +452,11 @@ impl QueryRuntimeFilter for RangeFilter {
             }
             // Else it's a range query on numbers
 
-            let number = unsafe {
-                let array = *(value[..].as_ptr() as *const [_; 8]);
-                mem::transmute::<[u8; 8], f64>(array)
-            };
+            let number = f64::from_le_bytes(
+                value[..8]
+                    .try_into()
+                    .expect("number bytes must be 8 long"),
+            );
 
             let min_condition = match self.min {
                 Some(RangeOperator::Inclusive(min)) => number >= min,
@@ -506,15 +508,18 @@ pub struct BboxFilter<'a> {
     kb: KeyBuilder,
     bbox: Vec<u8>,
     term_ordinal: Option<usize>,
+    last_returned: Option<(u64, Vec<u64>)>, // (seq, arraypath)
 }
 
 impl<'a> BboxFilter<'a> {
     pub fn new(snapshot: Rc<Snapshot<'a>>, kb: KeyBuilder, bbox: [f64; 4]) -> BboxFilter<'a> {
         let mut bbox_vec = Vec::with_capacity(32);
-        bbox_vec.extend_from_slice(&bbox[0].to_le_bytes());
-        bbox_vec.extend_from_slice(&bbox[2].to_le_bytes());
-        bbox_vec.extend_from_slice(&bbox[1].to_le_bytes());
-        bbox_vec.extend_from_slice(&bbox[3].to_le_bytes());
+        // RTree expects bbox in order: [x_min, x_max, y_min, y_max]
+        // Input is [west, south, east, north] = [x_min, y_min, x_max, y_max]
+        bbox_vec.extend_from_slice(&bbox[0].to_le_bytes()); // x_min (west)
+        bbox_vec.extend_from_slice(&bbox[2].to_le_bytes()); // x_max (east)
+        bbox_vec.extend_from_slice(&bbox[1].to_le_bytes()); // y_min (south)
+        bbox_vec.extend_from_slice(&bbox[3].to_le_bytes()); // y_max (north)
 
         BboxFilter {
             snapshot,
@@ -522,49 +527,84 @@ impl<'a> BboxFilter<'a> {
             kb,
             bbox: bbox_vec,
             term_ordinal: None,
+            last_returned: None,
         }
     }
 
     /// Function to deserialize the Arraypaths
     fn from_u8_slice(slice: &[u8]) -> Vec<u64> {
-        let u64_slice =
-            unsafe { std::slice::from_raw_parts(slice.as_ptr() as *const u64, slice.len() / 8) };
-        u64_slice.to_vec()
+        slice
+            .chunks_exact(8)
+            .map(|chunk| {
+                u64::from_le_bytes(
+                    chunk
+                        .try_into()
+                        .expect("array path entries are multiples of 8 bytes"),
+                )
+            })
+            .collect()
     }
 }
 
 impl<'a> QueryRuntimeFilter for BboxFilter<'a> {
     fn first_result(&mut self, start: &DocResult) -> Option<DocResult> {
-        let query = self
-            .kb
-            .rtree_query_key(start.seq, std::u64::MAX, &self.bbox);
+        // For array queries, we need to consider the context
+        let min_seq = if self.kb.arraypath.is_empty() {
+            // Not an array query, use normal start seq
+            start.seq
+        } else if start.seq > 0 && start.arraypath.len() == self.kb.arraypath.len() {
+            // Array query for a specific document - search within that document
+            // by using seq-1 to ensure we get all array elements
+            start.seq.saturating_sub(1)
+        } else {
+            start.seq
+        };
+        
+        let query = self.kb.rtree_query_key(min_seq, std::u64::MAX, &self.bbox);
         self.iter = Some(self.snapshot.new_rtree_iterator(&query));
+        // Reset last_returned to handle the start properly
+        self.last_returned = None;
         self.next_result()
     }
 
     fn next_result(&mut self) -> Option<DocResult> {
         let iter = self.iter.as_mut().unwrap();
-        if let Some((key, value)) = iter.next() {
-            let mut vec = Vec::with_capacity(key.len());
-            vec.extend_from_slice(&key);
-            let mut read = Cursor::new(vec);
-            let key_len = read.read_unsigned_varint_32().unwrap();
-            let offset = read.position() as usize;
+        
+        loop {
+            if let Some((key, value)) = iter.next() {
+                let mut vec = Vec::with_capacity(key.len());
+                vec.extend_from_slice(&key);
+                let mut read = Cursor::new(vec);
+                let key_len = read.read_unsigned_varint_32().unwrap();
+                let offset = read.position() as usize;
 
-            let iid = unsafe {
-                let array = *(key[offset + key_len as usize..].as_ptr() as *const [_; 8]);
-                mem::transmute::<[u8; 8], u64>(array)
-            };
+                let iid = u64::from_le_bytes(
+                    key[offset + key_len as usize..offset + key_len as usize + 8]
+                        .try_into()
+                        .expect("iid bytes"),
+                );
 
-            let mut dr = DocResult::new();
-            dr.seq = iid;
-            dr.arraypath = BboxFilter::from_u8_slice(&value);
-            if self.term_ordinal.is_some() {
-                dr.add_score(self.term_ordinal.unwrap(), 1.0);
+                // Get arraypath for this result
+                let arraypath = BboxFilter::from_u8_slice(&value);
+                
+                // Skip if we've already returned this exact result
+                if let Some((last_seq, ref last_arraypath)) = self.last_returned {
+                    if iid < last_seq || (iid == last_seq && arraypath == *last_arraypath) {
+                        continue;
+                    }
+                }
+
+                let mut dr = DocResult::new();
+                dr.seq = iid;
+                dr.arraypath = arraypath.clone();
+                if self.term_ordinal.is_some() {
+                    dr.add_score(self.term_ordinal.unwrap(), 1.0);
+                }
+                self.last_returned = Some((iid, arraypath));
+                return Some(dr);
+            } else {
+                return None;
             }
-            Some(dr)
-        } else {
-            None
         }
     }
 
@@ -1099,12 +1139,14 @@ impl<'a> BindFilter<'a> {
 
     fn collect_results(&mut self, mut first: DocResult) -> Option<DocResult> {
         let value_key = self.kb.kp_value_key_from_doc_result(&first);
-        first.add_bind_name_result(&self.bind_var_name, value_key);
+        first.add_bind_name_result(&self.bind_var_name, value_key.clone());
+        
 
+        // Collect all results for the same document at the same array depth
         while let Some(next) = self.filter.next_result() {
-            if next.seq == first.seq {
+            if next.seq == first.seq && next.arraypath.len() == first.arraypath.len() {
                 let value_key = self.kb.kp_value_key_from_doc_result(&next);
-                first.add_bind_name_result(&self.bind_var_name, value_key);
+                first.add_bind_name_result(&self.bind_var_name, value_key.clone());
             } else {
                 self.option_next = Some(next);
                 return Some(first);
