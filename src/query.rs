@@ -7,7 +7,6 @@ use std::iter::Iterator;
 use std::mem::swap;
 use std::rc::Rc;
 use std::str;
-use std::usize;
 
 use self::rustc_serialize::json::{JsonEvent, Parser as JsonParser, StackElement};
 use crate::aggregates::{AggregateActionFun, AggregateExtractFun, AggregateFun, AggregateInitFun};
@@ -309,7 +308,7 @@ impl<'a> QueryResults<'a> {
                 }
             }
             // order we process orders is important
-            orders.sort_by_key(|&(ref order_info, ref _n)| order_info.order_to_apply);
+            orders.sort_by_key(|(order_info, _n)| order_info.order_to_apply);
             orders
                 .into_iter()
                 .map(|(order_info, n)| (order_info.order, n))
@@ -356,7 +355,7 @@ impl<'a> QueryResults<'a> {
         }
 
         let query_norm = if qsi.num_terms > 0 {
-            1.0 / (qsi.sum_of_idt_sqs as f32)
+            1.0 / qsi.sum_of_idt_sqs
         } else {
             0.0
         };
@@ -387,14 +386,14 @@ impl<'a> QueryResults<'a> {
         let err_msg: String = "Parameterized query values must be String, Number, /
         True, False, or Null"
             .to_string();
-        if parser.next().take() != Some(JsonEvent::ObjectStart) {
+        if parser.next() != Some(JsonEvent::ObjectStart) {
             return Err(Error::Parse("Parameters must be json object".to_string()));
         }
         let mut map: HashMap<String, JsonValue> = HashMap::new();
         loop {
             // Get the next token, so that in case of an `ObjectStart` the key is already
             // on the stack.
-            match parser.next().take() {
+            match parser.next() {
                 Some(JsonEvent::ObjectStart) => return Err(Error::Parse(err_msg)),
                 Some(JsonEvent::ObjectEnd) => (),
                 Some(JsonEvent::ArrayStart) => return Err(Error::Parse(err_msg)),
@@ -467,7 +466,7 @@ impl<'a> QueryResults<'a> {
         }
         let mut num_terms_matched = 0;
         let mut score: f32 = 0.0;
-        for &(ref total_term_score, ref num_times_term_matched) in dr.scores.iter() {
+        for (total_term_score, num_times_term_matched) in dr.scores.iter() {
             if *num_times_term_matched > 0 {
                 score += *total_term_score / (*num_times_term_matched as f32);
                 num_terms_matched += 1;
@@ -559,10 +558,7 @@ impl<'a> QueryResults<'a> {
                 return None;
             }
             self.limit -= 1;
-            let dr = match self.get_next_result() {
-                Some(dr) => dr,
-                None => return None,
-            };
+            let dr = self.get_next_result()?;
             let score = self.compute_relevancy_score(&dr);
             let mut results = VecDeque::new();
             self.returnable.fetch_result(

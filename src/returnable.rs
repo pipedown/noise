@@ -129,13 +129,13 @@ impl Returnable for RetObject {
         bind_var_keys: &HashMap<String, Vec<String>>,
         result: &mut VecDeque<JsonValue>,
     ) {
-        for &(ref _key, ref field) in self.fields.iter() {
+        for (_key, field) in self.fields.iter() {
             field.fetch_result(fetcher, seq, score, bind_var_keys, result);
         }
     }
 
     fn get_aggregate_funs(&self, funs: &mut Vec<Option<(AggregateFun, Option<JsonValue>)>>) {
-        for &(ref _key, ref field) in self.fields.iter() {
+        for (_key, field) in self.fields.iter() {
             field.get_aggregate_funs(funs);
         }
     }
@@ -154,7 +154,7 @@ impl Returnable for RetObject {
 
     fn json_result(&self, results: &mut VecDeque<JsonValue>) -> JsonValue {
         let mut vec = Vec::with_capacity(self.fields.len());
-        for &(ref key, ref returnable) in self.fields.iter() {
+        for (key, returnable) in self.fields.iter() {
             vec.push((key.clone(), returnable.json_result(results)));
         }
         JsonValue::Object(vec)

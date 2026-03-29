@@ -4,7 +4,6 @@ use std::collections::HashMap;
 use std::iter::Iterator;
 use std::rc::Rc;
 use std::str;
-use std::usize;
 
 use crate::aggregates::AggregateFun;
 use crate::error::Error;
@@ -218,7 +217,7 @@ impl<'a, 'c> Parser<'a, 'c> {
     fn consume_integer(&mut self) -> Result<Option<i64>, Error> {
         let mut result = String::new();
         for char in self.query[self.offset..].chars() {
-            if ('0'..='9').contains(&char) {
+            if char.is_ascii_digit() {
                 result.push(char);
             } else {
                 break;
@@ -423,6 +422,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         // allowable json syntax, so it will parse any valid json floating point number. It might
         // return an error if the number is out of bounds.
         let mut result = String::new();
+        #[allow(clippy::never_loop)]
         'outer: loop {
             // this loop isn't a loop, it's just there to scope the self borrow
             // and then jump to the end to do another borrow (self.ws())
@@ -473,7 +473,7 @@ impl<'a, 'c> Parser<'a, 'c> {
             if !leading_zero {
                 // no more digits allowed if first digit is zero
                 loop {
-                    c = if ('0'..='9').contains(&c) {
+                    c = if c.is_ascii_digit() {
                         result.push(c);
                         if let Some(c) = chars.next() {
                             c
@@ -503,7 +503,7 @@ impl<'a, 'c> Parser<'a, 'c> {
             // parse mantissa
             let mut found_mantissa = false;
             loop {
-                c = if ('0'..='9').contains(&c) {
+                c = if c.is_ascii_digit() {
                     result.push(c);
                     found_mantissa = true;
 
@@ -549,7 +549,7 @@ impl<'a, 'c> Parser<'a, 'c> {
             // parse exponent digits
             let mut found_exponent = false;
             loop {
-                c = if ('0'..='9').contains(&c) {
+                c = if c.is_ascii_digit() {
                     result.push(c);
                     found_exponent = true;
                     if let Some(c) = chars.next() {
@@ -955,7 +955,7 @@ impl<'a, 'c> Parser<'a, 'c> {
                     StemmedWordPosFilter::new(&self.snapshot, &stem.stemmed, &self.kb, boost);
                 filters.push(filter);
             }
-            if word_distance > std::u32::MAX as i64 {
+            if word_distance > u32::MAX as i64 {
                 return Err(Error::Parse(
                     "Proximity search number too large.".to_string(),
                 ));
@@ -1251,11 +1251,7 @@ impl<'a, 'c> Parser<'a, 'c> {
                 }))),
             }
         } else if let Some(bind_name) = self.consume_field() {
-            let rp = if let Some(rp) = self.consume_keypath()? {
-                rp
-            } else {
-                ReturnPath::new()
-            };
+            let rp = self.consume_keypath()?.unwrap_or_default();
             let default = self.consume_default()?.unwrap_or(JsonValue::Null);
 
             Ok(Some(Box::new(RetBind {

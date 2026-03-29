@@ -167,7 +167,7 @@ impl JsonValue {
                 pretty.push();
 
                 let mut iter = object.iter().peekable();
-                while let Some(&(ref key, ref json)) = iter.next() {
+                while let Some((key, json)) = iter.next() {
                     write.write_all(pretty.prefix())?;
                     write.write_all(JsonValue::str_to_literal(key).as_bytes())?;
                     write.write_all(":".as_bytes())?;

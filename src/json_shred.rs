@@ -82,12 +82,7 @@ impl Shredder {
     // Based on https://stackoverflow.com/questions/29037033/how-to-slice-a-large-veci32-as-u8
     // (2017-07-26)
     fn as_u8_slice(v: &[u64]) -> &[u8] {
-        unsafe {
-            std::slice::from_raw_parts(
-                v.as_ptr() as *const u8,
-                v.len() * std::mem::size_of::<u64>(),
-            )
-        }
+        unsafe { std::slice::from_raw_parts(v.as_ptr() as *const u8, std::mem::size_of_val(v)) }
     }
 
     fn add_rtree_entries(
@@ -492,7 +487,7 @@ impl Shredder {
         loop {
             // Get the next token, so that in case of an `ObjectStart` the key is already
             // on the stack.
-            match parser.next().take() {
+            match parser.next() {
                 Some(JsonEvent::ObjectStart) => {
                     self.maybe_push_key(parser.stack().top())?;
                     // Just push something to make `ObjectEnd` happy
@@ -618,7 +613,7 @@ mod tests {
         for (key, value) in rocks.iterator(rocksdb::IteratorMode::Start) {
             if key[0] as char == 'V' {
                 let key_string = unsafe { str::from_utf8_unchecked(&key) }.to_string();
-                result.push((key_string, JsonFetcher::bytes_to_json_value(&*value)));
+                result.push((key_string, JsonFetcher::bytes_to_json_value(&value)));
             }
         }
         result

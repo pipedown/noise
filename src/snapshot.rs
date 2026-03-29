@@ -5,7 +5,6 @@ extern crate varint;
 use std::f32;
 use std::io::Cursor;
 use std::iter::Peekable;
-use std::mem::transmute;
 use std::str;
 
 use self::varint::VarintRead;
@@ -177,7 +176,7 @@ impl Scorer {
             };
 
             let tf: f32 = (num_matches as f32).sqrt();
-            let norm = 1.0 / (total_field_words as f32).sqrt();
+            let norm = 1.0 / total_field_words.sqrt();
             let score = self.idf * self.idf * tf * norm * self.boost;
             dr.add_score(self.term_ordinal, score);
         }
@@ -214,7 +213,7 @@ impl JsonFetcher {
                 for (n, b) in bytes[1..9].iter().enumerate() {
                     bytes2[n] = *b;
                 }
-                let double: f64 = unsafe { transmute(bytes2) };
+                let double: f64 = f64::from_ne_bytes(bytes2);
                 JsonValue::Number(double)
             }
             'T' => JsonValue::True,
@@ -350,7 +349,7 @@ impl JsonFetcher {
                     object.push((unescaped, json_val));
 
                     let segment = match iter.peek() {
-                        Some(&(ref k, ref _v)) => {
+                        Some((k, _v)) => {
                             let key = unsafe { str::from_utf8_unchecked(k) };
                             if !KeyBuilder::is_kp_value_key_prefix(value_key, key) {
                                 return JsonValue::Object(object);
@@ -392,7 +391,7 @@ impl JsonFetcher {
                     array.push((i, json_val));
 
                     let segment = match iter.peek() {
-                        Some(&(ref k, ref _v)) => {
+                        Some((k, _v)) => {
                             let key = unsafe { str::from_utf8_unchecked(k) };
                             if !KeyBuilder::is_kp_value_key_prefix(value_key, key) {
                                 return JsonFetcher::return_array(array);
