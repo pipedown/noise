@@ -527,9 +527,12 @@ impl<'a> BboxFilter<'a> {
 
     /// Function to deserialize the Arraypaths
     fn from_u8_slice(slice: &[u8]) -> Vec<u64> {
-        let u64_slice =
-            unsafe { std::slice::from_raw_parts(slice.as_ptr() as *const u64, slice.len() / 8) };
-        u64_slice.to_vec()
+        slice
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|chunk| u64::from_ne_bytes(*chunk))
+            .collect()
     }
 }
 
