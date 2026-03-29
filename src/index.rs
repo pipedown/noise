@@ -119,7 +119,7 @@ impl Index {
         &self.name
     }
 
-    pub fn new_snapshot(&self) -> Snapshot {
+    pub fn new_snapshot(&self) -> Snapshot<'_> {
         Snapshot::new(RocksSnapshot::new(&self.rocks))
     }
 
@@ -179,7 +179,11 @@ impl Index {
     }
 
     /// Query the index with the string and use the parameters for values if passed.
-    pub fn query(&self, query: &str, parameters: Option<String>) -> Result<QueryResults, Error> {
+    pub fn query(
+        &self,
+        query: &str,
+        parameters: Option<String>,
+    ) -> Result<QueryResults<'_>, Error> {
         QueryResults::new_query_results(query, parameters, self.new_snapshot())
     }
 
@@ -239,7 +243,7 @@ impl Index {
         for (n, b) in bytes.iter().enumerate() {
             buffer[n] = *b;
         }
-        unsafe { mem::transmute(buffer) }
+        u64::from_ne_bytes(buffer)
     }
 
     pub fn convert_bytes_to_i32(bytes: &[u8]) -> i32 {
@@ -354,11 +358,11 @@ impl Index {
         // Keypaths are the same, compare the Internal Ids value
         let seq_aa = unsafe {
             let array = *(aa[(offset_aa)..].as_ptr() as *const [_; 8]);
-            mem::transmute::<[u8; 8], u64>(array)
+            u64::from_ne_bytes(array)
         };
         let seq_bb = unsafe {
             let array = *(bb[(offset_bb)..].as_ptr() as *const [_; 8]);
-            mem::transmute::<[u8; 8], u64>(array)
+            u64::from_ne_bytes(array)
         };
         let seq_compare = seq_aa.cmp(&seq_bb);
         if seq_compare != Ordering::Equal {
@@ -406,7 +410,7 @@ impl<T> MvccRwLock<T> {
         unsafe { &*self.raw }
     }
 
-    pub fn write(&self) -> LockResult<MutexGuard<Box<T>>> {
+    pub fn write(&self) -> LockResult<MutexGuard<'_, Box<T>>> {
         self.lock.lock()
     }
 }
@@ -503,7 +507,7 @@ mod tests {
             for (key, value) in index.rocks.iterator(rocksdb::IteratorMode::Start) {
                 if key[0] as char == 'V' {
                     let key_string = unsafe { str::from_utf8_unchecked(&key) }.to_string();
-                    results.push((key_string, JsonFetcher::bytes_to_json_value(&*value)));
+                    results.push((key_string, JsonFetcher::bytes_to_json_value(&value)));
                 }
             }
 
@@ -532,7 +536,7 @@ mod tests {
         for (key, value) in index.rocks.iterator(rocksdb::IteratorMode::Start) {
             if key[0] as char == 'V' {
                 let key_string = unsafe { str::from_utf8_unchecked(&key) }.to_string();
-                results.push((key_string, JsonFetcher::bytes_to_json_value(&*value)));
+                results.push((key_string, JsonFetcher::bytes_to_json_value(&value)));
             }
         }
         let expected = vec![

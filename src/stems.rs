@@ -21,7 +21,7 @@ pub struct StemmedWord {
 }
 
 impl<'a> Stems<'a> {
-    pub fn new(text: &str) -> Stems {
+    pub fn new(text: &str) -> Stems<'_> {
         Stems {
             words: text.split_word_bound_indices(),
             stemmer: Stemmer::new("english").unwrap(),
@@ -71,7 +71,7 @@ mod tests {
     fn test_stems_mixedcase() {
         let input = "THEse Words deeplY test smOOthly that stemmING";
         let result = Stems::new(input).collect::<Vec<StemmedWord>>();
-        let expected = vec![
+        let expected = [
             StemmedWord {
                 word_pos: 0,
                 stemmed: String::from("these"),
@@ -125,7 +125,7 @@ mod tests {
     fn test_stems_some_nonchars() {
         let input = "@!?   Let's seeing...";
         let result = Stems::new(input).collect::<Vec<StemmedWord>>();
-        let expected = vec![
+        let expected = [
             StemmedWord {
                 word_pos: 0,
                 stemmed: String::from("let"),
@@ -145,7 +145,7 @@ mod tests {
     fn test_stems_unicode() {
         let input = "Ünicöde stemming";
         let result = Stems::new(input).collect::<Vec<StemmedWord>>();
-        let expected = vec![
+        let expected = [
             StemmedWord {
                 word_pos: 0,
                 stemmed: String::from("ünicöd"),
@@ -165,7 +165,7 @@ mod tests {
     fn test_stems_trailing_needs_normalized() {
         let input = r#"Didgeridoos™"#;
         let result = Stems::new(input).collect::<Vec<StemmedWord>>();
-        let expected = vec![
+        let expected = [
             StemmedWord {
                 word_pos: 0,
                 stemmed: String::from("didgeridoo"),
@@ -185,7 +185,7 @@ mod tests {
     fn test_stems_unicode_lowercase_has_more_bytes() {
         let input = "İ";
         let result = Stems::new(input).collect::<Vec<StemmedWord>>();
-        let expected = vec![StemmedWord {
+        let expected = [StemmedWord {
             word_pos: 0,
             stemmed: String::from("i̇"),
         }];
@@ -221,7 +221,7 @@ mod tests {
         // The input is: Ρ̓ῤῤ (11 bytes), lowercases is ῤῤῤ (9 bytes)
         let input = "\u{03A1}\u{0313}\u{03C1}\u{0313}\u{1FE4}";
         let result = Stems::new(input).collect::<Vec<StemmedWord>>();
-        let expected = vec![StemmedWord {
+        let expected = [StemmedWord {
             word_pos: 0,
             stemmed: String::from("\u{03C1}\u{0313}\u{1FE4}\u{1FE4}"),
         }];

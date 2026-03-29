@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::collections::HashSet;
 use std::io::Cursor;
 use std::rc::Rc;
-use std::{self, mem, str};
+use std::{self, str};
 
 use self::varint::VarintRead;
 
@@ -314,15 +314,15 @@ impl ExactMatchFilter {
 
             if let Some((key, value)) = self.iter.next() {
                 debug_assert!(key.starts_with(value_key.as_bytes())); // must always be true!
-                if let JsonValue::String(string) = JsonFetcher::bytes_to_json_value(&*value) {
+                if let JsonValue::String(string) = JsonFetcher::bytes_to_json_value(&value) {
                     let matches = if self.case_sensitive {
                         self.phrase == string
                     } else {
                         self.phrase == string.to_lowercase()
                     };
                     if matches {
-                        if self.term_ordinal.is_some() {
-                            dr.add_score(self.term_ordinal.unwrap(), 1.0);
+                        if let Some(to) = self.term_ordinal {
+                            dr.add_score(to, 1.0);
                         }
                         return Some(dr);
                     } else {
@@ -444,8 +444,8 @@ impl QueryRuntimeFilter for RangeFilter {
                 || self.min == Some(RangeOperator::Null)
             {
                 let mut dr = KeyBuilder::parse_doc_result_from_kp_word_key(key_str);
-                if self.term_ordinal.is_some() {
-                    dr.add_score(self.term_ordinal.unwrap(), 1.0);
+                if let Some(to) = self.term_ordinal {
+                    dr.add_score(to, 1.0);
                 }
                 return Some(dr);
             }
@@ -453,7 +453,7 @@ impl QueryRuntimeFilter for RangeFilter {
 
             let number = unsafe {
                 let array = *(value[..].as_ptr() as *const [_; 8]);
-                mem::transmute::<[u8; 8], f64>(array)
+                f64::from_ne_bytes(array)
             };
 
             let min_condition = match self.min {
@@ -473,8 +473,8 @@ impl QueryRuntimeFilter for RangeFilter {
 
             if min_condition && max_condition {
                 let mut dr = KeyBuilder::parse_doc_result_from_kp_word_key(key_str);
-                if self.term_ordinal.is_some() {
-                    dr.add_score(self.term_ordinal.unwrap(), 1.0);
+                if let Some(to) = self.term_ordinal {
+                    dr.add_score(to, 1.0);
                 }
                 return Some(dr);
             }
@@ -538,9 +538,7 @@ impl<'a> BboxFilter<'a> {
 
 impl<'a> QueryRuntimeFilter for BboxFilter<'a> {
     fn first_result(&mut self, start: &DocResult) -> Option<DocResult> {
-        let query = self
-            .kb
-            .rtree_query_key(start.seq, std::u64::MAX, &self.bbox);
+        let query = self.kb.rtree_query_key(start.seq, u64::MAX, &self.bbox);
         self.iter = Some(self.snapshot.new_rtree_iterator(&query));
         self.next_result()
     }
@@ -556,14 +554,14 @@ impl<'a> QueryRuntimeFilter for BboxFilter<'a> {
 
             let iid = unsafe {
                 let array = *(key[offset + key_len as usize..].as_ptr() as *const [_; 8]);
-                mem::transmute::<[u8; 8], u64>(array)
+                u64::from_ne_bytes(array)
             };
 
             let mut dr = DocResult::new();
             dr.seq = iid;
             dr.arraypath = BboxFilter::from_u8_slice(&value);
-            if self.term_ordinal.is_some() {
-                dr.add_score(self.term_ordinal.unwrap(), 1.0);
+            if let Some(to) = self.term_ordinal {
+                dr.add_score(to, 1.0);
             }
             Some(dr)
         } else {
@@ -828,14 +826,9 @@ impl<'a> FilterWithResult<'a> {
         if self.result.is_none() || self.result.as_ref().unwrap().less(start, self.array_depth) {
             self.result = self.filter.first_result(start);
         }
-        if self.result.is_none() {
-            self.is_done = true;
-        } else {
-            self.result
-                .as_mut()
-                .unwrap()
-                .arraypath
-                .resize(self.array_depth, 0);
+        match self.result.as_mut() {
+            Some(result) => result.arraypath.resize(self.array_depth, 0),
+            None => self.is_done = true,
         }
     }
 
@@ -843,17 +836,12 @@ impl<'a> FilterWithResult<'a> {
         if self.is_done {
             return;
         }
-        if self.result.is_none() {
-            self.result = self.filter.next_result();
-        }
-        if self.result.is_none() {
-            self.is_done = true;
-        } else {
-            self.result
-                .as_mut()
-                .unwrap()
-                .arraypath
-                .resize(self.array_depth, 0);
+        match self.result.as_mut() {
+            Some(result) => result.arraypath.resize(self.array_depth, 0),
+            None => {
+                self.is_done = true;
+                self.result = self.filter.next_result();
+            }
         }
     }
 }

@@ -365,7 +365,7 @@ impl KeyBuilder {
             Some('$') => {
                 let mut i = String::new();
                 for c in chars {
-                    if ('0'..='9').contains(&c) {
+                    if c.is_ascii_digit() {
                         i.push(c);
                     } else {
                         break;

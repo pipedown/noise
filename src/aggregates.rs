@@ -97,7 +97,7 @@ impl AggregateFun {
         base
     }
 
-    fn sum(existing: &mut JsonValue, new: JsonValue, user_arg: Option<&JsonValue>) {
+    fn sum(existing: &mut JsonValue, new: JsonValue, _user_arg: Option<&JsonValue>) {
         match new {
             JsonValue::Number(new) => {
                 if let JsonValue::Number(ref mut existing) = *existing {
@@ -106,7 +106,7 @@ impl AggregateFun {
             }
             JsonValue::Array(vec) => {
                 for v in vec {
-                    AggregateFun::sum(existing, v, user_arg);
+                    AggregateFun::sum(existing, v, _user_arg);
                 }
             }
             _ => (),
@@ -134,10 +134,10 @@ impl AggregateFun {
         val
     }
 
-    fn max_array(existing: &mut JsonValue, new: JsonValue, user_arg: Option<&JsonValue>) {
+    fn max_array(existing: &mut JsonValue, new: JsonValue, _user_arg: Option<&JsonValue>) {
         if let JsonValue::Array(vec) = new {
             for v in vec {
-                AggregateFun::max_array(existing, v, user_arg);
+                AggregateFun::max_array(existing, v, _user_arg);
             }
         } else if let JsonValue::Array(_) = *existing {
             *existing = new;
@@ -155,10 +155,10 @@ impl AggregateFun {
         val
     }
 
-    fn min_array(existing: &mut JsonValue, new: JsonValue, user_arg: Option<&JsonValue>) {
+    fn min_array(existing: &mut JsonValue, new: JsonValue, _user_arg: Option<&JsonValue>) {
         if let JsonValue::Array(vec) = new {
             for v in vec {
-                AggregateFun::min_array(existing, v, user_arg);
+                AggregateFun::min_array(existing, v, _user_arg);
             }
         } else if let JsonValue::Array(_) = *existing {
             *existing = new;
@@ -183,10 +183,10 @@ impl AggregateFun {
         new
     }
 
-    fn array_flat(existing: &mut JsonValue, new: JsonValue, user_arg: Option<&JsonValue>) {
+    fn array_flat(existing: &mut JsonValue, new: JsonValue, _user_arg: Option<&JsonValue>) {
         if let JsonValue::Array(vec) = new {
             for v in vec.into_iter() {
-                AggregateFun::array_flat(existing, v, user_arg);
+                AggregateFun::array_flat(existing, v, _user_arg);
             }
         } else if let JsonValue::Array(ref mut existing) = *existing {
             existing.push(new);
@@ -204,7 +204,7 @@ impl AggregateFun {
     fn concat(existing: &mut JsonValue, new: JsonValue, user_arg: Option<&JsonValue>) {
         if let JsonValue::String(ref mut existing) = *existing {
             if let JsonValue::String(new) = new {
-                if let Some(&JsonValue::String(ref user_arg)) = user_arg {
+                if let Some(JsonValue::String(user_arg)) = user_arg {
                     existing.push_str(user_arg);
                     existing.push_str(&new);
                 }
@@ -224,7 +224,7 @@ impl AggregateFun {
         }
     }
 
-    fn avg(existing: &mut JsonValue, new: JsonValue, user_arg: Option<&JsonValue>) {
+    fn avg(existing: &mut JsonValue, new: JsonValue, _user_arg: Option<&JsonValue>) {
         if let JsonValue::Number(new) = new {
             if let JsonValue::Array(ref mut array) = *existing {
                 let mut avg = if let JsonValue::Number(ref avg) = array[0] {
@@ -248,7 +248,7 @@ impl AggregateFun {
             }
         } else if let JsonValue::Array(vec) = new {
             for v in vec.into_iter() {
-                AggregateFun::avg(existing, v, user_arg);
+                AggregateFun::avg(existing, v, _user_arg);
             }
         }
     }

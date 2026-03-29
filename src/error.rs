@@ -16,7 +16,14 @@ pub enum Error {
 
 impl PartialEq for Error {
     fn eq(&self, other: &Error) -> bool {
-        self == other
+        match (self, other) {
+            (Error::Parse(a), Error::Parse(b)) => a == b,
+            (Error::Shred(a), Error::Shred(b)) => a == b,
+            (Error::Rocks(a), Error::Rocks(b)) => a.to_string() == b.to_string(),
+            (Error::Write(a), Error::Write(b)) => a == b,
+            (Error::Io(a), Error::Io(b)) => a.to_string() == b.to_string(),
+            _ => false,
+        }
     }
 }
 
