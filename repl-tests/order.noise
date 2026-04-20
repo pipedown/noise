@@ -1,0 +1,74 @@
+# order expressions.
+
+drop target/tests/querytestorder;
+create target/tests/querytestorder;
+
+add {"_id":"1", "bar": false};
+"1"
+add {"_id":"2", "bar": true};
+"2"
+add {"_id":"3", "bar": "string"};
+"3"
+add {"_id":"4"};
+"4"
+
+find {}
+order .bar asc
+return .bar;
+[
+null,
+false,
+true,
+"string"
+]
+
+find {}
+order .bar default=1 asc
+return .bar default=1;
+[
+false,
+true,
+1,
+"string"
+]
+
+find {}
+order .bar default=1 asc
+return .bar;
+[
+false,
+true,
+null,
+"string"
+]
+
+
+find {}
+order .bar asc
+return ._id;
+[
+"4",
+"1",
+"2",
+"3"
+]
+
+find {}
+order .bar default=1 asc
+return ._id;
+[
+"1",
+"2",
+"4",
+"3"
+]
+
+find {}
+order .bar asc
+return .bar default=1;
+[
+1,
+false,
+true,
+"string"
+]
