@@ -1,42 +1,40 @@
-use rocksdb::{self, DBIterator, IteratorMode, Snapshot as RocksSnapshot};
-
 extern crate varint;
 
 use std::f32;
-use std::io::Cursor;
-use std::iter::Peekable;
+use std::io::Cursor as IoCursor;
 use std::str;
 
 use self::varint::VarintRead;
-use crate::index::Index;
 use crate::json_value::JsonValue;
 use crate::key_builder::{KeyBuilder, Segment};
 use crate::query::{DocResult, QueryScoringInfo};
 use crate::returnable::{PathSegment, ReturnPath};
+use noise_storage::{convert_bytes_to_i32, BackendSnapshot, Cursor, SeekFrom};
+use std::iter::Peekable;
 
-pub struct Snapshot<'a> {
-    rocks: RocksSnapshot<'a>,
+pub struct Snapshot<S: BackendSnapshot> {
+    snap: S,
 }
 
-impl<'a> Snapshot<'a> {
-    pub fn new(rocks: RocksSnapshot) -> Snapshot {
-        Snapshot { rocks }
+impl<S: BackendSnapshot> Snapshot<S> {
+    pub fn new(snap: S) -> Snapshot<S> {
+        Snapshot { snap }
     }
 
     pub fn new_term_doc_result_iterator(&self, term: &str, kb: &KeyBuilder) -> DocResultIterator {
         DocResultIterator {
-            iter: self.rocks.iterator(IteratorMode::Start),
+            iter: self.snap.iterator(),
             keypathword: kb.get_kp_word_only(term),
         }
     }
 
-    pub fn get(&self, key: &[u8]) -> Option<rocksdb::DBVector> {
-        self.rocks.get(key).unwrap()
+    pub fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
+        self.snap.get(key)
     }
 
     pub fn new_scorer(&self, term: &str, kb: &KeyBuilder, boost: f32) -> Scorer {
         Scorer {
-            iter: self.rocks.iterator(IteratorMode::Start),
+            iter: self.snap.iterator(),
             idf: f32::NAN,
             boost,
             kb: kb.clone(),
@@ -47,27 +45,27 @@ impl<'a> Snapshot<'a> {
 
     pub fn new_json_fetcher(&self) -> JsonFetcher {
         JsonFetcher {
-            iter: self.rocks.iterator(IteratorMode::Start),
+            iter: self.snap.iterator(),
         }
     }
 
-    pub fn new_iterator(&self) -> DBIterator {
-        self.rocks.iterator(IteratorMode::Start)
+    pub fn new_iterator(&self) -> Cursor {
+        self.snap.iterator()
     }
 
-    pub fn new_rtree_iterator(&self, query: &[u8]) -> DBIterator {
-        self.rocks.rtree_iterator(query)
+    pub fn new_multidim_iterator(&self, query: &[u8]) -> Cursor {
+        self.snap.multidim_iterator(query)
     }
 
     pub fn new_all_docs_iterator(&self) -> AllDocsIterator {
-        let mut iter = self.rocks.iterator(IteratorMode::Start);
-        iter.set_mode(IteratorMode::From(b"S", rocksdb::Direction::Forward));
+        let mut iter = self.snap.iterator();
+        iter.seek(SeekFrom::Key(b"S"));
         AllDocsIterator { iter }
     }
 }
 
 pub struct DocResultIterator {
-    iter: DBIterator,
+    iter: Cursor,
     keypathword: String,
 }
 
@@ -75,10 +73,7 @@ impl DocResultIterator {
     pub fn advance_gte(&mut self, start: &DocResult) {
         KeyBuilder::add_doc_result_to_kp_word(&mut self.keypathword, start);
         // Seek in index to >= entry
-        self.iter.set_mode(IteratorMode::From(
-            self.keypathword.as_bytes(),
-            rocksdb::Direction::Forward,
-        ));
+        self.iter.seek(SeekFrom::Key(self.keypathword.as_bytes()));
         KeyBuilder::truncate_to_kp_word(&mut self.keypathword);
     }
 
@@ -95,7 +90,7 @@ impl DocResultIterator {
             Some((
                 dr,
                 TermPositions {
-                    pos: value.into_vec(),
+                    pos: value.to_vec(),
                 },
             ))
         } else {
@@ -110,7 +105,7 @@ pub struct TermPositions {
 
 impl TermPositions {
     pub fn positions(self) -> Vec<u32> {
-        let mut bytes = Cursor::new(self.pos);
+        let mut bytes = IoCursor::new(self.pos);
         let mut positions = Vec::new();
         while let Ok(pos) = bytes.read_unsigned_varint_32() {
             positions.push(pos);
@@ -120,7 +115,7 @@ impl TermPositions {
 }
 
 pub struct Scorer {
-    iter: DBIterator,
+    iter: Cursor,
     idf: f32,
     boost: f32,
     kb: KeyBuilder,
@@ -132,14 +127,14 @@ impl Scorer {
     pub fn init(&mut self, qsi: &mut QueryScoringInfo) {
         let key = self.kb.kp_word_count_key(&self.term);
         let doc_freq = if let Some(bytes) = self.get_value(&key) {
-            Index::convert_bytes_to_i32(bytes.as_ref()) as f32
+            convert_bytes_to_i32(bytes.as_ref()) as f32
         } else {
             0.0
         };
 
         let key = self.kb.kp_field_count_key();
         let num_docs = if let Some(bytes) = self.get_value(&key) {
-            Index::convert_bytes_to_i32(bytes.as_ref()) as f32
+            convert_bytes_to_i32(bytes.as_ref()) as f32
         } else {
             0.0
         };
@@ -151,10 +146,7 @@ impl Scorer {
     }
 
     pub fn get_value(&mut self, key: &str) -> Option<Box<[u8]>> {
-        self.iter.set_mode(IteratorMode::From(
-            key.as_bytes(),
-            rocksdb::Direction::Forward,
-        ));
+        self.iter.seek(SeekFrom::Key(key.as_bytes()));
         if let Some((ret_key, ret_value)) = self.iter.next() {
             if ret_key.len() == key.len() && ret_key.starts_with(key.as_bytes()) {
                 Some(ret_value)
@@ -170,7 +162,7 @@ impl Scorer {
         if self.should_score() {
             let key = self.kb.kp_field_length_key_from_doc_result(dr);
             let total_field_words = if let Some(bytes) = self.get_value(&key) {
-                Index::convert_bytes_to_i32(bytes.as_ref()) as f32
+                convert_bytes_to_i32(bytes.as_ref()) as f32
             } else {
                 panic!("Couldn't find field length for a match!! WHAT!");
             };
@@ -188,7 +180,7 @@ impl Scorer {
 }
 
 pub struct JsonFetcher {
-    iter: DBIterator,
+    iter: Cursor,
 }
 
 impl JsonFetcher {
@@ -209,11 +201,7 @@ impl JsonFetcher {
             }
             'f' => {
                 assert!(bytes.len() == 9);
-                let mut bytes2: [u8; 8] = [0; 8];
-                for (n, b) in bytes[1..9].iter().enumerate() {
-                    bytes2[n] = *b;
-                }
-                let double: f64 = f64::from_ne_bytes(bytes2);
+                let double = f64::from_ne_bytes(bytes[1..9].try_into().unwrap());
                 JsonValue::Number(double)
             }
             'T' => JsonValue::True,
@@ -231,7 +219,7 @@ impl JsonFetcher {
     }
 
     fn descend_return_path(
-        iter: &mut DBIterator,
+        iter: &mut Cursor,
         seq: u64,
         kb: &mut KeyBuilder,
         rp: &ReturnPath,
@@ -266,10 +254,7 @@ impl JsonFetcher {
                             kb.pop_array();
 
                             // Seek in index to >= entry
-                            iter.set_mode(IteratorMode::From(
-                                value_key.as_bytes(),
-                                rocksdb::Direction::Forward,
-                            ));
+                            iter.seek(SeekFrom::Key(value_key.as_bytes()));
 
                             if let Some((key, _value)) = iter.next() {
                                 if key.starts_with(value_key.as_bytes()) {
@@ -295,10 +280,7 @@ impl JsonFetcher {
         let value_key = kb.kp_value_key(seq);
 
         // Seek in index to >= entry
-        iter.set_mode(IteratorMode::From(
-            value_key.as_bytes(),
-            rocksdb::Direction::Forward,
-        ));
+        iter.seek(SeekFrom::Key(value_key.as_bytes()));
 
         let (key, value) = match iter.next() {
             Some((key, value)) => (key, value),
@@ -324,7 +306,7 @@ impl JsonFetcher {
     /// depth first recursively parse the keypath and return the value and inserting into
     /// containers (arrays or objects) then iterate keys until the keypath no longer matches.
     fn do_fetch(
-        iter: &mut Peekable<&mut DBIterator>,
+        iter: &mut Peekable<&mut Cursor>,
         value_key: &str,
         mut key: Box<[u8]>,
         mut value: Box<[u8]>,
@@ -434,7 +416,7 @@ impl JsonFetcher {
 }
 
 pub struct AllDocsIterator {
-    iter: DBIterator,
+    iter: Cursor,
 }
 
 impl AllDocsIterator {

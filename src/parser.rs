@@ -20,6 +20,7 @@ use crate::returnable::{
 };
 use crate::snapshot::Snapshot;
 use crate::stems::Stems;
+use noise_storage::BackendSnapshot;
 
 /// A boost value of 1.0 is equal to no boosting.
 const NO_BOOST: f32 = 1.0;
@@ -32,21 +33,21 @@ struct Aggregate {
     sep: Option<JsonValue>,
 }
 
-pub struct Parser<'a, 'c> {
+pub struct Parser<'c, S: BackendSnapshot + 'static> {
     query: &'c str,
     offset: usize,
     params: HashMap<String, JsonValue>,
     kb: KeyBuilder,
-    pub snapshot: Rc<Snapshot<'a>>,
+    pub snapshot: Rc<Snapshot<S>>,
     pub needs_scoring: bool,
 }
 
-impl<'a, 'c> Parser<'a, 'c> {
+impl<'c, S: BackendSnapshot + 'static> Parser<'c, S> {
     pub fn new(
         query: &'c str,
         params: HashMap<String, JsonValue>,
-        snapshot: Rc<Snapshot<'a>>,
-    ) -> Parser<'a, 'c> {
+        snapshot: Rc<Snapshot<S>>,
+    ) -> Parser<'c, S> {
         Parser {
             query,
             offset: 0,
@@ -403,8 +404,8 @@ impl<'a, 'c> Parser<'a, 'c> {
 
     fn consume_boost_and_wrap_filter(
         &mut self,
-        filter: Box<dyn QueryRuntimeFilter + 'a>,
-    ) -> Result<Box<dyn QueryRuntimeFilter + 'a>, Error> {
+        filter: Box<dyn QueryRuntimeFilter>,
+    ) -> Result<Box<dyn QueryRuntimeFilter>, Error> {
         let boost = self.consume_boost()?;
         if boost == NO_BOOST {
             Ok(filter)
@@ -662,14 +663,14 @@ impl<'a, 'c> Parser<'a, 'c> {
         }
     }
 
-    fn find(&mut self) -> Result<Box<dyn QueryRuntimeFilter + 'a>, Error> {
+    fn find(&mut self) -> Result<Box<dyn QueryRuntimeFilter>, Error> {
         if !self.consume("find") {
             return Err(Error::Parse("Missing 'find' keyword".to_string()));
         }
         self.not_object()
     }
 
-    fn not_object(&mut self) -> Result<Box<dyn QueryRuntimeFilter + 'a>, Error> {
+    fn not_object(&mut self) -> Result<Box<dyn QueryRuntimeFilter>, Error> {
         if self.consume("!") {
             let filter = self.object()?;
             Ok(Box::new(NotFilter::new(
@@ -682,7 +683,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         }
     }
 
-    fn object(&mut self) -> Result<Box<dyn QueryRuntimeFilter + 'a>, Error> {
+    fn object(&mut self) -> Result<Box<dyn QueryRuntimeFilter>, Error> {
         if self.consume("{") {
             if self.consume("}") {
                 return Ok(Box::new(AllDocsFilter::new(&self.snapshot)));
@@ -713,7 +714,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         }
     }
 
-    fn parens(&mut self) -> Result<Box<dyn QueryRuntimeFilter + 'a>, Error> {
+    fn parens(&mut self) -> Result<Box<dyn QueryRuntimeFilter>, Error> {
         if self.consume("!") {
             let filter = self.parens()?;
             return Ok(Box::new(NotFilter::new(
@@ -729,7 +730,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         self.consume_boost_and_wrap_filter(filter)
     }
 
-    fn obool(&mut self) -> Result<Box<dyn QueryRuntimeFilter + 'a>, Error> {
+    fn obool(&mut self) -> Result<Box<dyn QueryRuntimeFilter>, Error> {
         let mut filter = self.ocompare()?;
         loop {
             filter = if self.consume("&&") || self.consume(",") {
@@ -745,7 +746,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         Ok(filter)
     }
 
-    fn ocompare(&mut self) -> Result<Box<dyn QueryRuntimeFilter + 'a>, Error> {
+    fn ocompare(&mut self) -> Result<Box<dyn QueryRuntimeFilter>, Error> {
         if let Some(filter) = self.oparens()? {
             Ok(filter)
         } else if let Some(field) = self.consume_key()? {
@@ -764,7 +765,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         }
     }
 
-    fn oparens(&mut self) -> Result<Option<Box<dyn QueryRuntimeFilter + 'a>>, Error> {
+    fn oparens(&mut self) -> Result<Option<Box<dyn QueryRuntimeFilter>>, Error> {
         let offset = self.offset;
         if self.consume("!") {
             if let Some(f) = self.oparens()? {
@@ -797,7 +798,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         }
     }
 
-    fn compare(&mut self) -> Result<Box<dyn QueryRuntimeFilter + 'a>, Error> {
+    fn compare(&mut self) -> Result<Box<dyn QueryRuntimeFilter>, Error> {
         if let Some(filter) = self.equal()? {
             Ok(filter)
         } else if let Some(filter) = self.stemmed()? {
@@ -819,7 +820,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         }
     }
 
-    fn equal(&mut self) -> Result<Option<Box<dyn QueryRuntimeFilter + 'a>>, Error> {
+    fn equal(&mut self) -> Result<Option<Box<dyn QueryRuntimeFilter>>, Error> {
         let not_equal = self.consume("!=");
         if not_equal || self.consume("==") {
             let json = self.must_consume_json_primitive()?;
@@ -887,7 +888,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         }
     }
 
-    fn stemmed(&mut self) -> Result<Option<Box<dyn QueryRuntimeFilter + 'a>>, Error> {
+    fn stemmed(&mut self) -> Result<Option<Box<dyn QueryRuntimeFilter>>, Error> {
         let not_stemmed = self.consume("!~=");
         if not_stemmed || self.consume("~=") {
             // regular search
@@ -980,7 +981,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         }
     }
 
-    fn bbox(&mut self) -> Result<Option<Box<dyn QueryRuntimeFilter + 'a>>, Error> {
+    fn bbox(&mut self) -> Result<Option<Box<dyn QueryRuntimeFilter>>, Error> {
         // TODO vmx 2017-10-12: Implement boost
         if self.consume("&&") {
             let bbox = self.consume_bbox()?;
@@ -994,7 +995,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         }
     }
 
-    fn abool(&mut self) -> Result<Box<dyn QueryRuntimeFilter + 'a>, Error> {
+    fn abool(&mut self) -> Result<Box<dyn QueryRuntimeFilter>, Error> {
         let mut filter = self.acompare()?;
         loop {
             filter = if self.consume("&&") || self.consume(",") {
@@ -1010,7 +1011,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         Ok(filter)
     }
 
-    fn acompare(&mut self) -> Result<Box<dyn QueryRuntimeFilter + 'a>, Error> {
+    fn acompare(&mut self) -> Result<Box<dyn QueryRuntimeFilter>, Error> {
         if let Some(filter) = self.aparens()? {
             Ok(filter)
         } else {
@@ -1018,7 +1019,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         }
     }
 
-    fn aparens(&mut self) -> Result<Option<Box<dyn QueryRuntimeFilter + 'a>>, Error> {
+    fn aparens(&mut self) -> Result<Option<Box<dyn QueryRuntimeFilter>>, Error> {
         let offset = self.offset;
         if self.consume("!") {
             if let Some(f) = self.aparens()? {
@@ -1051,7 +1052,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         }
     }
 
-    fn bind_var(&mut self) -> Result<Option<Box<dyn QueryRuntimeFilter + 'a>>, Error> {
+    fn bind_var(&mut self) -> Result<Option<Box<dyn QueryRuntimeFilter>>, Error> {
         let offset = self.offset;
         if let Some(bind_name) = self.consume_field() {
             if self.consume("::") {
@@ -1067,7 +1068,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         Ok(None)
     }
 
-    fn array(&mut self) -> Result<Box<dyn QueryRuntimeFilter + 'a>, Error> {
+    fn array(&mut self) -> Result<Box<dyn QueryRuntimeFilter>, Error> {
         if !self.consume("[") {
             return Err(Error::Parse("Expected '['".to_string()));
         }
@@ -1392,7 +1393,7 @@ impl<'a, 'c> Parser<'a, 'c> {
         Ok(JsonValue::Array(array))
     }
 
-    pub fn build_filter(&mut self) -> Result<Box<dyn QueryRuntimeFilter + 'a>, Error> {
+    pub fn build_filter(&mut self) -> Result<Box<dyn QueryRuntimeFilter>, Error> {
         self.ws();
         self.find()
     }
@@ -1417,15 +1418,18 @@ mod tests {
     use super::Parser;
 
     use crate::index::{Index, OpenOptions};
+    use crate::storage::Database;
     use std::collections::HashMap;
     use std::rc::Rc;
+
+    type Idx = Index<Database>;
 
     #[test]
     fn test_whitespace() {
         let dbname = "target/tests/test_whitespace";
-        let _ = Index::drop(dbname);
+        let _ = Idx::drop(dbname);
 
-        let index = Index::open(dbname, Some(OpenOptions::Create)).unwrap();
+        let index = Idx::open(dbname, Some(OpenOptions::Create)).unwrap();
         let mut snapshot = Rc::new(index.new_snapshot());
 
         let query = " \n \t test";
@@ -1443,9 +1447,9 @@ mod tests {
     #[test]
     fn test_must_consume_string_literal() {
         let dbname = "target/tests/test_must_consume_string_literal";
-        let _ = Index::drop(dbname);
+        let _ = Idx::drop(dbname);
 
-        let index = Index::open(dbname, Some(OpenOptions::Create)).unwrap();
+        let index = Idx::open(dbname, Some(OpenOptions::Create)).unwrap();
         let snapshot = Rc::new(index.new_snapshot());
 
         let query = r#"" \n \t test""#.to_string();
@@ -1459,9 +1463,9 @@ mod tests {
     #[test]
     fn test_bad_query_syntax() {
         let dbname = "target/tests/test_bad_query_syntax";
-        let _ = Index::drop(dbname);
+        let _ = Idx::drop(dbname);
 
-        let index = Index::open(dbname, Some(OpenOptions::Create)).unwrap();
+        let index = Idx::open(dbname, Some(OpenOptions::Create)).unwrap();
         let snapshot = Rc::new(index.new_snapshot());
 
         let query = r#"find {foo: =="bar""#.to_string();

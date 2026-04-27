@@ -16,6 +16,7 @@ use crate::json_value::JsonValue;
 use crate::parser::Parser;
 use crate::returnable::{RetHidden, RetScore, RetValue, ReturnPath, Returnable};
 use crate::snapshot::{JsonFetcher, Snapshot};
+use noise_storage::BackendSnapshot;
 
 #[derive(Clone)]
 pub struct DocResult {
@@ -179,10 +180,10 @@ pub struct QueryScoringInfo {
     pub sum_of_idt_sqs: f32,
 }
 
-pub struct QueryResults<'a> {
-    filter: Box<dyn QueryRuntimeFilter + 'a>,
+pub struct QueryResults<S: BackendSnapshot> {
+    filter: Box<dyn QueryRuntimeFilter>,
     doc_result_next: DocResult,
-    snapshot: Rc<Snapshot<'a>>,
+    snapshot: Rc<Snapshot<S>>,
     fetcher: JsonFetcher,
     returnable: Box<dyn Returnable>,
     needs_ordering_and_ags: bool,
@@ -199,14 +200,14 @@ pub struct QueryResults<'a> {
     scoring_query_norm: f32,
 }
 
-impl<'a> QueryResults<'a> {
+impl<S: BackendSnapshot + 'static> QueryResults<S> {
     pub fn new_query_results(
         query: &str,
         parameters: Option<String>,
-        snapshot: Snapshot<'a>,
-    ) -> Result<QueryResults<'a>, Error> {
+        snapshot: Snapshot<S>,
+    ) -> Result<QueryResults<S>, Error> {
         let params = if let Some(param_str) = parameters {
-            QueryResults::parse_parameters(&param_str)?
+            Self::parse_parameters(&param_str)?
         } else {
             HashMap::new()
         };
@@ -504,7 +505,7 @@ impl<'a> QueryResults<'a> {
             // If there is an id, it's UTF-8. Strip off type leading byte
             self.snapshot
                 .get(key.as_bytes())
-                .map(|id| id.to_utf8().unwrap()[1..].to_string())
+                .map(|id| str::from_utf8(&id).unwrap()[1..].to_string())
         })
     }
 
@@ -597,7 +598,7 @@ impl<'a> QueryResults<'a> {
         let orders = self.orders.take().unwrap();
         if !orders.is_empty() {
             self.in_buffer
-                .sort_by(|a, b| QueryResults::cmp_results(&orders, a, b));
+                .sort_by(|a, b| Self::cmp_results(&orders, a, b));
         }
         // put back
         self.orders = Some(orders);
@@ -616,7 +617,7 @@ impl<'a> QueryResults<'a> {
                 loop {
                     match (option_a, option_b) {
                         (Some(a), Some(b)) => {
-                            match QueryResults::cmp_results(&orders, &a, &b) {
+                            match Self::cmp_results(&orders, &a, &b) {
                                 Ordering::Less => {
                                     new_buffer.push(b);
                                     option_a = Some(a);
@@ -688,7 +689,7 @@ impl<'a> QueryResults<'a> {
         loop {
             match (option_old, option_new) {
                 (Some(mut old), Some(mut new)) => {
-                    match QueryResults::cmp_results(&orders, &old, &new) {
+                    match Self::cmp_results(&orders, &old, &new) {
                         Ordering::Less => {
                             for &(ref init, n) in self.aggr_inits.iter() {
                                 // we can't swap out a value of new directly, so this lets us
@@ -764,7 +765,7 @@ impl<'a> QueryResults<'a> {
     }
 }
 
-impl<'a> Iterator for QueryResults<'a> {
+impl<S: BackendSnapshot + 'static> Iterator for QueryResults<S> {
     type Item = JsonValue;
 
     fn next(&mut self) -> Option<JsonValue> {
@@ -796,16 +797,19 @@ pub struct OrderInfo {
 mod tests {
     extern crate rustc_serialize;
 
-    use crate::index::{Batch, Index, OpenOptions};
+    use crate::index::{Index, OpenOptions};
+    use crate::storage::Database;
+
+    type Idx = Index<Database>;
 
     #[test]
     fn test_query_hello_world() {
         let dbname = "target/tests/querytestdbhelloworld";
-        let _ = Index::drop(dbname);
+        let _ = Idx::drop(dbname);
 
-        let mut index = Index::open(dbname, Some(OpenOptions::Create)).unwrap();
+        let mut index = Idx::open(dbname, Some(OpenOptions::Create)).unwrap();
 
-        let mut batch = Batch::new();
+        let mut batch = index.new_batch();
         let _ = index.add(r#"{"_id": "foo", "hello": "world"}"#, &mut batch);
         index.flush(batch).unwrap();
 
@@ -816,10 +820,10 @@ mod tests {
     #[test]
     fn test_query_more_docs() {
         let dbname = "target/tests/querytestdbmoredocs";
-        let _ = Index::drop(dbname);
+        let _ = Idx::drop(dbname);
 
-        let mut index = Index::open(dbname, Some(OpenOptions::Create)).unwrap();
-        let mut batch = Batch::new();
+        let mut index = Idx::open(dbname, Some(OpenOptions::Create)).unwrap();
+        let mut batch = index.new_batch();
         for ii in 1..100 {
             let data = ((ii % 25) + 97) as u8 as char;
             let _ = index.add(

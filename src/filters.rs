@@ -14,7 +14,7 @@ use crate::json_value::JsonValue;
 use crate::key_builder::KeyBuilder;
 use crate::query::{DocResult, QueryScoringInfo};
 use crate::snapshot::{AllDocsIterator, DocResultIterator, JsonFetcher, Scorer, Snapshot};
-use rocksdb::{self, DBIterator, IteratorMode};
+use noise_storage::{BackendSnapshot, Cursor as StorageCursor, SeekFrom};
 
 pub trait QueryRuntimeFilter {
     fn first_result(&mut self, start: &DocResult) -> Option<DocResult>;
@@ -44,7 +44,7 @@ pub struct AllDocsFilter {
 }
 
 impl AllDocsFilter {
-    pub fn new(snapshot: &Snapshot) -> AllDocsFilter {
+    pub fn new<S: BackendSnapshot>(snapshot: &Snapshot<S>) -> AllDocsFilter {
         AllDocsFilter {
             iter: snapshot.new_all_docs_iterator(),
         }
@@ -85,8 +85,8 @@ pub struct StemmedWordFilter {
 }
 
 impl StemmedWordFilter {
-    pub fn new(
-        snapshot: &Snapshot,
+    pub fn new<S: BackendSnapshot>(
+        snapshot: &Snapshot<S>,
         stemmed_word: &str,
         kb: &KeyBuilder,
         boost: f32,
@@ -137,8 +137,8 @@ pub struct StemmedWordPosFilter {
 }
 
 impl StemmedWordPosFilter {
-    pub fn new(
-        snapshot: &Snapshot,
+    pub fn new<S: BackendSnapshot>(
+        snapshot: &Snapshot<S>,
         stemmed_word: &str,
         kb: &KeyBuilder,
         boost: f32,
@@ -272,7 +272,7 @@ impl QueryRuntimeFilter for StemmedPhraseFilter {
 }
 
 pub struct ExactMatchFilter {
-    iter: DBIterator,
+    iter: StorageCursor,
     filter: StemmedPhraseFilter,
     kb: KeyBuilder,
     phrase: String,
@@ -281,8 +281,8 @@ pub struct ExactMatchFilter {
 }
 
 impl ExactMatchFilter {
-    pub fn new(
-        snapshot: &Snapshot,
+    pub fn new<S: BackendSnapshot>(
+        snapshot: &Snapshot<S>,
         filter: StemmedPhraseFilter,
         kb: KeyBuilder,
         phrase: String,
@@ -307,10 +307,7 @@ impl ExactMatchFilter {
         loop {
             let value_key = self.kb.kp_value_key_from_doc_result(&dr);
 
-            self.iter.set_mode(IteratorMode::From(
-                value_key.as_bytes(),
-                rocksdb::Direction::Forward,
-            ));
+            self.iter.seek(SeekFrom::Key(value_key.as_bytes()));
 
             if let Some((key, value)) = self.iter.next() {
                 debug_assert!(key.starts_with(value_key.as_bytes())); // must always be true!
@@ -377,7 +374,7 @@ impl QueryRuntimeFilter for ExactMatchFilter {
 }
 
 pub struct RangeFilter {
-    iter: DBIterator,
+    iter: StorageCursor,
     kb: KeyBuilder,
     min: Option<RangeOperator>,
     max: Option<RangeOperator>,
@@ -386,8 +383,8 @@ pub struct RangeFilter {
 }
 
 impl RangeFilter {
-    pub fn new(
-        snapshot: &Snapshot,
+    pub fn new<S: BackendSnapshot>(
+        snapshot: &Snapshot<S>,
         kb: KeyBuilder,
         min: Option<RangeOperator>,
         max: Option<RangeOperator>,
@@ -420,10 +417,7 @@ impl QueryRuntimeFilter for RangeFilter {
         };
         // NOTE vmx 2017-04-13: Iterating over keys is really similar to the
         // `DocResultIterator` in `snapshot.rs`. It should probablly be unified.
-        self.iter.set_mode(IteratorMode::From(
-            value_key.as_bytes(),
-            rocksdb::Direction::Forward,
-        ));
+        self.iter.seek(SeekFrom::Key(value_key.as_bytes()));
         KeyBuilder::truncate_to_kp_word(&mut value_key);
         self.keypath = value_key;
         self.next_result()
@@ -500,16 +494,16 @@ impl QueryRuntimeFilter for RangeFilter {
     }
 }
 
-pub struct BboxFilter<'a> {
-    snapshot: Rc<Snapshot<'a>>,
-    iter: Option<DBIterator>,
+pub struct BboxFilter<S: BackendSnapshot> {
+    snapshot: Rc<Snapshot<S>>,
+    iter: Option<StorageCursor>,
     kb: KeyBuilder,
     bbox: Vec<u8>,
     term_ordinal: Option<usize>,
 }
 
-impl<'a> BboxFilter<'a> {
-    pub fn new(snapshot: Rc<Snapshot<'a>>, kb: KeyBuilder, bbox: [f64; 4]) -> BboxFilter<'a> {
+impl<S: BackendSnapshot> BboxFilter<S> {
+    pub fn new(snapshot: Rc<Snapshot<S>>, kb: KeyBuilder, bbox: [f64; 4]) -> BboxFilter<S> {
         let mut bbox_vec = Vec::with_capacity(32);
         bbox_vec.extend_from_slice(&bbox[0].to_le_bytes());
         bbox_vec.extend_from_slice(&bbox[2].to_le_bytes());
@@ -536,10 +530,10 @@ impl<'a> BboxFilter<'a> {
     }
 }
 
-impl<'a> QueryRuntimeFilter for BboxFilter<'a> {
+impl<S: BackendSnapshot> QueryRuntimeFilter for BboxFilter<S> {
     fn first_result(&mut self, start: &DocResult) -> Option<DocResult> {
-        let query = self.kb.rtree_query_key(start.seq, u64::MAX, &self.bbox);
-        self.iter = Some(self.snapshot.new_rtree_iterator(&query));
+        let query = self.kb.multidim_query_key(start.seq, u64::MAX, &self.bbox);
+        self.iter = Some(self.snapshot.new_multidim_iterator(&query));
         self.next_result()
     }
 
@@ -559,7 +553,7 @@ impl<'a> QueryRuntimeFilter for BboxFilter<'a> {
 
             let mut dr = DocResult::new();
             dr.seq = iid;
-            dr.arraypath = BboxFilter::from_u8_slice(&value);
+            dr.arraypath = Self::from_u8_slice(&value);
             if let Some(to) = self.term_ordinal {
                 dr.add_score(to, 1.0);
             }
@@ -725,17 +719,14 @@ impl QueryRuntimeFilter for DistanceFilter {
     }
 }
 
-pub struct AndFilter<'a> {
-    filters: Vec<Box<dyn QueryRuntimeFilter + 'a>>,
+pub struct AndFilter {
+    filters: Vec<Box<dyn QueryRuntimeFilter>>,
     current_filter: usize,
     array_depth: usize,
 }
 
-impl<'a> AndFilter<'a> {
-    pub fn new(
-        filters: Vec<Box<dyn QueryRuntimeFilter + 'a>>,
-        array_depth: usize,
-    ) -> AndFilter<'a> {
+impl AndFilter {
+    pub fn new(filters: Vec<Box<dyn QueryRuntimeFilter>>, array_depth: usize) -> AndFilter {
         AndFilter {
             filters,
             current_filter: 0,
@@ -774,7 +765,7 @@ impl<'a> AndFilter<'a> {
     }
 }
 
-impl<'a> QueryRuntimeFilter for AndFilter<'a> {
+impl QueryRuntimeFilter for AndFilter {
     fn first_result(&mut self, start: &DocResult) -> Option<DocResult> {
         let base_result = self.filters[self.current_filter].first_result(start);
         self.result(base_result)
@@ -811,14 +802,14 @@ impl<'a> QueryRuntimeFilter for AndFilter<'a> {
 /// Used by OrFilter to maintain a already fetched result so we don't refetch when one side isn't
 /// returned to caller. Because we won't know which side gets returned until both sides are
 /// fetched.
-pub struct FilterWithResult<'a> {
-    filter: Box<dyn QueryRuntimeFilter + 'a>,
+pub struct FilterWithResult {
+    filter: Box<dyn QueryRuntimeFilter>,
     result: Option<DocResult>,
     is_done: bool,
     array_depth: usize,
 }
 
-impl<'a> FilterWithResult<'a> {
+impl FilterWithResult {
     fn prime_first_result(&mut self, start: &DocResult) {
         if self.is_done {
             return;
@@ -846,17 +837,17 @@ impl<'a> FilterWithResult<'a> {
     }
 }
 
-pub struct OrFilter<'a> {
-    left: FilterWithResult<'a>,
-    right: FilterWithResult<'a>,
+pub struct OrFilter {
+    left: FilterWithResult,
+    right: FilterWithResult,
 }
 
-impl<'a> OrFilter<'a> {
+impl OrFilter {
     pub fn new(
-        left: Box<dyn QueryRuntimeFilter + 'a>,
-        right: Box<dyn QueryRuntimeFilter + 'a>,
+        left: Box<dyn QueryRuntimeFilter>,
+        right: Box<dyn QueryRuntimeFilter>,
         array_depth: usize,
-    ) -> OrFilter<'a> {
+    ) -> OrFilter {
         OrFilter {
             left: FilterWithResult {
                 filter: left,
@@ -912,7 +903,7 @@ impl<'a> OrFilter<'a> {
     }
 }
 
-impl<'a> QueryRuntimeFilter for OrFilter<'a> {
+impl QueryRuntimeFilter for OrFilter {
     fn first_result(&mut self, start: &DocResult) -> Option<DocResult> {
         self.left.prime_first_result(start);
         self.right.prime_first_result(start);
@@ -941,19 +932,19 @@ impl<'a> QueryRuntimeFilter for OrFilter<'a> {
     }
 }
 
-pub struct NotFilter<'a> {
-    iter: DBIterator,
-    filter: Box<dyn QueryRuntimeFilter + 'a>,
+pub struct NotFilter {
+    iter: StorageCursor,
+    filter: Box<dyn QueryRuntimeFilter>,
     last_doc_returned: Option<DocResult>,
     kb: KeyBuilder,
 }
 
-impl<'a> NotFilter<'a> {
-    pub fn new(
-        snapshot: &Snapshot,
-        filter: Box<dyn QueryRuntimeFilter + 'a>,
+impl NotFilter {
+    pub fn new<S: BackendSnapshot>(
+        snapshot: &Snapshot<S>,
+        filter: Box<dyn QueryRuntimeFilter>,
         kb: KeyBuilder,
-    ) -> NotFilter<'a> {
+    ) -> NotFilter {
         NotFilter {
             iter: snapshot.new_iterator(),
             filter,
@@ -974,10 +965,7 @@ impl<'a> NotFilter<'a> {
                 // if not, it means other elements did a regular match and skipped them, then we
                 // ran off the end of the array.
                 let value_key = self.kb.kp_value_key_from_doc_result(dr);
-                self.iter.set_mode(IteratorMode::From(
-                    value_key.as_bytes(),
-                    rocksdb::Direction::Forward,
-                ));
+                self.iter.seek(SeekFrom::Key(value_key.as_bytes()));
                 if let Some((key, _value)) = self.iter.next() {
                     let key_str = unsafe { str::from_utf8_unchecked(&key) };
                     KeyBuilder::is_kp_value_key_prefix(&value_key, key_str)
@@ -995,10 +983,7 @@ impl<'a> NotFilter<'a> {
             let mut kb = KeyBuilder::new();
             kb.push_object_key("_id");
             let value_key = kb.kp_value_key_from_doc_result(dr);
-            self.iter.set_mode(IteratorMode::From(
-                value_key.as_bytes(),
-                rocksdb::Direction::Forward,
-            ));
+            self.iter.seek(SeekFrom::Key(value_key.as_bytes()));
             if let Some((key, _value)) = self.iter.next() {
                 let key_str = unsafe { str::from_utf8_unchecked(&key) };
                 value_key == key_str
@@ -1011,7 +996,7 @@ impl<'a> NotFilter<'a> {
     }
 }
 
-impl<'a> QueryRuntimeFilter for NotFilter<'a> {
+impl QueryRuntimeFilter for NotFilter {
     fn first_result(&mut self, start: &DocResult) -> Option<DocResult> {
         let mut start = start.clone_only_seq_and_arraypath();
         start.arraypath.resize(self.kb.arraypath_len(), 0);
@@ -1065,18 +1050,18 @@ impl<'a> QueryRuntimeFilter for NotFilter<'a> {
     }
 }
 
-pub struct BindFilter<'a> {
+pub struct BindFilter {
     bind_var_name: String,
-    filter: Box<dyn QueryRuntimeFilter + 'a>,
+    filter: Box<dyn QueryRuntimeFilter>,
     array_depth: usize,
     kb: KeyBuilder,
     option_next: Option<DocResult>,
 }
 
-impl<'a> BindFilter<'a> {
+impl BindFilter {
     pub fn new(
         bind_var_name: String,
-        filter: Box<dyn QueryRuntimeFilter + 'a>,
+        filter: Box<dyn QueryRuntimeFilter>,
         kb: KeyBuilder,
     ) -> BindFilter {
         BindFilter {
@@ -1105,7 +1090,7 @@ impl<'a> BindFilter<'a> {
     }
 }
 
-impl<'a> QueryRuntimeFilter for BindFilter<'a> {
+impl QueryRuntimeFilter for BindFilter {
     fn first_result(&mut self, start: &DocResult) -> Option<DocResult> {
         let first = if let Some(next) = self.option_next.take() {
             if start.less(&next, self.array_depth) {
@@ -1151,18 +1136,18 @@ impl<'a> QueryRuntimeFilter for BindFilter<'a> {
     }
 }
 
-pub struct BoostFilter<'a> {
-    filter: Box<dyn QueryRuntimeFilter + 'a>,
+pub struct BoostFilter {
+    filter: Box<dyn QueryRuntimeFilter>,
     boost: f32,
 }
 
-impl<'a> BoostFilter<'a> {
-    pub fn new(filter: Box<dyn QueryRuntimeFilter + 'a>, boost: f32) -> BoostFilter {
+impl BoostFilter {
+    pub fn new(filter: Box<dyn QueryRuntimeFilter>, boost: f32) -> BoostFilter {
         BoostFilter { filter, boost }
     }
 }
 
-impl<'a> QueryRuntimeFilter for BoostFilter<'a> {
+impl QueryRuntimeFilter for BoostFilter {
     fn first_result(&mut self, start: &DocResult) -> Option<DocResult> {
         if let Some(mut dr) = self.filter.first_result(start) {
             dr.boost_scores(self.boost);

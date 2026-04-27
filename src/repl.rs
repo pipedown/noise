@@ -1,8 +1,12 @@
 use crate::index::{Batch, Index, OpenOptions};
 use crate::json_value::{JsonValue, PrettyPrint};
+use crate::storage::Database;
 
 use std::io::{BufRead, Write};
 use std::mem;
+
+type Idx = Index<Database>;
+type Bat = Batch<Database>;
 
 fn is_command(str: &str) -> bool {
     let commands = [
@@ -70,7 +74,7 @@ pub fn repl(r: &mut dyn BufRead, w: &mut dyn Write, test_mode: bool) {
     while let Some(cmd) = next_command(r, w, test_mode) {
         if let Some(rest) = cmd.strip_prefix("open") {
             let dbname = rest.trim_start();
-            match Index::open(dbname, None) {
+            match Idx::open(dbname, None) {
                 Ok(index) => {
                     repl_opened(index, r, w, test_mode, pretty);
                     return;
@@ -79,7 +83,7 @@ pub fn repl(r: &mut dyn BufRead, w: &mut dyn Write, test_mode: bool) {
             }
         } else if let Some(rest) = cmd.strip_prefix("create") {
             let dbname = rest.trim_start();
-            match Index::open(dbname, Some(OpenOptions::Create)) {
+            match Idx::open(dbname, Some(OpenOptions::Create)) {
                 Ok(index) => {
                     repl_opened(index, r, w, test_mode, pretty);
                     return;
@@ -94,7 +98,7 @@ pub fn repl(r: &mut dyn BufRead, w: &mut dyn Write, test_mode: bool) {
             }
         } else if let Some(rest) = cmd.strip_prefix("drop") {
             let dbname = rest.trim_start();
-            match Index::drop(dbname) {
+            match Idx::drop(dbname) {
                 Ok(()) => (),
                 Err(reason) => writeln!(w, "{}", reason).unwrap(),
             }
@@ -104,8 +108,8 @@ pub fn repl(r: &mut dyn BufRead, w: &mut dyn Write, test_mode: bool) {
     }
 }
 
-fn flush_batch(index: &mut Index, batch: &mut Batch, w: &mut dyn Write) {
-    let mut batch2 = Batch::new();
+fn flush_batch(index: &mut Idx, batch: &mut Bat, w: &mut dyn Write) {
+    let mut batch2 = index.new_batch();
     mem::swap(batch, &mut batch2);
     if let Err(reason) = index.flush(batch2) {
         writeln!(w, "{}", reason).unwrap();
@@ -113,13 +117,13 @@ fn flush_batch(index: &mut Index, batch: &mut Batch, w: &mut dyn Write) {
 }
 
 fn repl_opened(
-    mut index: Index,
+    mut index: Idx,
     r: &mut dyn BufRead,
     w: &mut dyn Write,
     test_mode: bool,
     mut pretty: PrettyPrint,
 ) {
-    let mut batch = Batch::new();
+    let mut batch = index.new_batch();
     let mut params = None;
     loop {
         let cmd = if let Some(cmd) = next_command(r, w, test_mode) {
@@ -139,19 +143,19 @@ fn repl_opened(
         } else if let Some(rest) = cmd.strip_prefix("create") {
             flush_batch(&mut index, &mut batch, w);
             let dbname = rest.trim_start();
-            match Index::open(dbname, Some(OpenOptions::Create)) {
+            match Idx::open(dbname, Some(OpenOptions::Create)) {
                 Ok(index_new) => index = index_new,
                 Err(reason) => writeln!(w, "{}", reason).unwrap(),
             }
         } else if let Some(rest) = cmd.strip_prefix("drop") {
             let dbname = rest.trim_start();
-            match Index::drop(dbname) {
+            match Idx::drop(dbname) {
                 Ok(()) => (),
                 Err(reason) => writeln!(w, "{}", reason).unwrap(),
             }
         } else if let Some(rest) = cmd.strip_prefix("open") {
             let dbname = rest.trim_start();
-            match Index::open(dbname, None) {
+            match Idx::open(dbname, None) {
                 Ok(index_new) => index = index_new,
                 Err(reason) => writeln!(w, "{}", reason).unwrap(),
             }
