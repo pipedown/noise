@@ -1,3 +1,10 @@
+[workspace]
+members = [
+    ".",
+    "noise-storage",
+    "noise-storage-rocksdb",
+]
+
 [package]
 name = "noise_search"
 version = "0.8.0"
@@ -10,16 +17,20 @@ description = "Nested Object Inverted Search Engine"
 build = "build.rs"
 edition = "2021"
 
+[features]
+default = ["storage-rocksdb"]
+storage-rocksdb = ["noise-storage-rocksdb"]
+
 [lib]
 name = "noise_search"
 crate-type = ["lib"]
-
 
 [dependencies]
 rustc-serialize = "0.3.24"
 stemmer = "0.3.2"
 unicode-normalization = "0.1.19"
 unicode-segmentation = "1.8.0"
-noise_search_deps_rocksdb = "0.1.1"
 varint = "0.9.0"
 uuid = { version = "1.1.2", features = ["v4"] }
+noise-storage = { path = "noise-storage" }
+noise-storage-rocksdb = { path = "noise-storage-rocksdb", optional = true }

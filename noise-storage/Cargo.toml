@@ -1,0 +1,10 @@
+[package]
+name = "noise-storage"
+version = "0.1.0"
+authors = ["Volker Mische <volker.mische@gmail.com>"]
+license = "MIT OR Apache-2.0"
+description = "Storage backend traits for Noise search engine"
+edition = "2021"
+
+[dependencies]
+varint = "0.9.0"
