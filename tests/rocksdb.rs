@@ -1,15 +1,26 @@
-extern crate rocksdb;
-use rocksdb::DB;
+use noise_search::index::{Index, OpenOptions};
+use noise_storage::{BackendBatch, BackendDatabase, Namespace};
+
+type Idx = Index<noise_search::storage::Database>;
 
 #[test]
 fn rocksdb_works() {
-    let db = DB::open_default("target/tests/rocksdb/db").unwrap();
-    let mut status = db.put(b"first", b"this is cool");
-    assert!(status.is_ok(), "Putting a key-value pair was successful");
+    let dbname = "target/tests/rocksdb/db";
+    let _ = Idx::drop(dbname);
+    let index = Idx::open(dbname, Some(OpenOptions::Create)).unwrap();
 
-    let value = db.get(b"first");
-    assert_eq!(Some("this is cool"), value.unwrap().unwrap().to_utf8());
+    index.db.put(b"first", b"this is cool").unwrap();
 
-    status = db.delete(b"first");
-    assert!(status.is_ok(), "Deletion of key was successful");
+    let value = index.db.get(b"first").unwrap();
+    assert_eq!(value.unwrap(), b"this is cool");
+
+    let mut batch = index.db.new_batch();
+    batch.delete(Namespace::Default, b"first").unwrap();
+    index.db.write(batch).unwrap();
+
+    let value = index.db.get(b"first").unwrap();
+    assert!(value.is_none());
+
+    drop(index);
+    let _ = Idx::drop(dbname);
 }

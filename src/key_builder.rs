@@ -2,35 +2,23 @@ extern crate unicode_normalization;
 extern crate varint;
 
 use crate::query::DocResult;
-use std::cmp::Ordering;
+use noise_storage::{
+    split_seq_arraypath_from_kp_word_key, KEY_PREFIX_FIELD_COUNT, KEY_PREFIX_NUMBER,
+    KEY_PREFIX_WORD, KEY_PREFIX_WORD_COUNT,
+};
 use std::io::Cursor;
-use std::str;
 
 use self::varint::VarintWrite;
 
 /// For index header. This constant isn't actually used in the code, but provided here for
 /// completeness.
 pub const _KEY_PREFIX_HEADER: char = 'H';
-/// for looking up words in fields.
-pub const KEY_PREFIX_WORD: char = 'W';
-/// for getting the total count of a word in the index. Used for relevancy scoring.
-pub const KEY_PREFIX_WORD_COUNT: char = 'C';
-/// for getting the total number of field instances in the index. Used for relevancy scoring.
-pub const KEY_PREFIX_FIELD_COUNT: char = 'K';
 /// for specific field length. Used for relevancy scoring
 pub const KEY_PREFIX_FIELD_LENGTH: char = 'L';
 /// for getting the doc seq from it's id.
 pub const KEY_PREFIX_ID_TO_SEQ: char = 'I';
 /// for getting/scanning the all the seqs
 pub const KEY_PREFIX_SEQ: char = 'S';
-/// number values index
-pub const KEY_PREFIX_NUMBER: char = 'f';
-/// for true values index
-pub const KEY_PREFIX_TRUE: char = 'T';
-/// for false value index
-pub const KEY_PREFIX_FALSE: char = 'F';
-/// for null values index
-pub const KEY_PREFIX_NULL: char = 'N';
 /// for orignal doc values for retrieving results
 pub const KEY_PREFIX_VALUE: char = 'V';
 
@@ -120,8 +108,8 @@ impl KeyBuilder {
         key.strip_prefix('S')?.parse().ok()
     }
 
-    /// Build key to query an R-tree
-    pub fn rtree_query_key(&self, seq_min: u64, seq_max: u64, bbox: &[u8]) -> Vec<u8> {
+    /// Build key to query the multi-dimensional namespace
+    pub fn multidim_query_key(&self, seq_min: u64, seq_max: u64, bbox: &[u8]) -> Vec<u8> {
         let mut keypath = String::with_capacity(100);
         for segment in &self.keypath {
             keypath.push_str(segment);
@@ -137,12 +125,12 @@ impl KeyBuilder {
         key
     }
 
-    /// Build key an R-tree index can be built upon
+    /// Build key for the multi-dimensional namespace
     /// The structure is a bit different from other keypath. It doesn't have a prefix as those
-    /// keys are stored in a separate column family. The Arraypath is not part of the key, but
-    /// stored as value. The sequence number is encoded as integer as it is the first dimension
-    /// of the R-tree. The second and third dimensions are the values of the bounding box.
-    pub fn rtree_key(&self, seq: u64, bbox: &[u8]) -> Vec<u8> {
+    /// keys are stored in a separate namespace. The Arraypath is not part of the key, but
+    /// stored as value. The sequence number is encoded as integer as it is the first dimension.
+    /// The second and third dimensions are the values of the bounding box.
+    pub fn multidim_key(&self, seq: u64, bbox: &[u8]) -> Vec<u8> {
         let mut keypath = String::with_capacity(100);
         for segment in &self.keypath {
             keypath.push_str(segment);
@@ -444,27 +432,10 @@ impl KeyBuilder {
         self.keypath.len()
     }
 
-    /// splits key into key path, seq and array path
-    /// ex "W.foo$.bar$.baz!word#123,0,0" -> ("W.foo$.bar$.bar!word", "123", "0,0")
-    fn split_seq_arraypath_from_kp_word_key(str: &str) -> (&str, &str, &str) {
-        let n = str.rfind('#').unwrap();
-        assert!(n != 0);
-        assert!(n != str.len() - 1);
-        let seq_arraypath_str = &str[(n + 1)..];
-        let m = seq_arraypath_str.find(',').unwrap();
-
-        (
-            &str[..n],
-            &seq_arraypath_str[..m],
-            &seq_arraypath_str[m + 1..],
-        )
-    }
-
     /// parses a seq and array path portion (ex "123,0,0,10) of a key into a doc result
     pub fn parse_doc_result_from_kp_word_key(str: &str) -> DocResult {
         let mut dr = DocResult::new();
-        let (_path_str, seq_str, arraypath_str) =
-            KeyBuilder::split_seq_arraypath_from_kp_word_key(str);
+        let (_path_str, seq_str, arraypath_str) = split_seq_arraypath_from_kp_word_key(str);
         dr.seq = seq_str.parse().unwrap();
         if !arraypath_str.is_empty() {
             for numstr in arraypath_str.split(',') {
@@ -472,75 +443,6 @@ impl KeyBuilder {
             }
         }
         dr
-    }
-
-    /// used to collate relevant keys that need specific sorting.
-    #[allow(clippy::collapsible_else_if)]
-    pub fn compare_keys(akey: &str, bkey: &str) -> Ordering {
-        debug_assert!(
-            akey.starts_with(KEY_PREFIX_WORD)
-                || akey.starts_with(KEY_PREFIX_NUMBER)
-                || akey.starts_with(KEY_PREFIX_TRUE)
-                || akey.starts_with(KEY_PREFIX_FALSE)
-                || akey.starts_with(KEY_PREFIX_NULL)
-        );
-        debug_assert!(
-            bkey.starts_with(KEY_PREFIX_WORD)
-                || bkey.starts_with(KEY_PREFIX_NUMBER)
-                || bkey.starts_with(KEY_PREFIX_TRUE)
-                || bkey.starts_with(KEY_PREFIX_FALSE)
-                || bkey.starts_with(KEY_PREFIX_NULL)
-        );
-        let (apath_str, aseq_str, aarraypath_str) =
-            KeyBuilder::split_seq_arraypath_from_kp_word_key(akey);
-        let (bpath_str, bseq_str, barraypath_str) =
-            KeyBuilder::split_seq_arraypath_from_kp_word_key(bkey);
-
-        match apath_str[0..].cmp(&bpath_str[0..]) {
-            Ordering::Less => Ordering::Less,
-            Ordering::Greater => Ordering::Greater,
-            Ordering::Equal => {
-                let aseq: u64 = aseq_str.parse().unwrap();
-                let bseq: u64 = bseq_str.parse().unwrap();
-                match aseq.cmp(&bseq) {
-                    Ordering::Less => Ordering::Less,
-                    Ordering::Greater => Ordering::Greater,
-                    Ordering::Equal => {
-                        if aarraypath_str.is_empty() || barraypath_str.is_empty() {
-                            aarraypath_str.len().cmp(&barraypath_str.len())
-                        } else {
-                            let mut a_nums = aarraypath_str.split(',');
-                            let mut b_nums = barraypath_str.split(',');
-                            loop {
-                                if let Some(a_num_str) = a_nums.next() {
-                                    if let Some(b_num_str) = b_nums.next() {
-                                        let a_num: u64 = a_num_str.parse().unwrap();
-                                        let b_num: u64 = b_num_str.parse().unwrap();
-                                        match a_num.cmp(&b_num) {
-                                            Ordering::Less => return Ordering::Less,
-                                            Ordering::Greater => return Ordering::Greater,
-                                            Ordering::Equal => (),
-                                        }
-                                    } else {
-                                        //b is shorter than a, so greater
-                                        return Ordering::Greater;
-                                    }
-                                } else {
-                                    if b_nums.next().is_some() {
-                                        //a is shorter than b so less
-                                        return Ordering::Less;
-                                    } else {
-                                        // same length and must have hit all equal before this,
-                                        // so equal
-                                        return Ordering::Equal;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
     }
 }
 
@@ -554,6 +456,7 @@ impl Default for KeyBuilder {
 mod tests {
     use super::KeyBuilder;
     use crate::query::DocResult;
+    use noise_storage::split_seq_arraypath_from_kp_word_key;
 
     #[test]
     fn test_segments_push() {
@@ -597,16 +500,14 @@ mod tests {
     #[test]
     fn test_doc_result_parse() {
         let key = "W.foo$.bar$!word#123,1,0".to_string();
-        let (keypathstr, seqstr, arraypathstr) =
-            KeyBuilder::split_seq_arraypath_from_kp_word_key(&key);
+        let (keypathstr, seqstr, arraypathstr) = split_seq_arraypath_from_kp_word_key(&key);
         assert_eq!(keypathstr, "W.foo$.bar$!word");
         assert_eq!(seqstr, "123");
         assert_eq!(arraypathstr, "1,0");
 
         // make sure escaped commas and # in key path don't cause problems
         let key1 = "W.foo\\#$.bar\\,$!word#123,2,0".to_string();
-        let (keypathstr1, seqstr1, arraypathstr1) =
-            KeyBuilder::split_seq_arraypath_from_kp_word_key(&key1);
+        let (keypathstr1, seqstr1, arraypathstr1) = split_seq_arraypath_from_kp_word_key(&key1);
         assert_eq!(keypathstr1, "W.foo\\#$.bar\\,$!word");
         assert_eq!(seqstr1, "123");
         assert_eq!(arraypathstr1, "2,0");

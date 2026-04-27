@@ -1,57 +1,38 @@
-extern crate rocksdb;
 extern crate uuid;
-extern crate varint;
 
 use self::uuid::Uuid;
-use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashSet};
-use std::io::Cursor;
 use std::io::Write;
-use std::mem;
 use std::str;
 
 use std::sync::{LockResult, Mutex, MutexGuard};
-
-use self::varint::{VarintRead, VarintWrite};
-
-pub use rocksdb::WriteBatch;
-use rocksdb::{
-    BlockBasedIndexType, BlockBasedOptions, CompactionDecision, IteratorMode, MergeOperands,
-    Snapshot as RocksSnapshot,
-};
 
 use crate::error::Error;
 use crate::json_shred::{KeyValues, Shredder};
 use crate::key_builder::{self, KeyBuilder};
 use crate::query::QueryResults;
 use crate::snapshot::Snapshot;
+use noise_storage::{BackendBatch, BackendDatabase, DatabaseConfig, Namespace, SeekFrom};
 
 const NOISE_HEADER_VERSION: u64 = 1;
 
-pub struct Index {
+pub struct Index<D: BackendDatabase> {
     name: String,
     high_doc_seq: u64,
-    pub rocks: rocksdb::DB,
-    rtree: rocksdb::ColumnFamily,
+    pub db: D,
 }
 
-pub struct Batch {
-    wb: rocksdb::WriteBatch,
+pub struct Batch<D: BackendDatabase> {
+    wb: D::Batch,
     id_str_in_batch: HashSet<String>,
 }
 
-impl Batch {
-    pub fn new() -> Batch {
+impl<D: BackendDatabase> Batch<D> {
+    fn new(wb: D::Batch) -> Batch<D> {
         Batch {
-            wb: rocksdb::WriteBatch::default(),
+            wb,
             id_str_in_batch: HashSet::new(),
         }
-    }
-}
-
-impl Default for Batch {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -59,59 +40,35 @@ pub enum OpenOptions {
     Create,
 }
 
-impl Index {
-    pub fn open(name: &str, open_options: Option<OpenOptions>) -> Result<Index, Error> {
-        let mut rocks_options = rocksdb::Options::default();
-        rocks_options.set_comparator("noise_cmp", Index::compare_keys);
-        rocks_options.set_merge_operator("noise_merge", Index::sum_merge);
-        rocks_options.set_compaction_filter("noise_compact", Index::compaction_filter);
+impl<D: BackendDatabase> Index<D> {
+    pub fn open(name: &str, open_options: Option<OpenOptions>) -> Result<Index<D>, Error> {
+        let create = matches!(open_options, Some(OpenOptions::Create));
 
-        let mut rtree_options = rocksdb::Options::default();
-        rtree_options.set_memtable_skip_list_mbb_rep();
-        let mut block_based_opts = BlockBasedOptions::default();
-        block_based_opts.set_index_type(BlockBasedIndexType::RtreeSearch);
-        rtree_options.set_block_based_table_factory(&block_based_opts);
-        rtree_options.set_comparator("noise_rtree_cmp", Index::compare_keys_rtree);
-
-        let rocks = match rocksdb::DB::open_cf(&rocks_options, name, &["rtree"], &[&rtree_options])
-        {
-            Ok(rocks) => rocks,
-            Err(error) => {
-                match open_options {
-                    Some(OpenOptions::Create) => (),
-                    _ => return Err(Error::Rocks(error)),
-                }
-
-                rocks_options.create_if_missing(true);
-
-                let mut rocks = rocksdb::DB::open(&rocks_options, name)?;
-                // TODO vmx 2017-10-20: Use create_missing_column_families
-                rocks.create_cf("rtree", &rtree_options)?;
-
-                let mut bytes = Vec::with_capacity(8 * 2);
-                bytes.write_all(&NOISE_HEADER_VERSION.to_le_bytes())?;
-                bytes.write_all(&0u64.to_le_bytes())?;
-                rocks.put_opt(b"HDB", &bytes, &rocksdb::WriteOptions::new())?;
-
-                rocks
-            }
+        let config = DatabaseConfig {
+            create_if_missing: create,
         };
 
+        let db = D::open(name, &config)?;
+
+        // If we just created the database, write the header
+        if db.get(b"HDB")?.is_none() {
+            let mut bytes = Vec::with_capacity(8 * 2);
+            bytes.write_all(&NOISE_HEADER_VERSION.to_le_bytes())?;
+            bytes.write_all(&0u64.to_le_bytes())?;
+            db.put(b"HDB", &bytes)?;
+        }
+
         // validate header is there
-        let value = rocks.get(b"HDB")?.unwrap();
+        let value = db.get(b"HDB")?.unwrap();
         assert_eq!(value.len(), 8 * 2);
         // first 8 is version
-        assert_eq!(
-            Index::convert_bytes_to_u64(&value[..8]),
-            NOISE_HEADER_VERSION
-        );
+        assert_eq!(convert_bytes_to_u64(&value[..8]), NOISE_HEADER_VERSION);
         // next 8 is high seq
 
         Ok(Index {
             name: name.to_string(),
-            high_doc_seq: Index::convert_bytes_to_u64(&value[8..]),
-            rtree: rocks.cf_handle("rtree").unwrap(),
-            rocks,
+            high_doc_seq: convert_bytes_to_u64(&value[8..]),
+            db,
         })
     }
 
@@ -119,16 +76,25 @@ impl Index {
         &self.name
     }
 
-    pub fn new_snapshot(&self) -> Snapshot<'_> {
-        Snapshot::new(RocksSnapshot::new(&self.rocks))
+    pub fn new_snapshot(&self) -> Snapshot<D::Snapshot> {
+        Snapshot::new(self.db.snapshot())
+    }
+
+    pub fn new_batch(&self) -> Batch<D> {
+        Batch::new(self.db.new_batch())
+    }
+
+    /// Write a storage batch directly (used by tests in json_shred)
+    pub fn write_batch(&self, batch: D::Batch) -> Result<(), Error> {
+        self.db.write(batch).map_err(Into::into)
     }
 
     //This deletes the Rockdbs instance from disk
     pub fn drop(name: &str) -> Result<(), Error> {
-        rocksdb::DB::destroy(&rocksdb::Options::default(), name).map_err(Into::into)
+        D::destroy(name).map_err(Into::into)
     }
 
-    pub fn add(&mut self, json: &str, batch: &mut Batch) -> Result<String, Error> {
+    pub fn add(&mut self, json: &str, batch: &mut Batch<D>) -> Result<String, Error> {
         let mut shredder = Shredder::new();
         let (seq, docid) = if let Some(docid) = shredder.shred(json)? {
             // user supplied doc id, see if we have an existing one.
@@ -154,14 +120,14 @@ impl Index {
             (self.high_doc_seq, docid)
         };
         // now everything needs to be added to the batch,
-        shredder.add_all_to_batch(seq, &mut batch.wb, self.rtree)?;
+        shredder.add_all_to_batch(seq, &mut batch.wb)?;
         batch.id_str_in_batch.insert(docid.clone());
 
         Ok(docid)
     }
 
     /// Returns Ok(true) if the document was found and deleted, Ok(false) if it could not be found
-    pub fn delete(&mut self, docid: &str, batch: &mut Batch) -> Result<bool, Error> {
+    pub fn delete(&mut self, docid: &str, batch: &mut Batch<D>) -> Result<bool, Error> {
         if batch.id_str_in_batch.contains(docid) {
             // oops use trying to delete a doc that's in the batch. Can't happen,
             return Err(Error::Write(
@@ -183,7 +149,7 @@ impl Index {
         &self,
         query: &str,
         parameters: Option<String>,
-    ) -> Result<QueryResults<'_>, Error> {
+    ) -> Result<QueryResults<D::Snapshot>, Error> {
         QueryResults::new_query_results(query, parameters, self.new_snapshot())
     }
 
@@ -194,12 +160,9 @@ impl Index {
             let value_key = kb.kp_value_key(seq);
             let mut key_values = BTreeMap::new();
 
-            let mut iter = self.rocks.iterator(IteratorMode::Start);
+            let mut iter = self.db.iterator();
             // Seek in index to >= entry
-            iter.set_mode(IteratorMode::From(
-                value_key.as_bytes(),
-                rocksdb::Direction::Forward,
-            ));
+            iter.seek(SeekFrom::Key(value_key.as_bytes()));
             for (key, value) in iter {
                 if !key.starts_with(value_key.as_bytes()) {
                     break;
@@ -215,179 +178,45 @@ impl Index {
     }
 
     // Store the current batch
-    pub fn flush(&mut self, mut batch: Batch) -> Result<(), Error> {
+    pub fn flush(&mut self, mut batch: Batch<D>) -> Result<(), Error> {
         // Flush can only be called if the index is open
 
         let mut bytes = Vec::with_capacity(8 * 2);
         bytes.write_all(&NOISE_HEADER_VERSION.to_le_bytes())?;
         bytes.write_all(&self.high_doc_seq.to_le_bytes())?;
-        batch.wb.put(b"HDB", &bytes)?;
+        batch.wb.put(Namespace::Default, b"HDB", &bytes)?;
 
-        self.rocks.write(batch.wb).map_err(Into::into)
+        self.db.write(batch.wb).map_err(Into::into)
     }
 
     pub fn all_keys(&self) -> Result<Vec<String>, Error> {
         let mut results = Vec::new();
-        for (key, _value) in self.rocks.iterator(rocksdb::IteratorMode::Start) {
+        for (key, _value) in self.db.iterator() {
             let key_string = unsafe { str::from_utf8_unchecked(&key) }.to_string();
             results.push(key_string);
         }
         Ok(results)
     }
 
-    /// Should not be used generally since it not varint. Used for header fields
-    /// since only one header is in the database it's not a problem with excess size.
-    fn convert_bytes_to_u64(bytes: &[u8]) -> u64 {
-        debug_assert!(bytes.len() == 8);
-        let mut buffer = [0; 8];
-        for (n, b) in bytes.iter().enumerate() {
-            buffer[n] = *b;
-        }
-        u64::from_ne_bytes(buffer)
-    }
-
-    pub fn convert_bytes_to_i32(bytes: &[u8]) -> i32 {
-        let mut vec = Vec::with_capacity(bytes.len());
-        vec.extend(bytes.iter());
-        let mut read = Cursor::new(vec);
-        read.read_signed_varint_32().unwrap()
-    }
-
-    pub fn convert_i32_to_bytes(val: i32) -> Vec<u8> {
-        let mut bytes = Cursor::new(Vec::new());
-        assert!(bytes.write_signed_varint_32(val).is_ok());
-        bytes.into_inner()
-    }
-
     pub fn fetch_seq(&self, id: &str) -> Result<Option<u64>, Error> {
         let key = format!("{}{}", key_builder::KEY_PREFIX_ID_TO_SEQ, id);
-        match self.rocks.get(key.as_bytes())? {
+        match self.db.get(key.as_bytes())? {
             // If there is an id, it's UTF-8
-            Some(bytes) => Ok(Some(bytes.to_utf8().unwrap().parse().unwrap())),
+            Some(bytes) => Ok(Some(str::from_utf8(&bytes).unwrap().parse().unwrap())),
             None => Ok(None),
         }
     }
+}
 
-    fn compaction_filter(_level: u32, key: &[u8], value: &[u8]) -> CompactionDecision {
-        if !(key[0] as char == key_builder::KEY_PREFIX_WORD_COUNT
-            || key[0] as char == key_builder::KEY_PREFIX_FIELD_COUNT)
-        {
-            return CompactionDecision::Keep;
-        }
-        if 0 == Index::convert_bytes_to_i32(value) {
-            CompactionDecision::Remove
-        } else {
-            CompactionDecision::Keep
-        }
+/// Should not be used generally since it not varint. Used for header fields
+/// since only one header is in the database it's not a problem with excess size.
+fn convert_bytes_to_u64(bytes: &[u8]) -> u64 {
+    debug_assert!(bytes.len() == 8);
+    let mut buffer = [0; 8];
+    for (n, b) in bytes.iter().enumerate() {
+        buffer[n] = *b;
     }
-
-    fn compare_keys(a: &[u8], b: &[u8]) -> Ordering {
-        let value_prefixes = [
-            key_builder::KEY_PREFIX_WORD,
-            key_builder::KEY_PREFIX_NUMBER,
-            key_builder::KEY_PREFIX_TRUE,
-            key_builder::KEY_PREFIX_FALSE,
-            key_builder::KEY_PREFIX_NULL,
-        ];
-        if value_prefixes.contains(&(a[0] as char)) && value_prefixes.contains(&(b[0] as char)) {
-            let astr = unsafe { str::from_utf8_unchecked(a) };
-            let bstr = unsafe { str::from_utf8_unchecked(b) };
-            KeyBuilder::compare_keys(astr, bstr)
-        } else {
-            a.cmp(b)
-        }
-    }
-
-    fn sum_merge(
-        new_key: &[u8],
-        existing_val: Option<&[u8]>,
-        operands: &mut MergeOperands,
-    ) -> Vec<u8> {
-        if !(new_key[0] as char == key_builder::KEY_PREFIX_FIELD_COUNT
-            || new_key[0] as char == key_builder::KEY_PREFIX_WORD_COUNT)
-        {
-            panic!("unknown key type to merge!");
-        }
-
-        let mut count = if let Some(bytes) = existing_val {
-            Index::convert_bytes_to_i32(bytes)
-        } else {
-            0
-        };
-
-        for bytes in operands {
-            count += Index::convert_bytes_to_i32(bytes);
-        }
-        Index::convert_i32_to_bytes(count)
-    }
-
-    /// Return the slice that is prefixed with an unsigned 32-bit varint and the offset after
-    /// the slice that was read
-    fn get_length_prefixed_slice(data: &[u8]) -> (&[u8], usize) {
-        let mut vec = Vec::with_capacity(data.len());
-        vec.extend_from_slice(data);
-        let mut cursor = Cursor::new(vec);
-        let size = cursor.read_unsigned_varint_32().unwrap() as usize;
-        let slice_end = cursor.position() as usize + size;
-        let slice = &data[cursor.position() as usize..slice_end];
-        (slice, slice_end)
-    }
-
-    /// Compare function for RocksDB for the keys in the R-tree
-    /// The keys have a length prefixed string (the Keypath), followed by the Interan Id and
-    /// the bounding box around the geometry
-    fn compare_keys_rtree(aa: &[u8], bb: &[u8]) -> Ordering {
-        if aa.is_empty() && bb.is_empty() {
-            return Ordering::Equal;
-        } else if aa.is_empty() {
-            return Ordering::Less;
-        } else if bb.is_empty() {
-            return Ordering::Greater;
-        }
-
-        let (keypath_aa, offset_aa) = Index::get_length_prefixed_slice(aa);
-        let (keypath_bb, offset_bb) = Index::get_length_prefixed_slice(bb);
-
-        // The ordering of the keypath doesn't need to be unicode collated. The ordering
-        // doesn't really matters, it only matters that it's always the same.
-        let keypath_compare = keypath_aa.cmp(keypath_bb);
-        if keypath_compare != Ordering::Equal {
-            return keypath_compare;
-        }
-
-        // Keypaths are the same, compare the Internal Ids value
-        let seq_aa = unsafe {
-            let array = *(aa[(offset_aa)..].as_ptr() as *const [_; 8]);
-            u64::from_ne_bytes(array)
-        };
-        let seq_bb = unsafe {
-            let array = *(bb[(offset_bb)..].as_ptr() as *const [_; 8]);
-            u64::from_ne_bytes(array)
-        };
-        let seq_compare = seq_aa.cmp(&seq_bb);
-        if seq_compare != Ordering::Equal {
-            return seq_compare;
-        }
-
-        // Internal Ids are the same, compare the bounding box
-        let bbox_aa = unsafe {
-            let array = *(aa[(offset_aa + 8)..].as_ptr() as *const [_; 32]);
-            mem::transmute::<[u8; 32], [f64; 4]>(array)
-        };
-        let bbox_bb = unsafe {
-            let array = *(bb[(offset_bb + 8)..].as_ptr() as *const [_; 32]);
-            mem::transmute::<[u8; 32], [f64; 4]>(array)
-        };
-
-        for (value_aa, value_bb) in bbox_aa.iter().zip(bbox_bb.iter()) {
-            let value_compare = value_aa.partial_cmp(value_bb).unwrap();
-            if value_compare != Ordering::Equal {
-                return value_compare;
-            }
-        }
-        // No early return, the values are fully equal
-        Ordering::Equal
-    }
+    u64::from_ne_bytes(buffer)
 }
 
 /// Used for types where a single writer is allowed to be concurrent with multiple
@@ -420,31 +249,33 @@ unsafe impl<T> Sync for MvccRwLock<T> {}
 
 #[cfg(test)]
 mod tests {
-    extern crate rocksdb;
-    use super::{Batch, Index, MvccRwLock, OpenOptions};
+    use super::{Index, MvccRwLock, OpenOptions};
     use crate::json_value::JsonValue;
     use crate::snapshot::JsonFetcher;
+    use crate::storage::Database;
+    use noise_storage::BackendDatabase;
     use std::str;
     use std::sync::mpsc::channel;
     use std::sync::Arc;
     use std::thread;
 
+    type Idx = Index<Database>;
+
     #[test]
     fn test_open() {
         let dbname = "target/tests/firstnoisedb";
-        let _ = Index::drop(dbname);
+        let _ = Idx::drop(dbname);
 
-        let mut index = Index::open(dbname, Some(OpenOptions::Create)).unwrap();
-        index.flush(Batch::new()).unwrap();
+        let mut index = Idx::open(dbname, Some(OpenOptions::Create)).unwrap();
+        index.flush(index.new_batch()).unwrap();
     }
 
     #[test]
     fn test_uuid() {
         let dbname = "target/tests/testuuid";
-        let _ = Index::drop(dbname);
-        let mut batch = Batch::new();
-
-        let mut index = Index::open(dbname, Some(OpenOptions::Create)).unwrap();
+        let _ = Idx::drop(dbname);
+        let mut index = Idx::open(dbname, Some(OpenOptions::Create)).unwrap();
+        let mut batch = index.new_batch();
 
         let id = index.add(r#"{"foo":"bar"}"#, &mut batch).unwrap();
 
@@ -459,28 +290,25 @@ mod tests {
     #[test]
     fn test_compaction() {
         let dbname = "target/tests/testcompaction";
-        let _ = Index::drop(dbname);
-        let mut batch = Batch::new();
-
-        let mut index = Index::open(dbname, Some(OpenOptions::Create)).unwrap();
+        let _ = Idx::drop(dbname);
+        let mut index = Idx::open(dbname, Some(OpenOptions::Create)).unwrap();
+        let mut batch = index.new_batch();
 
         let id = index.add(r#"{"foo":"bar"}"#, &mut batch).unwrap();
         index.flush(batch).unwrap();
 
-        let mut batch = Batch::new();
+        let mut batch = index.new_batch();
         index.delete(&id, &mut batch).unwrap();
         index.flush(batch).unwrap();
-
-        let rocks = &index.rocks;
 
         // apparently you need to do compaction twice when there are merges
         // first one lets the merges happen, the second lets them be collected.
         // this is acceptable since eventually the keys go away.
         // if this test fails non-deterministically we might have a problem.
-        rocks.compact_range(None, None);
-        rocks.compact_range(None, None);
+        index.db.compact();
+        index.db.compact();
 
-        let mut iter = rocks.iterator(rocksdb::IteratorMode::Start);
+        let mut iter = index.db.iterator();
         let (key, _value) = iter.next().unwrap();
         assert!(key.starts_with(&b"HDB"[..]));
         assert!(iter.next().is_none());
@@ -489,11 +317,11 @@ mod tests {
     #[test]
     fn test_updates() {
         let dbname = "target/tests/testupdates";
-        let _ = Index::drop(dbname);
+        let _ = Idx::drop(dbname);
 
-        let mut index = Index::open(dbname, Some(OpenOptions::Create)).unwrap();
+        let mut index = Idx::open(dbname, Some(OpenOptions::Create)).unwrap();
 
-        let mut batch = Batch::new();
+        let mut batch = index.new_batch();
         let _ = index
             .add(
                 r#"{"_id":"1", "foo":"array", "baz": [1,2,[3,4,[5]]]}"#,
@@ -504,7 +332,7 @@ mod tests {
         index.flush(batch).unwrap();
         {
             let mut results = Vec::new();
-            for (key, value) in index.rocks.iterator(rocksdb::IteratorMode::Start) {
+            for (key, value) in index.db.iterator() {
                 if key[0] as char == 'V' {
                     let key_string = unsafe { str::from_utf8_unchecked(&key) }.to_string();
                     results.push((key_string, JsonFetcher::bytes_to_json_value(&value)));
@@ -526,14 +354,14 @@ mod tests {
             assert_eq!(results, expected);
         }
 
-        let mut batch = Batch::new();
+        let mut batch = index.new_batch();
         let _ = index
             .add(r#"{"_id":"1", "foo":"array", "baz": []}"#, &mut batch)
             .unwrap();
         index.flush(batch).unwrap();
 
         let mut results = Vec::new();
-        for (key, value) in index.rocks.iterator(rocksdb::IteratorMode::Start) {
+        for (key, value) in index.db.iterator() {
             if key[0] as char == 'V' {
                 let key_string = unsafe { str::from_utf8_unchecked(&key) }.to_string();
                 results.push((key_string, JsonFetcher::bytes_to_json_value(&value)));
@@ -553,11 +381,11 @@ mod tests {
     #[test]
     fn test_empty_doc() {
         let dbname = "target/tests/testemptydoc";
-        let _ = Index::drop(dbname);
+        let _ = Idx::drop(dbname);
 
-        let mut index = Index::open(dbname, Some(OpenOptions::Create)).unwrap();
+        let mut index = Idx::open(dbname, Some(OpenOptions::Create)).unwrap();
 
-        let mut batch = Batch::new();
+        let mut batch = index.new_batch();
         let id = index.add("{}", &mut batch).unwrap();
 
         index.flush(batch).unwrap();
@@ -573,9 +401,9 @@ mod tests {
     #[test]
     fn test_index_rw_lock() {
         let dbname = "target/tests/testindexrwlock";
-        let _ = Index::drop(dbname);
+        let _ = Idx::drop(dbname);
 
-        let index = Index::open(dbname, Some(OpenOptions::Create)).unwrap();
+        let index = Idx::open(dbname, Some(OpenOptions::Create)).unwrap();
 
         let index = Arc::new(MvccRwLock::new(index));
         let index_write = index.clone();
@@ -586,7 +414,7 @@ mod tests {
         // Spawn off a writer
         thread::spawn(move || {
             let mut index = index_write.write().unwrap();
-            let mut batch = Batch::new();
+            let mut batch = index.new_batch();
 
             // wait until the main thread has read access
             assert_eq!(1, receiver_w.recv().unwrap());

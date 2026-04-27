@@ -1,4 +1,3 @@
-extern crate rocksdb;
 extern crate rustc_serialize;
 extern crate varint;
 
@@ -12,9 +11,9 @@ use self::rustc_serialize::json::{JsonEvent, Parser, StackElement};
 use self::varint::VarintWrite;
 
 use crate::error::Error;
-use crate::index::Index;
 use crate::key_builder::KeyBuilder;
 use crate::stems::Stems;
+use noise_storage::{convert_i32_to_bytes, BackendBatch, Namespace};
 
 // Good example of using rustc_serialize:
 //   https://github.com/ajroetker/beautician/blob/master/src/lib.rs
@@ -85,22 +84,21 @@ impl Shredder {
         unsafe { std::slice::from_raw_parts(v.as_ptr() as *const u8, std::mem::size_of_val(v)) }
     }
 
-    fn add_rtree_entries(
+    fn add_multidim_entries<B: BackendBatch>(
         kb: &mut KeyBuilder,
         bbox: &[u8],
         docseq: u64,
-        batch: &mut rocksdb::WriteBatch,
-        column_family: rocksdb::ColumnFamily,
+        batch: &mut B,
         delete: bool,
     ) -> Result<(), Error> {
-        // Add/delete the key that is used for R-tree lookups
-        let rtree_key = kb.rtree_key(docseq, bbox);
+        // Add/delete the key that is used for multi-dimensional lookups
+        let key = kb.multidim_key(docseq, bbox);
         if delete {
-            batch.delete_cf(column_family, rtree_key.as_slice())?;
+            batch.delete(Namespace::Multidim, key.as_slice())?;
         } else {
-            batch.put_cf(
-                column_family,
-                rtree_key.as_slice(),
+            batch.put(
+                Namespace::Multidim,
+                key.as_slice(),
                 Shredder::as_u8_slice(kb.arraypath.as_slice()),
             )?;
         }
@@ -108,48 +106,48 @@ impl Shredder {
         Ok(())
     }
 
-    fn add_number_entries(
+    fn add_number_entries<B: BackendBatch>(
         kb: &mut KeyBuilder,
         number: &[u8],
         docseq: u64,
-        batch: &mut rocksdb::WriteBatch,
+        batch: &mut B,
         delete: bool,
     ) -> Result<(), Error> {
         // Add/delete the key that is used for range lookups
         let number_key = kb.number_key(docseq);
         if delete {
-            batch.delete(number_key.as_bytes())?;
+            batch.delete(Namespace::Default, number_key.as_bytes())?;
         } else {
             // The number contains the `f` prefix
-            batch.put(number_key.as_bytes(), &number[1..])?;
+            batch.put(Namespace::Default, number_key.as_bytes(), &number[1..])?;
         }
 
         Ok(())
     }
 
-    fn add_bool_null_entries(
+    fn add_bool_null_entries<B: BackendBatch>(
         kb: &mut KeyBuilder,
         prefix: char,
         docseq: u64,
-        batch: &mut rocksdb::WriteBatch,
+        batch: &mut B,
         delete: bool,
     ) -> Result<(), Error> {
         let key = kb.bool_null_key(prefix, docseq);
         if delete {
-            batch.delete(key.as_bytes())?;
+            batch.delete(Namespace::Default, key.as_bytes())?;
         } else {
             // No need to store any value as the key already contains it
-            batch.put(key.as_bytes(), &[])?;
+            batch.put(Namespace::Default, key.as_bytes(), &[])?;
         }
 
         Ok(())
     }
 
-    fn add_stemmed_entries(
+    fn add_stemmed_entries<B: BackendBatch>(
         kb: &mut KeyBuilder,
         text: &str,
         docseq: u64,
-        batch: &mut rocksdb::WriteBatch,
+        batch: &mut B,
         delete: bool,
     ) -> Result<(), Error> {
         let stems = Stems::new(text);
@@ -176,23 +174,31 @@ impl Shredder {
         for (stemmed, (word_positions, count)) in word_to_word_positions {
             let key = kb.kp_word_key(&stemmed, docseq);
             if delete {
-                batch.delete(&key.into_bytes())?;
+                batch.delete(Namespace::Default, &key.into_bytes())?;
             } else {
-                batch.put(&key.into_bytes(), &word_positions.into_inner())?;
+                batch.put(
+                    Namespace::Default,
+                    &key.into_bytes(),
+                    &word_positions.into_inner(),
+                )?;
             }
 
             let key = kb.kp_field_length_key(docseq);
             if delete {
-                batch.delete(&key.into_bytes())?;
+                batch.delete(Namespace::Default, &key.into_bytes())?;
             } else {
-                batch.put(&key.into_bytes(), &Index::convert_i32_to_bytes(total_words))?;
+                batch.put(
+                    Namespace::Default,
+                    &key.into_bytes(),
+                    &convert_i32_to_bytes(total_words),
+                )?;
             }
 
             let key = kb.kp_word_count_key(&stemmed);
             if delete {
-                batch.merge(&key.into_bytes(), &Index::convert_i32_to_bytes(-count))?;
+                batch.merge(&key.into_bytes(), &convert_i32_to_bytes(-count))?;
             } else {
-                batch.merge(&key.into_bytes(), &Index::convert_i32_to_bytes(count))?;
+                batch.merge(&key.into_bytes(), &convert_i32_to_bytes(count))?;
             }
 
             let key = kb.kp_field_count_key();
@@ -311,11 +317,10 @@ impl Shredder {
         }
     }
 
-    pub fn add_all_to_batch(
+    pub fn add_all_to_batch<B: BackendBatch>(
         &mut self,
         seq: u64,
-        batch: &mut rocksdb::WriteBatch,
-        rtree: rocksdb::ColumnFamily,
+        batch: &mut B,
     ) -> Result<(), Error> {
         for (key, value) in &self.existing_key_value_to_delete {
             self.kb.clear();
@@ -339,21 +344,14 @@ impl Shredder {
                     )?;
                 }
                 'r' => {
-                    Shredder::add_rtree_entries(
-                        &mut self.kb,
-                        &value[1..],
-                        seq,
-                        batch,
-                        rtree,
-                        true,
-                    )?;
+                    Shredder::add_multidim_entries(&mut self.kb, &value[1..], seq, batch, true)?;
                 }
                 _ => {}
             }
-            // If it was a bounding box calculated for the R-tree, it's not part of the
+            // If it was a bounding box for the multi-dimensional namespace, it's not part of the
             // shredded original JSON document
             if value[0] as char != 'r' {
-                batch.delete(key.as_bytes())?;
+                batch.delete(Namespace::Default, key.as_bytes())?;
             }
         }
         self.existing_key_value_to_delete = BTreeMap::new();
@@ -379,41 +377,38 @@ impl Shredder {
                     )?;
                 }
                 'r' => {
-                    Shredder::add_rtree_entries(
-                        &mut self.kb,
-                        &value[1..],
-                        seq,
-                        batch,
-                        rtree,
-                        false,
-                    )?;
+                    Shredder::add_multidim_entries(&mut self.kb, &value[1..], seq, batch, false)?;
                 }
                 _ => {}
             }
-            // If it was a bounding box calculated for the R-tree, it's not a value meant to
-            // be part of the shredded original JSON document
+            // If it was a bounding box for the multi-dimensional namespace, it's not a value meant
+            // to be part of the shredded original JSON document
             if value[0] as char != 'r' {
                 let key = self.kb.kp_value_key(seq);
-                batch.put(key.as_bytes(), value.as_ref())?;
+                batch.put(Namespace::Default, key.as_bytes(), value.as_ref())?;
             }
         }
         self.shredded_key_values = BTreeMap::new();
 
         let key = KeyBuilder::id_to_seq_key(self.doc_id.as_ref().unwrap());
-        batch.put(&key.into_bytes(), seq.to_string().as_bytes())?;
+        batch.put(
+            Namespace::Default,
+            &key.into_bytes(),
+            seq.to_string().as_bytes(),
+        )?;
 
         let key = KeyBuilder::seq_key(seq);
-        batch.put(&key.into_bytes(), b"")?;
+        batch.put(Namespace::Default, &key.into_bytes(), b"")?;
 
         Ok(())
     }
 
-    pub fn delete_existing_doc(
+    pub fn delete_existing_doc<B: BackendBatch>(
         &mut self,
         docid: &str,
         seq: u64,
         existing: KeyValues,
-        batch: &mut rocksdb::WriteBatch,
+        batch: &mut B,
     ) -> Result<(), Error> {
         self.doc_id = Some(docid.to_string());
         for (key, value) in existing.into_iter() {
@@ -439,13 +434,13 @@ impl Shredder {
                 }
                 _ => {}
             }
-            batch.delete(key.as_bytes())?;
+            batch.delete(Namespace::Default, key.as_bytes())?;
         }
         let key = KeyBuilder::id_to_seq_key(self.doc_id.as_ref().unwrap());
-        batch.delete(&key.into_bytes())?;
+        batch.delete(Namespace::Default, &key.into_bytes())?;
 
         let key = KeyBuilder::seq_key(seq);
-        batch.delete(&key.into_bytes())?;
+        batch.delete(Namespace::Default, &key.into_bytes())?;
         Ok(())
     }
 
@@ -578,7 +573,6 @@ impl Shredder {
 
 #[cfg(test)]
 mod tests {
-    extern crate rocksdb;
     extern crate varint;
 
     use self::varint::VarintRead;
@@ -589,10 +583,14 @@ mod tests {
     use crate::index::{Index, OpenOptions};
     use crate::json_value::JsonValue;
     use crate::snapshot::JsonFetcher;
+    use crate::storage::Database;
+    use noise_storage::BackendDatabase;
 
-    fn positions_from_rocks(rocks: &rocksdb::DB) -> Vec<(String, Vec<u32>)> {
+    type Idx = Index<Database>;
+
+    fn positions_from_db(db: &Database) -> Vec<(String, Vec<u32>)> {
         let mut result = Vec::new();
-        for (key, value) in rocks.iterator(rocksdb::IteratorMode::Start) {
+        for (key, value) in db.iterator() {
             if key[0] as char == 'W' {
                 let mut vec = Vec::with_capacity(value.len());
                 vec.extend(value.iter());
@@ -608,9 +606,9 @@ mod tests {
         result
     }
 
-    fn values_from_rocks(rocks: &rocksdb::DB) -> Vec<(String, JsonValue)> {
+    fn values_from_db(db: &Database) -> Vec<(String, JsonValue)> {
         let mut result = Vec::new();
-        for (key, value) in rocks.iterator(rocksdb::IteratorMode::Start) {
+        for (key, value) in db.iterator() {
             if key[0] as char == 'V' {
                 let key_string = unsafe { str::from_utf8_unchecked(&key) }.to_string();
                 result.push((key_string, JsonFetcher::bytes_to_json_value(&value)));
@@ -625,19 +623,16 @@ mod tests {
         let json = r#"{"some": ["array", "data", ["also", "nested"]]}"#;
         let docseq = 123;
         let dbname = "target/tests/test_shred_nested";
-        let _ = Index::drop(dbname);
-        let index = Index::open(dbname, Some(OpenOptions::Create)).unwrap();
-        let rtree = index.rocks.cf_handle("rtree").unwrap();
+        let _ = Idx::drop(dbname);
+        let index = Idx::open(dbname, Some(OpenOptions::Create)).unwrap();
 
-        let mut batch = rocksdb::WriteBatch::default();
+        let mut batch = index.db.new_batch();
         shredder.shred(json).unwrap();
         shredder.add_id("foo").unwrap();
-        shredder
-            .add_all_to_batch(docseq, &mut batch, rtree)
-            .unwrap();
+        shredder.add_all_to_batch(docseq, &mut batch).unwrap();
 
-        index.rocks.write(batch).unwrap();
-        let result = positions_from_rocks(&index.rocks);
+        index.write_batch(batch).unwrap();
+        let result = positions_from_db(&index.db);
 
         let expected = vec![
             ("W._id!foo#123,".to_string(), vec![0]),
@@ -655,19 +650,16 @@ mod tests {
         let json = r#"{"a":{"a":"b"}}"#;
         let docseq = 123;
         let dbname = "target/tests/test_shred_double_nested";
-        let _ = Index::drop(dbname);
-        let index = Index::open(dbname, Some(OpenOptions::Create)).unwrap();
-        let rtree = index.rocks.cf_handle("rtree").unwrap();
+        let _ = Idx::drop(dbname);
+        let index = Idx::open(dbname, Some(OpenOptions::Create)).unwrap();
 
-        let mut batch = rocksdb::WriteBatch::default();
+        let mut batch = index.db.new_batch();
         shredder.shred(json).unwrap();
         shredder.add_id("foo").unwrap();
-        shredder
-            .add_all_to_batch(docseq, &mut batch, rtree)
-            .unwrap();
+        shredder.add_all_to_batch(docseq, &mut batch).unwrap();
 
-        index.rocks.write(batch).unwrap();
-        let result = values_from_rocks(&index.rocks);
+        index.write_batch(batch).unwrap();
+        let result = values_from_db(&index.db);
 
         let expected = vec![
             (
@@ -689,19 +681,16 @@ mod tests {
         let json = r#"{"A":[{"B":"B2VMX two three","C":"..C2"},{"B": "b1","C":"..C2"}]}"#;
         let docseq = 1234;
         let dbname = "target/tests/test_shred_objects";
-        let _ = Index::drop(dbname);
+        let _ = Idx::drop(dbname);
 
-        let index = Index::open(dbname, Some(OpenOptions::Create)).unwrap();
-        let rtree = index.rocks.cf_handle("rtree").unwrap();
+        let index = Idx::open(dbname, Some(OpenOptions::Create)).unwrap();
 
-        let mut batch = rocksdb::WriteBatch::default();
+        let mut batch = index.db.new_batch();
         shredder.shred(json).unwrap();
-        shredder
-            .add_all_to_batch(docseq, &mut batch, rtree)
-            .unwrap();
+        shredder.add_all_to_batch(docseq, &mut batch).unwrap();
 
-        index.rocks.write(batch).unwrap();
-        let result = positions_from_rocks(&index.rocks);
+        index.write_batch(batch).unwrap();
+        let result = positions_from_db(&index.db);
         let expected = vec![
             ("W.A$.B!b1#1234,1".to_string(), vec![0]),
             ("W.A$.B!b2vmx#1234,0".to_string(), vec![0]),
@@ -721,20 +710,17 @@ mod tests {
         let json = r#"{}"#;
         let docseq = 123;
         let dbname = "target/tests/test_shred_empty_object";
-        let _ = Index::drop(dbname);
+        let _ = Idx::drop(dbname);
 
-        let index = Index::open(dbname, Some(OpenOptions::Create)).unwrap();
-        let rtree = index.rocks.cf_handle("rtree").unwrap();
+        let index = Idx::open(dbname, Some(OpenOptions::Create)).unwrap();
 
-        let mut batch = rocksdb::WriteBatch::default();
+        let mut batch = index.db.new_batch();
         shredder.shred(json).unwrap();
         shredder.add_id("foo").unwrap();
-        shredder
-            .add_all_to_batch(docseq, &mut batch, rtree)
-            .unwrap();
+        shredder.add_all_to_batch(docseq, &mut batch).unwrap();
 
-        index.rocks.write(batch).unwrap();
-        let result = positions_from_rocks(&index.rocks);
+        index.write_batch(batch).unwrap();
+        let result = positions_from_db(&index.db);
         let expected = vec![("W._id!foo#123,".to_string(), vec![0])];
         assert_eq!(result, expected);
     }
