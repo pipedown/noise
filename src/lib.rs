@@ -1,4 +1,4 @@
-extern crate rocksdb;
+pub mod storage;
 
 mod aggregates;
 mod error;
