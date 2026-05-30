@@ -798,7 +798,7 @@ mod tests {
     extern crate rustc_serialize;
 
     use crate::index::{Index, OpenOptions};
-    use crate::storage::Database;
+    use crate::test_backend::Database;
 
     type Idx = Index<Database>;
 

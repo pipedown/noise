@@ -36,6 +36,33 @@ Installation
     cargo test
 
 
+Storage backends
+----------------
+
+The search engine is generic over its storage backend. The reference backend is
+[RocksDB](http://rocksdb.org/), provided by the `noise-storage-rocksdb` crate,
+which also ships a `repl-rocksdb` example (run it with
+`cargo run --example repl-rocksdb -p noise-storage-rocksdb`).
+
+A backend is any type implementing the traits in the `noise-storage` crate:
+`BackendDatabase`, `BackendBatch`, `BackendSnapshot` and `CursorBackend`. To\
+plug in your own, implement those traits in your *own* crate and use the
+generic engine types directly, with no changes to this repository:
+
+    use noise_search::index::{Index, OpenOptions};
+
+    let mut index = Index::<MyBackend>::open("mydb", Some(OpenOptions::Create))?;
+
+The engine crate `noise_search` depends only on `noise-storage`.
+
+`noise-storage-rocksdb` is the reference implementation to model a backend on.
+To check your backend against the suite every backend must pass, add
+`noise-tests` as a dev-dependency and invoke its macro from a test (as
+`noise-storage-rocksdb` does in `tests/backend.rs`):
+
+    noise_tests::noise_backend_tests!(MyBackend);
+
+
 Contributing
 ------------
 

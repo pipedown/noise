@@ -1418,7 +1418,7 @@ mod tests {
     use super::Parser;
 
     use crate::index::{Index, OpenOptions};
-    use crate::storage::Database;
+    use crate::test_backend::Database;
     use std::collections::HashMap;
     use std::rc::Rc;
 
