@@ -3,6 +3,7 @@ members = [
     ".",
     "noise-storage",
     "noise-storage-rocksdb",
+    "noise-tests",
 ]
 
 [package]
@@ -17,10 +18,6 @@ description = "Nested Object Inverted Search Engine"
 build = "build.rs"
 edition = "2021"
 
-[features]
-default = ["storage-rocksdb"]
-storage-rocksdb = ["noise-storage-rocksdb"]
-
 [lib]
 name = "noise_search"
 crate-type = ["lib"]
@@ -33,4 +30,6 @@ unicode-segmentation = "1.8.0"
 varint = "0.9.0"
 uuid = { version = "1.1.2", features = ["v4"] }
 noise-storage = { path = "noise-storage" }
-noise-storage-rocksdb = { path = "noise-storage-rocksdb", optional = true }
+
+[dev-dependencies]
+noise-storage-rocksdb = { path = "noise-storage-rocksdb" }

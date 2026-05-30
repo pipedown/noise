@@ -72,6 +72,12 @@ impl BackendDatabase for RocksDatabase {
     }
 
     fn destroy(path: &str) -> Result<(), StorageError> {
+        // `destroy` is idempotent: dropping a database that isn't there is a
+        // no-op success. Without this guard RocksDB fails trying to open a LOCK
+        // file under a directory that doesn't exist yet.
+        if !std::path::Path::new(path).exists() {
+            return Ok(());
+        }
         rocksdb::DB::destroy(&rocksdb::Options::default(), path).map_err(StorageError::new)
     }
 

@@ -583,7 +583,7 @@ mod tests {
     use crate::index::{Index, OpenOptions};
     use crate::json_value::JsonValue;
     use crate::snapshot::JsonFetcher;
-    use crate::storage::Database;
+    use crate::test_backend::Database;
     use noise_storage::BackendDatabase;
 
     type Idx = Index<Database>;

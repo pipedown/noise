@@ -252,7 +252,7 @@ mod tests {
     use super::{Index, MvccRwLock, OpenOptions};
     use crate::json_value::JsonValue;
     use crate::snapshot::JsonFetcher;
-    use crate::storage::Database;
+    use crate::test_backend::Database;
     use noise_storage::BackendDatabase;
     use std::str;
     use std::sync::mpsc::channel;
