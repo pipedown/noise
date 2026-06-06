@@ -5,8 +5,8 @@ use noise_storage::{
     BackendSnapshot, Cursor, CursorBackend, DatabaseConfig, Namespace, SeekFrom, StorageError,
 };
 use rocksdb::{
-    self, BlockBasedIndexType, BlockBasedOptions, CompactionDecision, IteratorMode, MergeOperands,
-    Snapshot as RocksDbSnapshot,
+    self, BlockBasedIndexType, BlockBasedOptions, CompactionDecision, DBRawIterator, IteratorMode,
+    MergeOperands, Snapshot as RocksDbSnapshot,
 };
 use self_cell::self_cell;
 
@@ -111,9 +111,9 @@ impl BackendDatabase for RocksDatabase {
     }
 
     fn iterator(&self) -> Cursor {
-        Cursor::new(Box::new(RocksCursor {
-            iter: self.db.iterator(IteratorMode::Start),
-        }))
+        Cursor::new(Box::new(RocksCursor::new(
+            self.db.iterator(IteratorMode::Start).into(),
+        )))
     }
 
     fn compact(&self) {
@@ -194,36 +194,69 @@ impl BackendSnapshot for RocksSnapshot {
     }
 
     fn iterator(&self) -> Cursor {
-        Cursor::new(Box::new(RocksCursor {
-            iter: self.borrow_dependent().iterator(IteratorMode::Start),
-        }))
+        Cursor::new(Box::new(RocksCursor::new(
+            self.borrow_dependent().iterator(IteratorMode::Start).into(),
+        )))
     }
 
     fn multidim_iterator(&self, query: &[u8]) -> Cursor {
-        Cursor::new(Box::new(RocksCursor {
-            iter: self.borrow_dependent().rtree_iterator(query),
-        }))
+        Cursor::new(Box::new(RocksCursor::new(
+            self.borrow_dependent().rtree_iterator(query).into(),
+        )))
     }
 }
 
+// Wraps `DBRawIterator` so we can hand back borrowed slices directly from the
+// rocksdb-owned buffer. The C++ iterator's contract is that `key()`/`value()`
+// slices are valid only until the next `next()`/`seek*()` call; the lending
+// signature `&mut self -> Option<(&[u8], &[u8])>` ties that contract into the
+// borrow checker, so the `unsafe` calls below are sound.
 struct RocksCursor {
-    iter: rocksdb::DBIterator,
+    iter: DBRawIterator,
+    /// Whether the iterator is already positioned on the entry that `next()`
+    /// should return, i.e. a seek happened with no `next()` since. The raw
+    /// iterator points *at* the current entry, so `next()` only advances it
+    /// when this is false.
+    just_seeked: bool,
+}
+
+impl RocksCursor {
+    fn new(iter: DBRawIterator) -> Self {
+        // A raw iterator obtained from a `DBIterator` is already positioned
+        // on the first entry, so the first `next()` must yield the current
+        // entry instead of advancing.
+        Self {
+            iter,
+            just_seeked: true,
+        }
+    }
 }
 
 impl CursorBackend for RocksCursor {
-    fn next(&mut self) -> Option<(Box<[u8]>, Box<[u8]>)> {
-        self.iter.next()
+    fn next(&mut self) -> Option<(&[u8], &[u8])> {
+        if self.just_seeked {
+            self.just_seeked = false;
+        } else if self.iter.valid() {
+            self.iter.next();
+        } else {
+            // Advancing an invalid iterator violates the rocksdb contract, so
+            // an exhausted cursor stays exhausted (until the next seek).
+            return None;
+        }
+        if !self.iter.valid() {
+            return None;
+        }
+        // SAFETY: the returned slices borrow from `&mut self`; the borrow
+        // checker forbids calling another `&mut self` method (next/seek)
+        // while they're held, which is exactly the rocksdb contract.
+        unsafe { Some((self.iter.key_inner()?, self.iter.value_inner()?)) }
     }
 
     fn seek(&mut self, from: SeekFrom) {
         match from {
-            SeekFrom::Start => {
-                self.iter.set_mode(IteratorMode::Start);
-            }
-            SeekFrom::Key(key) => {
-                self.iter
-                    .set_mode(IteratorMode::From(key, rocksdb::Direction::Forward));
-            }
+            SeekFrom::Start => self.iter.seek_to_first(),
+            SeekFrom::Key(key) => self.iter.seek(key),
         }
+        self.just_seeked = true;
     }
 }

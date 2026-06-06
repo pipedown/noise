@@ -590,7 +590,8 @@ mod tests {
 
     fn positions_from_db(db: &Database) -> Vec<(String, Vec<u32>)> {
         let mut result = Vec::new();
-        for (key, value) in db.iterator() {
+        let mut iter = db.iterator();
+        while let Some((key, value)) = iter.next() {
             if key[0] as char == 'W' {
                 let mut vec = Vec::with_capacity(value.len());
                 vec.extend(value.iter());
@@ -599,7 +600,7 @@ mod tests {
                 while let Ok(pos) = bytes.read_unsigned_varint_32() {
                     positions.push(pos);
                 }
-                let key_string = unsafe { str::from_utf8_unchecked(&key) }.to_string();
+                let key_string = unsafe { str::from_utf8_unchecked(key) }.to_string();
                 result.push((key_string, positions));
             }
         }
@@ -608,10 +609,11 @@ mod tests {
 
     fn values_from_db(db: &Database) -> Vec<(String, JsonValue)> {
         let mut result = Vec::new();
-        for (key, value) in db.iterator() {
+        let mut iter = db.iterator();
+        while let Some((key, value)) = iter.next() {
             if key[0] as char == 'V' {
-                let key_string = unsafe { str::from_utf8_unchecked(&key) }.to_string();
-                result.push((key_string, JsonFetcher::bytes_to_json_value(&value)));
+                let key_string = unsafe { str::from_utf8_unchecked(key) }.to_string();
+                result.push((key_string, JsonFetcher::bytes_to_json_value(value)));
             }
         }
         result

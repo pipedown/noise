@@ -303,11 +303,8 @@ pub trait BackendSnapshot {
     fn multidim_iterator(&self, query: &[u8]) -> Cursor;
 }
 
-/// Key-value pair type returned by cursor iteration.
-pub type KvPair = (Box<[u8]>, Box<[u8]>);
-
 pub trait CursorBackend {
-    fn next(&mut self) -> Option<KvPair>;
+    fn next(&mut self) -> Option<(&[u8], &[u8])>;
     fn seek(&mut self, from: SeekFrom);
 }
 
@@ -323,12 +320,11 @@ impl Cursor {
     pub fn seek(&mut self, from: SeekFrom) {
         self.inner.seek(from);
     }
-}
 
-impl Iterator for Cursor {
-    type Item = (Box<[u8]>, Box<[u8]>);
-
-    fn next(&mut self) -> Option<Self::Item> {
+    // This is a lending iterator: the returned slices borrow from `&mut self`,
+    // which `std::iter::Iterator` can't express, hence no `Iterator` impl.
+    #[allow(clippy::should_implement_trait)]
+    pub fn next(&mut self) -> Option<(&[u8], &[u8])> {
         self.inner.next()
     }
 }

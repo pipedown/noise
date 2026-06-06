@@ -311,7 +311,7 @@ impl ExactMatchFilter {
 
             if let Some((key, value)) = self.iter.next() {
                 debug_assert!(key.starts_with(value_key.as_bytes())); // must always be true!
-                if let JsonValue::String(string) = JsonFetcher::bytes_to_json_value(&value) {
+                if let JsonValue::String(string) = JsonFetcher::bytes_to_json_value(value) {
                     let matches = if self.case_sensitive {
                         self.phrase == string
                     } else {
@@ -424,13 +424,13 @@ impl QueryRuntimeFilter for RangeFilter {
     }
 
     fn next_result(&mut self) -> Option<DocResult> {
-        for (key, value) in &mut self.iter {
+        while let Some((key, value)) = self.iter.next() {
             if !key.starts_with(self.keypath.as_bytes()) {
                 // we passed the key path we are interested in. nothing left to do
                 return None;
             }
 
-            let key_str = unsafe { str::from_utf8_unchecked(&key) };
+            let key_str = unsafe { str::from_utf8_unchecked(key) };
 
             // The key already matched, hence it's a valid doc result. Return it.
             if self.min == Some(RangeOperator::True)
@@ -541,7 +541,7 @@ impl<S: BackendSnapshot> QueryRuntimeFilter for BboxFilter<S> {
         let iter = self.iter.as_mut().unwrap();
         if let Some((key, value)) = iter.next() {
             let mut vec = Vec::with_capacity(key.len());
-            vec.extend_from_slice(&key);
+            vec.extend_from_slice(key);
             let mut read = Cursor::new(vec);
             let key_len = read.read_unsigned_varint_32().unwrap();
             let offset = read.position() as usize;
@@ -553,7 +553,7 @@ impl<S: BackendSnapshot> QueryRuntimeFilter for BboxFilter<S> {
 
             let mut dr = DocResult::new();
             dr.seq = iid;
-            dr.arraypath = Self::from_u8_slice(&value);
+            dr.arraypath = Self::from_u8_slice(value);
             if let Some(to) = self.term_ordinal {
                 dr.add_score(to, 1.0);
             }
@@ -967,7 +967,7 @@ impl NotFilter {
                 let value_key = self.kb.kp_value_key_from_doc_result(dr);
                 self.iter.seek(SeekFrom::Key(value_key.as_bytes()));
                 if let Some((key, _value)) = self.iter.next() {
-                    let key_str = unsafe { str::from_utf8_unchecked(&key) };
+                    let key_str = unsafe { str::from_utf8_unchecked(key) };
                     KeyBuilder::is_kp_value_key_prefix(&value_key, key_str)
                 } else {
                     false
@@ -985,7 +985,7 @@ impl NotFilter {
             let value_key = kb.kp_value_key_from_doc_result(dr);
             self.iter.seek(SeekFrom::Key(value_key.as_bytes()));
             if let Some((key, _value)) = self.iter.next() {
-                let key_str = unsafe { str::from_utf8_unchecked(&key) };
+                let key_str = unsafe { str::from_utf8_unchecked(key) };
                 value_key == key_str
             } else {
                 false
