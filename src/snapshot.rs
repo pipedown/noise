@@ -10,7 +10,43 @@ use crate::key_builder::{KeyBuilder, Segment};
 use crate::query::{DocResult, QueryScoringInfo};
 use crate::returnable::{PathSegment, ReturnPath};
 use noise_storage::{convert_bytes_to_i32, BackendSnapshot, Cursor, SeekFrom};
-use std::iter::Peekable;
+
+/// One-step lookahead over a `Cursor`. `Cursor::next` lends out slices that
+/// borrow from `&mut self`, so `Cursor` cannot implement `Iterator` and the
+/// standard `Peekable` adapter is not usable with it. `PeekCursor` provides
+/// the same lookahead by owning the peeked pair, so the borrow on the
+/// underlying cursor ends between `peek()` and the next operation.
+struct PeekCursor<'a> {
+    inner: &'a mut Cursor,
+    peeked: Option<(Vec<u8>, Vec<u8>)>,
+}
+
+impl<'a> PeekCursor<'a> {
+    fn new(inner: &'a mut Cursor) -> Self {
+        Self {
+            inner,
+            peeked: None,
+        }
+    }
+
+    fn peek(&mut self) -> Option<(&[u8], &[u8])> {
+        if self.peeked.is_none() {
+            if let Some((k, v)) = self.inner.next() {
+                self.peeked = Some((k.to_vec(), v.to_vec()));
+            }
+        }
+        self.peeked
+            .as_ref()
+            .map(|(k, v)| (k.as_slice(), v.as_slice()))
+    }
+
+    fn next(&mut self) -> Option<(Vec<u8>, Vec<u8>)> {
+        if let Some(pair) = self.peeked.take() {
+            return Some(pair);
+        }
+        self.inner.next().map(|(k, v)| (k.to_vec(), v.to_vec()))
+    }
+}
 
 pub struct Snapshot<S: BackendSnapshot> {
     snap: S,
@@ -84,7 +120,7 @@ impl DocResultIterator {
                 return None;
             }
 
-            let key_str = unsafe { str::from_utf8_unchecked(&key) };
+            let key_str = unsafe { str::from_utf8_unchecked(key) };
             let dr = KeyBuilder::parse_doc_result_from_kp_word_key(key_str);
 
             Some((
@@ -149,7 +185,7 @@ impl Scorer {
         self.iter.seek(SeekFrom::Key(key.as_bytes()));
         if let Some((ret_key, ret_value)) = self.iter.next() {
             if ret_key.len() == key.len() && ret_key.starts_with(key.as_bytes()) {
-                Some(ret_value)
+                Some(ret_value.to_vec().into_boxed_slice())
             } else {
                 None
             }
@@ -283,7 +319,7 @@ impl JsonFetcher {
         iter.seek(SeekFrom::Key(value_key.as_bytes()));
 
         let (key, value) = match iter.next() {
-            Some((key, value)) => (key, value),
+            Some((key, value)) => (key.to_vec(), value.to_vec()),
             None => return None,
         };
 
@@ -293,7 +329,7 @@ impl JsonFetcher {
             return None;
         }
         Some(JsonFetcher::do_fetch(
-            &mut iter.peekable(),
+            &mut PeekCursor::new(iter),
             &value_key,
             key,
             value,
@@ -306,10 +342,10 @@ impl JsonFetcher {
     /// depth first recursively parse the keypath and return the value and inserting into
     /// containers (arrays or objects) then iterate keys until the keypath no longer matches.
     fn do_fetch(
-        iter: &mut Peekable<&mut Cursor>,
+        iter: &mut PeekCursor<'_>,
         value_key: &str,
-        mut key: Box<[u8]>,
-        mut value: Box<[u8]>,
+        mut key: Vec<u8>,
+        mut value: Vec<u8>,
     ) -> JsonValue {
         if key.len() == value_key.len() {
             // we have a key match!
@@ -423,7 +459,7 @@ impl AllDocsIterator {
     pub fn next(&mut self) -> Option<DocResult> {
         match self.iter.next() {
             Some((k, _v)) => {
-                let key = unsafe { str::from_utf8_unchecked(&k) };
+                let key = unsafe { str::from_utf8_unchecked(k) };
                 if let Some(seq) = KeyBuilder::parse_seq_key(key) {
                     let mut dr = DocResult::new();
                     dr.seq = seq;

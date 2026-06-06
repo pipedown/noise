@@ -41,9 +41,9 @@ pub fn seq_ordering<D: BackendDatabase>() {
     }
 
     let mut observed = Vec::new();
-    let iter = db.iterator();
-    for (key, _) in iter {
-        let key_str = std::str::from_utf8(&key).unwrap();
+    let mut iter = db.iterator();
+    while let Some((key, _)) = iter.next() {
+        let key_str = std::str::from_utf8(key).unwrap();
         if !key_str.starts_with('W') {
             continue;
         }

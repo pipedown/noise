@@ -163,11 +163,11 @@ impl<D: BackendDatabase> Index<D> {
             let mut iter = self.db.iterator();
             // Seek in index to >= entry
             iter.seek(SeekFrom::Key(value_key.as_bytes()));
-            for (key, value) in iter {
+            while let Some((key, value)) = iter.next() {
                 if !key.starts_with(value_key.as_bytes()) {
                     break;
                 }
-                let key = unsafe { str::from_utf8_unchecked(&key) }.to_string();
+                let key = unsafe { str::from_utf8_unchecked(key) }.to_string();
                 let value = value.to_vec();
                 key_values.insert(key, value);
             }
@@ -191,8 +191,9 @@ impl<D: BackendDatabase> Index<D> {
 
     pub fn all_keys(&self) -> Result<Vec<String>, Error> {
         let mut results = Vec::new();
-        for (key, _value) in self.db.iterator() {
-            let key_string = unsafe { str::from_utf8_unchecked(&key) }.to_string();
+        let mut iter = self.db.iterator();
+        while let Some((key, _value)) = iter.next() {
+            let key_string = unsafe { str::from_utf8_unchecked(key) }.to_string();
             results.push(key_string);
         }
         Ok(results)
@@ -332,10 +333,11 @@ mod tests {
         index.flush(batch).unwrap();
         {
             let mut results = Vec::new();
-            for (key, value) in index.db.iterator() {
+            let mut iter = index.db.iterator();
+            while let Some((key, value)) = iter.next() {
                 if key[0] as char == 'V' {
-                    let key_string = unsafe { str::from_utf8_unchecked(&key) }.to_string();
-                    results.push((key_string, JsonFetcher::bytes_to_json_value(&value)));
+                    let key_string = unsafe { str::from_utf8_unchecked(key) }.to_string();
+                    results.push((key_string, JsonFetcher::bytes_to_json_value(value)));
                 }
             }
 
@@ -361,10 +363,11 @@ mod tests {
         index.flush(batch).unwrap();
 
         let mut results = Vec::new();
-        for (key, value) in index.db.iterator() {
+        let mut iter = index.db.iterator();
+        while let Some((key, value)) = iter.next() {
             if key[0] as char == 'V' {
-                let key_string = unsafe { str::from_utf8_unchecked(&key) }.to_string();
-                results.push((key_string, JsonFetcher::bytes_to_json_value(&value)));
+                let key_string = unsafe { str::from_utf8_unchecked(key) }.to_string();
+                results.push((key_string, JsonFetcher::bytes_to_json_value(value)));
             }
         }
         let expected = vec![
