@@ -307,9 +307,7 @@ impl ExactMatchFilter {
         loop {
             let value_key = self.kb.kp_value_key_from_doc_result(&dr);
 
-            self.iter.seek(SeekFrom::Key(value_key.as_bytes()));
-
-            if let Some((key, value)) = self.iter.next() {
+            if let Some((key, value)) = self.iter.seek(SeekFrom::Key(value_key.as_bytes())) {
                 debug_assert!(key.starts_with(value_key.as_bytes())); // must always be true!
                 if let JsonValue::String(string) = JsonFetcher::bytes_to_json_value(value) {
                     let matches = if self.case_sensitive {
@@ -323,12 +321,9 @@ impl ExactMatchFilter {
                         }
                         return Some(dr);
                     } else {
-                        if let Some(next) = self.filter.next_result() {
-                            dr = next;
-                            // continue looping
-                        } else {
-                            return None;
-                        }
+                        let next = self.filter.next_result()?;
+                        dr = next;
+                        // continue looping
                     }
                 } else {
                     panic!("Not a string, wtf!");
@@ -399,6 +394,41 @@ impl RangeFilter {
             term_ordinal: None,
         }
     }
+
+    /// Whether `value` falls within the range. Boolean and null ranges are already decided
+    /// by the key itself, so only numbers get compared against `min`/`max`.
+    fn value_matches(&self, value: &[u8]) -> bool {
+        if matches!(
+            self.min,
+            Some(RangeOperator::True | RangeOperator::False | RangeOperator::Null)
+        ) {
+            // The key already matched, hence it's a valid doc result.
+            return true;
+        }
+
+        // Else it's a range query on numbers
+        let number = unsafe {
+            let array = *(value[..].as_ptr() as *const [_; 8]);
+            f64::from_ne_bytes(array)
+        };
+
+        let min_condition = match self.min {
+            Some(RangeOperator::Inclusive(min)) => number >= min,
+            Some(RangeOperator::Exclusive(min)) => number > min,
+            // No condition was given => it always matches
+            None => true,
+            _ => unreachable!("bool and null ranges returned early"),
+        };
+        let max_condition = match self.max {
+            Some(RangeOperator::Inclusive(max)) => number <= max,
+            Some(RangeOperator::Exclusive(max)) => number < max,
+            // No condition was given => it always matches
+            None => true,
+            _ => unreachable!("bool and null ranges returned early"),
+        };
+
+        min_condition && max_condition
+    }
 }
 
 impl QueryRuntimeFilter for RangeFilter {
@@ -424,57 +454,33 @@ impl QueryRuntimeFilter for RangeFilter {
     }
 
     fn next_result(&mut self) -> Option<DocResult> {
-        while let Some((key, value)) = self.iter.next() {
-            if !key.starts_with(self.keypath.as_bytes()) {
-                // we passed the key path we are interested in. nothing left to do
-                return None;
-            }
-
-            let key_str = unsafe { str::from_utf8_unchecked(key) };
-
-            // The key already matched, hence it's a valid doc result. Return it.
-            if self.min == Some(RangeOperator::True)
-                || self.min == Some(RangeOperator::False)
-                || self.min == Some(RangeOperator::Null)
-            {
-                let mut dr = KeyBuilder::parse_doc_result_from_kp_word_key(key_str);
-                if let Some(to) = self.term_ordinal {
-                    dr.add_score(to, 1.0);
+        loop {
+            // The cursor's slices are invalidated by `advance()`, so the entry is read out
+            // completely here and only the owned `DocResult` leaves the block.
+            let doc_result = {
+                let (key, value) = self.iter.current()?;
+                if !key.starts_with(self.keypath.as_bytes()) {
+                    // we passed the key path we are interested in. nothing left to do
+                    return None;
                 }
-                return Some(dr);
-            }
-            // Else it's a range query on numbers
-
-            let number = unsafe {
-                let array = *(value[..].as_ptr() as *const [_; 8]);
-                f64::from_ne_bytes(array)
-            };
-
-            let min_condition = match self.min {
-                Some(RangeOperator::Inclusive(min)) => number >= min,
-                Some(RangeOperator::Exclusive(min)) => number > min,
-                // No condition was given => it always matches
-                None => true,
-                _ => panic!("Can't happen, it returns early on the other types"),
-            };
-            let max_condition = match self.max {
-                Some(RangeOperator::Inclusive(max)) => number <= max,
-                Some(RangeOperator::Exclusive(max)) => number < max,
-                // No condition was given => it always matches
-                None => true,
-                _ => panic!("Can't happen, it returns early on the other types"),
-            };
-
-            if min_condition && max_condition {
-                let mut dr = KeyBuilder::parse_doc_result_from_kp_word_key(key_str);
-                if let Some(to) = self.term_ordinal {
-                    dr.add_score(to, 1.0);
+                if self.value_matches(value) {
+                    let key_str = unsafe { str::from_utf8_unchecked(key) };
+                    Some(KeyBuilder::parse_doc_result_from_kp_word_key(key_str))
+                } else {
+                    None
                 }
-                return Some(dr);
+            };
+            self.iter.advance();
+
+            // No match => move on to the next key
+            let Some(mut dr) = doc_result else {
+                continue;
+            };
+            if let Some(to) = self.term_ordinal {
+                dr.add_score(to, 1.0);
             }
-            // Else: No match => KKeep looping and move on to the next key
+            return Some(dr);
         }
-        None
     }
 
     // TODO vmx 2017-04-13: Scoring is not implemented yet
@@ -539,28 +545,26 @@ impl<S: BackendSnapshot> QueryRuntimeFilter for BboxFilter<S> {
 
     fn next_result(&mut self) -> Option<DocResult> {
         let iter = self.iter.as_mut().unwrap();
-        if let Some((key, value)) = iter.next() {
-            let mut vec = Vec::with_capacity(key.len());
-            vec.extend_from_slice(key);
-            let mut read = Cursor::new(vec);
-            let key_len = read.read_unsigned_varint_32().unwrap();
-            let offset = read.position() as usize;
+        let (key, value) = iter.current()?;
+        let mut vec = Vec::with_capacity(key.len());
+        vec.extend_from_slice(key);
+        let mut read = Cursor::new(vec);
+        let key_len = read.read_unsigned_varint_32().unwrap();
+        let offset = read.position() as usize;
 
-            let iid = unsafe {
-                let array = *(key[offset + key_len as usize..].as_ptr() as *const [_; 8]);
-                u64::from_ne_bytes(array)
-            };
+        let iid = unsafe {
+            let array = *(key[offset + key_len as usize..].as_ptr() as *const [_; 8]);
+            u64::from_ne_bytes(array)
+        };
 
-            let mut dr = DocResult::new();
-            dr.seq = iid;
-            dr.arraypath = Self::from_u8_slice(value);
-            if let Some(to) = self.term_ordinal {
-                dr.add_score(to, 1.0);
-            }
-            Some(dr)
-        } else {
-            None
+        let mut dr = DocResult::new();
+        dr.seq = iid;
+        dr.arraypath = Self::from_u8_slice(value);
+        iter.advance();
+        if let Some(to) = self.term_ordinal {
+            dr.add_score(to, 1.0);
         }
+        Some(dr)
     }
 
     fn prepare_relevancy_scoring(&mut self, qsi: &mut QueryScoringInfo) {
@@ -965,8 +969,7 @@ impl NotFilter {
                 // if not, it means other elements did a regular match and skipped them, then we
                 // ran off the end of the array.
                 let value_key = self.kb.kp_value_key_from_doc_result(dr);
-                self.iter.seek(SeekFrom::Key(value_key.as_bytes()));
-                if let Some((key, _value)) = self.iter.next() {
+                if let Some((key, _value)) = self.iter.seek(SeekFrom::Key(value_key.as_bytes())) {
                     let key_str = unsafe { str::from_utf8_unchecked(key) };
                     KeyBuilder::is_kp_value_key_prefix(&value_key, key_str)
                 } else {
@@ -983,8 +986,7 @@ impl NotFilter {
             let mut kb = KeyBuilder::new();
             kb.push_object_key("_id");
             let value_key = kb.kp_value_key_from_doc_result(dr);
-            self.iter.seek(SeekFrom::Key(value_key.as_bytes()));
-            if let Some((key, _value)) = self.iter.next() {
+            if let Some((key, _value)) = self.iter.seek(SeekFrom::Key(value_key.as_bytes())) {
                 let key_str = unsafe { str::from_utf8_unchecked(key) };
                 value_key == key_str
             } else {

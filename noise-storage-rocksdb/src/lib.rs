@@ -206,50 +206,43 @@ impl BackendSnapshot for RocksSnapshot {
     }
 }
 
-// Wraps `DBRawIterator` so we can hand back borrowed slices directly from the
-// rocksdb-owned buffer. The C++ iterator's contract is that `key()`/`value()`
-// slices are valid only until the next `next()`/`seek*()` call; the lending
-// signature `&mut self -> Option<(&[u8], &[u8])>` ties that contract into the
-// borrow checker, so the `unsafe` calls below are sound.
+// Wraps `DBRawIterator`, which is always positioned *on* an entry (or invalid).
+// `key()`/`value()` borrow the C++ iterator's own buffers and are valid only
+// until the iterator moves. The positioned `current`/`advance` split ties that
+// contract into the borrow checker — `current` borrows `&self`, `advance`/`seek`
+// take `&mut self` — so a caller cannot move the iterator while holding a slice.
 struct RocksCursor {
     iter: DBRawIterator,
-    /// Whether the iterator is already positioned on the entry that `next()`
-    /// should return, i.e. a seek happened with no `next()` since. The raw
-    /// iterator points *at* the current entry, so `next()` only advances it
-    /// when this is false.
-    just_seeked: bool,
 }
 
 impl RocksCursor {
     fn new(iter: DBRawIterator) -> Self {
-        // A raw iterator obtained from a `DBIterator` is already positioned
-        // on the first entry, so the first `next()` must yield the current
-        // entry instead of advancing.
-        Self {
-            iter,
-            just_seeked: true,
-        }
+        // A raw iterator obtained from a `DBIterator` is already positioned on
+        // the first entry, so `current` is valid before any `seek`.
+        Self { iter }
     }
 }
 
 impl CursorBackend for RocksCursor {
-    fn next(&mut self) -> Option<(&[u8], &[u8])> {
-        if self.just_seeked {
-            self.just_seeked = false;
-        } else if self.iter.valid() {
-            self.iter.next();
-        } else {
-            // Advancing an invalid iterator violates the rocksdb contract, so
-            // an exhausted cursor stays exhausted (until the next seek).
-            return None;
-        }
+    fn current(&self) -> Option<(&[u8], &[u8])> {
         if !self.iter.valid() {
             return None;
         }
-        // SAFETY: the returned slices borrow from `&mut self`; the borrow
-        // checker forbids calling another `&mut self` method (next/seek)
-        // while they're held, which is exactly the rocksdb contract.
+        // SAFETY: `key_inner`/`value_inner` borrow the C++ iterator's own
+        // buffers, which rocksdb invalidates as soon as the iterator moves or is
+        // dropped. The borrow is tied to `&self`; `advance`/`seek` take
+        // `&mut self`, so the borrow checker forbids moving the iterator while a
+        // caller still holds these slices. The safe `key`/`value` accessors copy
+        // into fresh `Vec`s, which is what borrowing here exists to avoid.
         unsafe { Some((self.iter.key_inner()?, self.iter.value_inner()?)) }
+    }
+
+    fn advance(&mut self) {
+        // Advancing an invalid iterator violates the rocksdb contract, so an
+        // exhausted cursor stays exhausted (until the next seek).
+        if self.iter.valid() {
+            self.iter.next();
+        }
     }
 
     fn seek(&mut self, from: SeekFrom) {
@@ -257,6 +250,5 @@ impl CursorBackend for RocksCursor {
             SeekFrom::Start => self.iter.seek_to_first(),
             SeekFrom::Key(key) => self.iter.seek(key),
         }
-        self.just_seeked = true;
     }
 }

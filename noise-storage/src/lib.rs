@@ -304,10 +304,22 @@ pub trait BackendSnapshot {
 }
 
 pub trait CursorBackend {
-    fn next(&mut self) -> Option<(&[u8], &[u8])>;
+    /// Returns the key/value at the current position without advancing, or
+    /// `None` when the cursor is exhausted. The slices borrow the cursor and
+    /// are invalidated by the next `advance`/`seek`.
+    fn current(&self) -> Option<(&[u8], &[u8])>;
+    /// Advances to the next entry. A no-op on an already-exhausted cursor.
+    fn advance(&mut self);
     fn seek(&mut self, from: SeekFrom);
 }
 
+/// A forward cursor over key/value entries, positioned *on* an entry (or
+/// exhausted). It is a lending cursor: [`Self::current`] borrows from the
+/// cursor, so the slices are invalidated by the next [`Self::advance`]/
+/// [`Self::seek`]. The `&self`/`&mut self` split lets the borrow checker
+/// enforce that, and lets `current` serve as a zero-copy one-entry lookahead
+/// that survives across stack frames (see `JsonFetcher::do_fetch`): no entry
+/// is advanced past until it has been fully consumed.
 pub struct Cursor {
     inner: Box<dyn CursorBackend>,
 }
@@ -317,14 +329,45 @@ impl Cursor {
         Cursor { inner }
     }
 
-    pub fn seek(&mut self, from: SeekFrom) {
+    /// Positions the cursor and returns the entry it landed on, which is the
+    /// first one at or after `from`, or `None` if there is none.
+    pub fn seek(&mut self, from: SeekFrom) -> Option<(&[u8], &[u8])> {
         self.inner.seek(from);
+        self.inner.current()
     }
 
-    // This is a lending iterator: the returned slices borrow from `&mut self`,
-    // which `std::iter::Iterator` can't express, hence no `Iterator` impl.
-    #[allow(clippy::should_implement_trait)]
-    pub fn next(&mut self) -> Option<(&[u8], &[u8])> {
-        self.inner.next()
+    /// The entry at the current position, or `None` when exhausted. Does not
+    /// advance, so repeated calls yield the same entry until [`Self::advance`].
+    pub fn current(&self) -> Option<(&[u8], &[u8])> {
+        self.inner.current()
+    }
+
+    /// Advances to the next entry.
+    pub fn advance(&mut self) {
+        self.inner.advance();
+    }
+
+    /// Iterates the remaining entries as owned copies. For scans that keep the
+    /// data around anyway; the zero-copy path is [`Self::current`]/
+    /// [`Self::advance`], which is what a lending cursor can't hand to
+    /// [`Iterator`].
+    pub fn entries(&mut self) -> impl Iterator<Item = (Vec<u8>, Vec<u8>)> + '_ {
+        std::iter::from_fn(move || {
+            let (key, value) = self.current()?;
+            let entry = (key.to_vec(), value.to_vec());
+            self.advance();
+            Some(entry)
+        })
+    }
+
+    /// Iterates the keys of the remaining entries as owned copies, leaving the
+    /// values where they are. Same trade-off as [`Self::entries`].
+    pub fn keys(&mut self) -> impl Iterator<Item = Vec<u8>> + '_ {
+        std::iter::from_fn(move || {
+            let (key, _value) = self.current()?;
+            let key = key.to_vec();
+            self.advance();
+            Some(key)
+        })
     }
 }
