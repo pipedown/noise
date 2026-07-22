@@ -40,17 +40,15 @@ pub fn seq_ordering<D: BackendDatabase>() {
         db.put(key.as_bytes(), b"v").unwrap();
     }
 
-    let mut observed = Vec::new();
     let mut iter = db.iterator();
-    while let Some((key, _)) = iter.next() {
-        let key_str = std::str::from_utf8(key).unwrap();
-        if !key_str.starts_with('W') {
-            continue;
-        }
-        let after_hash = key_str.rsplit('#').next().unwrap();
-        let seq_str = after_hash.trim_end_matches(',');
-        observed.push(seq_str.parse::<u64>().unwrap());
-    }
+    let observed: Vec<u64> = iter
+        .keys()
+        .filter_map(|key| {
+            let key_str = String::from_utf8(key).unwrap();
+            let seq_str = key_str.strip_prefix('W')?.rsplit('#').next().unwrap();
+            Some(seq_str.trim_end_matches(',').parse::<u64>().unwrap())
+        })
+        .collect();
 
     assert_eq!(
         observed, seqs,

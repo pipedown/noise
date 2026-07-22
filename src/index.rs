@@ -1,7 +1,7 @@
 extern crate uuid;
 
 use self::uuid::Uuid;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::io::Write;
 use std::str;
 
@@ -158,19 +158,14 @@ impl<D: BackendDatabase> Index<D> {
             // collect up all the fields for the existing doc
             let kb = KeyBuilder::new();
             let value_key = kb.kp_value_key(seq);
-            let mut key_values = BTreeMap::new();
-
             let mut iter = self.db.iterator();
             // Seek in index to >= entry
             iter.seek(SeekFrom::Key(value_key.as_bytes()));
-            while let Some((key, value)) = iter.next() {
-                if !key.starts_with(value_key.as_bytes()) {
-                    break;
-                }
-                let key = unsafe { str::from_utf8_unchecked(key) }.to_string();
-                let value = value.to_vec();
-                key_values.insert(key, value);
-            }
+            let key_values: KeyValues = iter
+                .entries()
+                .take_while(|(key, _value)| key.starts_with(value_key.as_bytes()))
+                .map(|(key, value)| (unsafe { String::from_utf8_unchecked(key) }, value))
+                .collect();
             Ok(Some((seq, key_values)))
         } else {
             Ok(None)
@@ -190,13 +185,11 @@ impl<D: BackendDatabase> Index<D> {
     }
 
     pub fn all_keys(&self) -> Result<Vec<String>, Error> {
-        let mut results = Vec::new();
         let mut iter = self.db.iterator();
-        while let Some((key, _value)) = iter.next() {
-            let key_string = unsafe { str::from_utf8_unchecked(key) }.to_string();
-            results.push(key_string);
-        }
-        Ok(results)
+        Ok(iter
+            .keys()
+            .map(|key| unsafe { String::from_utf8_unchecked(key) })
+            .collect())
     }
 
     pub fn fetch_seq(&self, id: &str) -> Result<Option<u64>, Error> {
@@ -254,13 +247,25 @@ mod tests {
     use crate::json_value::JsonValue;
     use crate::snapshot::JsonFetcher;
     use crate::test_backend::Database;
-    use noise_storage::BackendDatabase;
-    use std::str;
+    use noise_storage::{BackendDatabase, Cursor};
     use std::sync::mpsc::channel;
     use std::sync::Arc;
     use std::thread;
 
     type Idx = Index<Database>;
+
+    /// The value entries the cursor still has ahead of it, decoded.
+    fn value_entries(iter: &mut Cursor) -> Vec<(String, JsonValue)> {
+        iter.entries()
+            .filter(|(key, _value)| key[0] as char == 'V')
+            .map(|(key, value)| {
+                (
+                    unsafe { String::from_utf8_unchecked(key) },
+                    JsonFetcher::bytes_to_json_value(&value),
+                )
+            })
+            .collect()
+    }
 
     #[test]
     fn test_open() {
@@ -310,9 +315,9 @@ mod tests {
         index.db.compact();
 
         let mut iter = index.db.iterator();
-        let (key, _value) = iter.next().unwrap();
-        assert!(key.starts_with(&b"HDB"[..]));
-        assert!(iter.next().is_none());
+        let mut keys = iter.keys();
+        assert!(keys.next().unwrap().starts_with(b"HDB"));
+        assert!(keys.next().is_none());
     }
 
     #[test]
@@ -332,14 +337,8 @@ mod tests {
 
         index.flush(batch).unwrap();
         {
-            let mut results = Vec::new();
             let mut iter = index.db.iterator();
-            while let Some((key, value)) = iter.next() {
-                if key[0] as char == 'V' {
-                    let key_string = unsafe { str::from_utf8_unchecked(key) }.to_string();
-                    results.push((key_string, JsonFetcher::bytes_to_json_value(value)));
-                }
-            }
+            let results = value_entries(&mut iter);
 
             let expected = vec![
                 ("V1#._id".to_string(), JsonValue::String("1".to_string())),
@@ -362,14 +361,8 @@ mod tests {
             .unwrap();
         index.flush(batch).unwrap();
 
-        let mut results = Vec::new();
         let mut iter = index.db.iterator();
-        while let Some((key, value)) = iter.next() {
-            if key[0] as char == 'V' {
-                let key_string = unsafe { str::from_utf8_unchecked(key) }.to_string();
-                results.push((key_string, JsonFetcher::bytes_to_json_value(value)));
-            }
-        }
+        let results = value_entries(&mut iter);
         let expected = vec![
             ("V1#._id".to_string(), JsonValue::String("1".to_string())),
             ("V1#.baz".to_string(), JsonValue::Array(vec![])),

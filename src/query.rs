@@ -546,11 +546,8 @@ impl<S: BackendSnapshot + 'static> QueryResults<S> {
                                 }
                             }
                         }
-                        if let Some(mut results) = self.ordered_buffer.pop() {
-                            return Some(self.returnable.json_result(&mut results));
-                        } else {
-                            return None;
-                        }
+                        let mut results = self.ordered_buffer.pop()?;
+                        return Some(self.returnable.json_result(&mut results));
                     }
                 }
             }

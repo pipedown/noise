@@ -578,7 +578,6 @@ mod tests {
     use self::varint::VarintRead;
 
     use std::io::Cursor;
-    use std::str;
 
     use crate::index::{Index, OpenOptions};
     use crate::json_value::JsonValue;
@@ -589,34 +588,31 @@ mod tests {
     type Idx = Index<Database>;
 
     fn positions_from_db(db: &Database) -> Vec<(String, Vec<u32>)> {
-        let mut result = Vec::new();
         let mut iter = db.iterator();
-        while let Some((key, value)) = iter.next() {
-            if key[0] as char == 'W' {
-                let mut vec = Vec::with_capacity(value.len());
-                vec.extend(value.iter());
-                let mut bytes = Cursor::new(vec);
+        iter.entries()
+            .filter(|(key, _value)| key[0] as char == 'W')
+            .map(|(key, value)| {
+                let mut bytes = Cursor::new(value);
                 let mut positions = Vec::new();
                 while let Ok(pos) = bytes.read_unsigned_varint_32() {
                     positions.push(pos);
                 }
-                let key_string = unsafe { str::from_utf8_unchecked(key) }.to_string();
-                result.push((key_string, positions));
-            }
-        }
-        result
+                (unsafe { String::from_utf8_unchecked(key) }, positions)
+            })
+            .collect()
     }
 
     fn values_from_db(db: &Database) -> Vec<(String, JsonValue)> {
-        let mut result = Vec::new();
         let mut iter = db.iterator();
-        while let Some((key, value)) = iter.next() {
-            if key[0] as char == 'V' {
-                let key_string = unsafe { str::from_utf8_unchecked(key) }.to_string();
-                result.push((key_string, JsonFetcher::bytes_to_json_value(value)));
-            }
-        }
-        result
+        iter.entries()
+            .filter(|(key, _value)| key[0] as char == 'V')
+            .map(|(key, value)| {
+                (
+                    unsafe { String::from_utf8_unchecked(key) },
+                    JsonFetcher::bytes_to_json_value(&value),
+                )
+            })
+            .collect()
     }
 
     #[test]
