@@ -1,13 +1,4 @@
-use std::cmp::Ordering;
 use std::fmt;
-use std::io::Cursor as IoCursor;
-use std::mem;
-use std::str;
-
-use varint::{VarintRead, VarintWrite};
-
-// Used by the comparator, merge, and compaction-filter logic below, as well as
-// by the main crate's `KeyBuilder` when constructing these keys.
 
 /// for looking up words in fields.
 pub const KEY_PREFIX_WORD: char = 'W';
@@ -24,181 +15,148 @@ pub const KEY_PREFIX_FALSE: char = 'F';
 /// for null values index
 pub const KEY_PREFIX_NULL: char = 'N';
 
-/// Decodes a signed 32-bit varint from the given bytes.
-pub fn convert_bytes_to_i32(bytes: &[u8]) -> i32 {
-    let mut vec = Vec::with_capacity(bytes.len());
-    vec.extend(bytes.iter());
-    let mut read = IoCursor::new(vec);
-    read.read_signed_varint_32().unwrap()
-}
+/// Cassandra ByteComparable BIGINT-style prefix unsigned varint
+///
+/// The number of leading 1-bits in byte 0 (followed by a separator 0-bit)
+/// names the total encoded length; the remaining bits in byte 0 plus the
+/// trailing bytes (big-endian) carry the value. The all-ones byte (`0xFF`)
+/// is the 9-byte form, where the value occupies the 8 trailing bytes with
+/// no separator zero.
+///
+/// ```text
+///   byte 0 pattern         total bytes   value range
+///   0xxxxxxx (0x00..0x7F)  1             0..127
+///   10xxxxxx (0x80..0xBF)  2             ..2^14-1
+///   110xxxxx (0xC0..0xDF)  3             ..2^21-1
+///   1110xxxx (0xE0..0xEF)  4             ..2^28-1
+///   11110xxx (0xF0..0xF7)  5             ..2^35-1
+///   111110xx (0xF8..0xFB)  6             ..2^42-1
+///   1111110x (0xFC..0xFD)  7             ..2^49-1
+///   11111110 (0xFE)        8             ..2^56-1
+///   11111111 (0xFF)        9             ..u64::MAX
+/// ```
+///
+/// Byte-wise lex order matches numeric order: a longer encoding has more
+/// leading 1-bits in byte 0 and therefore sorts above any shorter one.
+pub fn encode_varint(buf: &mut Vec<u8>, value: u64) {
+    // Values too big for 56 bits use the 9-byte form: a 0xFF first byte (eight
+    // leading 1-bits, i.e. "eight more bytes follow") then the value as 8
+    // big-endian bytes.
+    if value >> 56 != 0 {
+        buf.push(0xFF);
+        buf.extend_from_slice(&value.to_be_bytes());
+        return;
+    }
 
-/// Encodes an i32 as a signed 32-bit varint.
-pub fn convert_i32_to_bytes(val: i32) -> Vec<u8> {
-    let mut bytes = IoCursor::new(Vec::new());
-    assert!(bytes.write_signed_varint_32(val).is_ok());
-    bytes.into_inner()
-}
+    // Number of significant bits in `value` (0 when value is 0).
+    let bits = u64::BITS - value.leading_zeros();
 
-/// Return the slice that is prefixed with an unsigned 32-bit varint and the offset after
-/// the slice that was read
-fn get_length_prefixed_slice(data: &[u8]) -> (&[u8], usize) {
-    let mut vec = Vec::with_capacity(data.len());
-    vec.extend_from_slice(data);
-    let mut cursor = IoCursor::new(vec);
-    let size = cursor.read_unsigned_varint_32().unwrap() as usize;
-    let slice_end = cursor.position() as usize + size;
-    let slice = &data[cursor.position() as usize..slice_end];
-    (slice, slice_end)
-}
+    // Bytes needed = ceil(bits / 7), since each byte carries 7 payload bits.
+    // `.max(1)` gives value 0 a single byte instead of zero.
+    let len = (bits.div_ceil(7) as usize).max(1);
 
-/// splits key into key path, seq and array path
-/// ex "W.foo$.bar$.baz!word#123,0,0" -> ("W.foo$.bar$.bar!word", "123", "0,0")
-pub fn split_seq_arraypath_from_kp_word_key(str: &str) -> (&str, &str, &str) {
-    let n = str
-        .rfind('#')
-        .expect("kp_word key to contain a '#' separator");
-    assert!(
-        n != 0,
-        "expected kp_word key to have a keypath before the '#' separator"
-    );
-    assert!(
-        n != str.len() - 1,
-        "expected kp_word key to have a seq/arraypath suffix after the '#' separator"
-    );
-    let seq_arraypath_str = &str[(n + 1)..];
-    let m = seq_arraypath_str
-        .find(',')
-        .expect("seq/arraypath suffix to contain a ',' between seq and arraypath");
+    // Shift the value up so its bytes occupy the top `len` bytes of the word.
+    // The encoding is laid out most-significant-byte-first, so the meaningful
+    // bytes belong at the high end; this also clears the top bits of byte 0 to
+    // make room for the marker.
+    let mut v = value << (8 * (8 - len));
 
-    (
-        &str[..n],
-        &seq_arraypath_str[..m],
-        &seq_arraypath_str[m + 1..],
-    )
-}
-
-/// Noise comparator for value keys (operating on byte slices). Value keys are
-/// compared using a numeric-aware collation on the seq and arraypath portions.
-/// All other keys are compared byte-wise.
-#[allow(clippy::collapsible_else_if)]
-pub fn compare_keys(a: &[u8], b: &[u8]) -> Ordering {
-    let value_prefixes = [
-        KEY_PREFIX_WORD,
-        KEY_PREFIX_NUMBER,
-        KEY_PREFIX_TRUE,
-        KEY_PREFIX_FALSE,
-        KEY_PREFIX_NULL,
+    // The 9-byte form (0b1111_1111) is handled separately above.
+    const MARKERS: [u8; 8] = [
+        0b0000_0000,
+        0b1000_0000,
+        0b1100_0000,
+        0b1110_0000,
+        0b1111_0000,
+        0b1111_1000,
+        0b1111_1100,
+        0b1111_1110,
     ];
-    if !(value_prefixes.contains(&(a[0] as char)) && value_prefixes.contains(&(b[0] as char))) {
-        return a.cmp(b);
+    let prefix = MARKERS[len - 1];
+
+    // Place the marker in the most-significant byte (bits 56..=63 = output byte 0).
+    v |= (prefix as u64) << 56;
+
+    buf.extend_from_slice(&v.to_be_bytes()[..len]);
+}
+
+/// Decode a value produced by [`encode_varint`]. Returns the decoded
+/// value and the number of bytes consumed, or `None` on truncation.
+pub fn decode_varint(bytes: &[u8]) -> Option<(u64, usize)> {
+    let (&b0, rest) = bytes.split_first()?;
+
+    // The marker is a unary length prefix: `leading_ones` continuation bytes
+    // follow the first one. `get` yields None when the input is truncated.
+    let leading_ones = b0.leading_ones() as usize;
+    let continuation = rest.get(..leading_ones)?;
+
+    // Data bits live in the low `7 - leading_ones` bits of b0 (and none when
+    // leading_ones == 8, i.e. b0 == 0xFF). saturating_sub floors the shift at 0
+    // so the 0xFF case produces an empty mask instead of underflowing.
+    let shift = 7usize.saturating_sub(leading_ones);
+    let mask = (1u8 << shift) - 1;
+
+    let mut value = (b0 & mask) as u64;
+    for &b in continuation {
+        value = (value << 8) | b as u64;
     }
 
-    let akey = unsafe { str::from_utf8_unchecked(a) };
-    let bkey = unsafe { str::from_utf8_unchecked(b) };
-    let (apath_str, aseq_str, aarraypath_str) = split_seq_arraypath_from_kp_word_key(akey);
-    let (bpath_str, bseq_str, barraypath_str) = split_seq_arraypath_from_kp_word_key(bkey);
+    Some((value, 1 + continuation.len()))
+}
 
-    match apath_str[0..].cmp(&bpath_str[0..]) {
-        Ordering::Less => Ordering::Less,
-        Ordering::Greater => Ordering::Greater,
-        Ordering::Equal => {
-            let aseq: u64 = aseq_str.parse().unwrap();
-            let bseq: u64 = bseq_str.parse().unwrap();
-            match aseq.cmp(&bseq) {
-                Ordering::Less => Ordering::Less,
-                Ordering::Greater => Ordering::Greater,
-                Ordering::Equal => {
-                    if aarraypath_str.is_empty() || barraypath_str.is_empty() {
-                        aarraypath_str.len().cmp(&barraypath_str.len())
-                    } else {
-                        let mut a_nums = aarraypath_str.split(',');
-                        let mut b_nums = barraypath_str.split(',');
-                        loop {
-                            if let Some(a_num_str) = a_nums.next() {
-                                if let Some(b_num_str) = b_nums.next() {
-                                    let a_num: u64 = a_num_str.parse().unwrap();
-                                    let b_num: u64 = b_num_str.parse().unwrap();
-                                    match a_num.cmp(&b_num) {
-                                        Ordering::Less => return Ordering::Less,
-                                        Ordering::Greater => return Ordering::Greater,
-                                        Ordering::Equal => (),
-                                    }
-                                } else {
-                                    //b is shorter than a, so greater
-                                    return Ordering::Greater;
-                                }
-                            } else {
-                                if b_nums.next().is_some() {
-                                    //a is shorter than b so less
-                                    return Ordering::Less;
-                                } else {
-                                    // same length and must have hit all equal before this,
-                                    // so equal
-                                    return Ordering::Equal;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+/// Append a doc seq followed by an arraypath as concatenated prefix varints.
+/// Each varint is self-delimiting, so no separator bytes are required between
+/// elements.
+pub fn encode_seq_arraypath(buf: &mut Vec<u8>, seq: u64, arraypath: &[u64]) {
+    encode_varint(buf, seq);
+    for &i in arraypath {
+        encode_varint(buf, i);
     }
 }
 
-/// Compare function for the keys in the multi-dimensional namespace.
-/// The keys have a length prefixed string (the Keypath), followed by the Internal Id and
-/// the bounding box around the geometry.
-pub fn compare_keys_multidim(aa: &[u8], bb: &[u8]) -> Ordering {
-    if aa.is_empty() && bb.is_empty() {
-        return Ordering::Equal;
-    } else if aa.is_empty() {
-        return Ordering::Less;
-    } else if bb.is_empty() {
-        return Ordering::Greater;
+/// Decode a run of varints, one after another, until `bytes` is exhausted.
+pub fn decode_varints(mut bytes: &[u8]) -> Vec<u64> {
+    let mut values = Vec::new();
+    while !bytes.is_empty() {
+        let (v, n) = decode_varint(bytes).expect("malformed varint");
+        values.push(v);
+        bytes = &bytes[n..];
     }
+    values
+}
 
-    let (keypath_aa, offset_aa) = get_length_prefixed_slice(aa);
-    let (keypath_bb, offset_bb) = get_length_prefixed_slice(bb);
+/// Decode a sequence of varints produced by [`encode_seq_arraypath`]. The first
+/// varint is the doc seq; any remaining bytes are decoded as arraypath
+/// elements until the slice is exhausted.
+pub fn decode_seq_arraypath(bytes: &[u8]) -> (u64, Vec<u64>) {
+    let (seq, n) = decode_varint(bytes).expect("malformed seq varint");
+    (seq, decode_varints(&bytes[n..]))
+}
 
-    // The ordering of the keypath doesn't need to be unicode collated. The ordering
-    // doesn't really matters, it only matters that it's always the same.
-    let keypath_compare = keypath_aa.cmp(keypath_bb);
-    if keypath_compare != Ordering::Equal {
-        return keypath_compare;
-    }
+/// Append a length-prefixed slice to `buf`. The length is written as a
+/// prefix varint (see [`encode_varint`]) and the slice bytes follow
+/// verbatim.
+pub fn put_length_prefixed_slice(buf: &mut Vec<u8>, slice: &[u8]) {
+    encode_varint(buf, slice.len() as u64);
+    buf.extend_from_slice(slice);
+}
 
-    // Keypaths are the same, compare the Internal Ids value
-    let seq_aa = unsafe {
-        let array = *(aa[(offset_aa)..].as_ptr() as *const [_; 8]);
-        u64::from_ne_bytes(array)
-    };
-    let seq_bb = unsafe {
-        let array = *(bb[(offset_bb)..].as_ptr() as *const [_; 8]);
-        u64::from_ne_bytes(array)
-    };
-    let seq_compare = seq_aa.cmp(&seq_bb);
-    if seq_compare != Ordering::Equal {
-        return seq_compare;
-    }
+/// Encodes an i32 as a zigzag-mapped prefix varint (see
+/// [`encode_varint`]): the value is mapped to an unsigned int
+/// (0 → 0, -1 → 1, 1 → 2, …) so small magnitudes of either sign stay in the
+/// 1-byte class.
+pub fn encode_zigzag_i32(val: i32) -> Vec<u8> {
+    let zigzag = ((val << 1) ^ (val >> 31)) as u32;
+    let mut buf = Vec::with_capacity(5);
+    encode_varint(&mut buf, u64::from(zigzag));
+    buf
+}
 
-    // Internal Ids are the same, compare the bounding box
-    let bbox_aa = unsafe {
-        let array = *(aa[(offset_aa + 8)..].as_ptr() as *const [_; 32]);
-        mem::transmute::<[u8; 32], [f64; 4]>(array)
-    };
-    let bbox_bb = unsafe {
-        let array = *(bb[(offset_bb + 8)..].as_ptr() as *const [_; 32]);
-        mem::transmute::<[u8; 32], [f64; 4]>(array)
-    };
-
-    for (value_aa, value_bb) in bbox_aa.iter().zip(bbox_bb.iter()) {
-        let value_compare = value_aa.partial_cmp(value_bb).unwrap();
-        if value_compare != Ordering::Equal {
-            return value_compare;
-        }
-    }
-    // No early return, the values are fully equal
-    Ordering::Equal
+/// Decodes an i32 produced by [`encode_zigzag_i32`].
+pub fn decode_zigzag_i32(bytes: &[u8]) -> i32 {
+    let (zigzag, _) = decode_varint(bytes).expect("malformed zigzag i32 varint");
+    let zigzag = zigzag as u32;
+    ((zigzag >> 1) as i32) ^ -((zigzag & 1) as i32)
 }
 
 /// Merge function that sums up the signed 32-bit varint values stored for
@@ -215,15 +173,15 @@ pub fn sum_merge(
     }
 
     let mut count = if let Some(bytes) = existing_val {
-        convert_bytes_to_i32(bytes)
+        decode_zigzag_i32(bytes)
     } else {
         0
     };
 
     for bytes in operands {
-        count += convert_bytes_to_i32(bytes);
+        count += decode_zigzag_i32(bytes);
     }
-    convert_i32_to_bytes(count)
+    encode_zigzag_i32(count)
 }
 
 /// Compaction-filter predicate: returns `true` if the key should be dropped.
@@ -233,7 +191,7 @@ pub fn should_drop_key(_level: u32, key: &[u8], value: &[u8]) -> bool {
     if !(key[0] as char == KEY_PREFIX_WORD_COUNT || key[0] as char == KEY_PREFIX_FIELD_COUNT) {
         return false; // keep
     }
-    0 == convert_bytes_to_i32(value) // true = remove
+    0 == decode_zigzag_i32(value) // true = remove
 }
 
 /// Configuration for opening a database.
@@ -369,5 +327,224 @@ impl Cursor {
             self.advance();
             Some(key)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn varint_boundary_encodings() {
+        // Byte 0 is written in binary so the unary length marker and the
+        // payload bits it shares the byte with are visible; the trailing
+        // payload bytes stay hex.
+        let cases: &[(u64, &[u8])] = &[
+            (0, &[0b0000_0000]),
+            (1, &[0b0000_0001]),
+            (127, &[0b0111_1111]),
+            (128, &[0b1000_0000, 0x80]),
+            ((1 << 14) - 1, &[0b1011_1111, 0xFF]),
+            (1 << 14, &[0b1100_0000, 0x40, 0x00]),
+            ((1 << 21) - 1, &[0b1101_1111, 0xFF, 0xFF]),
+            (1 << 21, &[0b1110_0000, 0x20, 0x00, 0x00]),
+            ((1 << 28) - 1, &[0b1110_1111, 0xFF, 0xFF, 0xFF]),
+            (1 << 28, &[0b1111_0000, 0x10, 0x00, 0x00, 0x00]),
+            (0xFFFF_FFFF, &[0b1111_0000, 0xFF, 0xFF, 0xFF, 0xFF]),
+            ((1 << 35) - 1, &[0b1111_0111, 0xFF, 0xFF, 0xFF, 0xFF]),
+            (1 << 35, &[0b1111_1000, 0x08, 0x00, 0x00, 0x00, 0x00]),
+            ((1 << 42) - 1, &[0b1111_1011, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]),
+            (1 << 42, &[0b1111_1100, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00]),
+            (
+                (1 << 49) - 1,
+                &[0b1111_1101, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF],
+            ),
+            (
+                1 << 49,
+                &[0b1111_1110, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            ),
+            (
+                (1 << 56) - 1,
+                &[0b1111_1110, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF],
+            ),
+            (
+                1 << 56,
+                &[0b1111_1111, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            ),
+            (
+                u64::MAX,
+                &[0b1111_1111, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF],
+            ),
+        ];
+        for (value, expected) in cases {
+            let mut buf = Vec::new();
+            encode_varint(&mut buf, *value);
+            assert_eq!(&buf[..], *expected, "encoding of {} mismatch", value);
+        }
+    }
+
+    #[test]
+    fn varint_roundtrip() {
+        // Width classes step every 7 bits, so the interesting values are the
+        // largest of each width and the smallest of the next, plus a few
+        // in-between magnitudes.
+        let samples: &[u64] = &[
+            0,
+            1,
+            127,
+            128,
+            (1 << 14) - 1,
+            1 << 14,
+            (1 << 21) - 1,
+            1 << 21,
+            0xFF_FFFF,
+            (1 << 28) - 1,
+            1 << 28,
+            0xFFFF_FFFF,
+            (1 << 35) - 1,
+            1 << 35,
+            (1 << 42) - 1,
+            1 << 42,
+            (1 << 49) - 1,
+            1 << 49,
+            (1 << 56) - 1,
+            1 << 56,
+            u64::MAX - 1,
+            u64::MAX,
+        ];
+        for &v in samples {
+            let mut buf = Vec::new();
+            encode_varint(&mut buf, v);
+            let (decoded, n) = decode_varint(&buf).expect("decode failed");
+            assert_eq!(decoded, v, "roundtrip mismatch");
+            assert_eq!(n, buf.len(), "consumed length mismatch");
+        }
+    }
+
+    #[test]
+    fn varint_byte_order_matches_numeric_order() {
+        // A longer encoding must always sort above a shorter one, so the width
+        // class edges (every 7 bits) are where this property can break.
+        let mut samples: Vec<u64> = vec![
+            0,
+            1,
+            5,
+            99,
+            127,
+            128,
+            255,
+            (1 << 14) - 1,
+            1 << 14,
+            (1 << 21) - 1,
+            1 << 21,
+            1_000_000,
+            u64::from(u32::MAX),
+            1u64 << 32,
+            1u64 << 40,
+            1u64 << 48,
+            1u64 << 56,
+            u64::MAX - 1,
+            u64::MAX,
+        ];
+        samples.sort();
+        let mut encoded: Vec<(u64, Vec<u8>)> = samples
+            .iter()
+            .map(|&v| {
+                let mut buf = Vec::new();
+                encode_varint(&mut buf, v);
+                (v, buf)
+            })
+            .collect();
+        encoded.sort_by(|a, b| a.1.cmp(&b.1));
+        let order: Vec<u64> = encoded.into_iter().map(|(v, _)| v).collect();
+        assert_eq!(order, samples);
+    }
+
+    #[test]
+    fn seq_arraypath_roundtrip_and_order() {
+        // Listed in ascending order, so each encoding must sort strictly above
+        // the one before it.
+        let cases: &[(u64, &[u64])] = &[
+            (0, &[]),
+            (1, &[]),
+            (1, &[0]),
+            (1, &[0, 0]),
+            (1, &[0, 1]),
+            (1, &[1]),
+            (10, &[]),
+            (10, &[5]),
+            (10, &[6]),
+            (200, &[1, 2, 3]),
+            (1_000_000, &[]),
+        ];
+
+        let mut previous: Option<Vec<u8>> = None;
+        for &(seq, arraypath) in cases {
+            let mut encoded = Vec::new();
+            encode_seq_arraypath(&mut encoded, seq, arraypath);
+
+            let (decoded_seq, decoded_arraypath) = decode_seq_arraypath(&encoded);
+            assert_eq!(decoded_seq, seq, "seq roundtrip mismatch");
+            assert_eq!(
+                decoded_arraypath, arraypath,
+                "arraypath roundtrip mismatch for seq {seq}"
+            );
+
+            if let Some(previous) = &previous {
+                assert!(
+                    previous < &encoded,
+                    "{:?} does not sort above the preceding case",
+                    (seq, arraypath)
+                );
+            }
+            previous = Some(encoded);
+        }
+    }
+
+    #[test]
+    fn varint_truncation_returns_none() {
+        assert!(decode_varint(&[]).is_none());
+
+        // Byte 0 announces a total length the input doesn't have.
+        assert!(decode_varint(&[0b1000_0000]).is_none());
+        assert!(decode_varint(&[0b1100_0000, 0x00]).is_none());
+        assert!(decode_varint(&[0b1111_1110, 0x00]).is_none());
+        assert!(decode_varint(&[0b1111_1111, 0x00]).is_none());
+    }
+
+    #[test]
+    fn zigzag_i32_roundtrip() {
+        let samples: &[i32] = &[i32::MIN, -1_000_000, -64, -2, -1, 0, 1, 2, 63, i32::MAX];
+        for &v in samples {
+            assert_eq!(decode_zigzag_i32(&encode_zigzag_i32(v)), v);
+        }
+        // Small magnitudes of either sign stay in the 1-byte class.
+        assert_eq!(encode_zigzag_i32(0), vec![0x00]);
+        assert_eq!(encode_zigzag_i32(-1), vec![0x01]);
+        assert_eq!(encode_zigzag_i32(1), vec![0x02]);
+        assert_eq!(encode_zigzag_i32(63), vec![0x7E]);
+        assert_eq!(encode_zigzag_i32(-64), vec![0x7F]);
+    }
+
+    #[test]
+    fn length_prefixed_slice_encoding() {
+        // A length below 128 is a 1-byte varint, so the prefix is the length.
+        let mut buf = Vec::new();
+        put_length_prefixed_slice(&mut buf, b"");
+        assert_eq!(buf, vec![0]);
+
+        let mut buf = Vec::new();
+        put_length_prefixed_slice(&mut buf, b"abc");
+        assert_eq!(buf, vec![3, b'a', b'b', b'c']);
+
+        // A length of 240 doesn't fit a 1-byte varint, so the prefix is a
+        // marker byte followed by the length.
+        let payload = [0xAA; 240];
+        let mut expected = vec![0b1000_0000, 240];
+        expected.extend_from_slice(&payload);
+
+        let mut buf = Vec::new();
+        put_length_prefixed_slice(&mut buf, &payload);
+        assert_eq!(buf, expected);
     }
 }

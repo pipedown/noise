@@ -1,15 +1,11 @@
-extern crate varint;
-
 use std::f32;
-use std::io::Cursor as IoCursor;
 use std::str;
 
-use self::varint::VarintRead;
 use crate::json_value::JsonValue;
 use crate::key_builder::{KeyBuilder, Segment};
 use crate::query::{DocResult, QueryScoringInfo};
 use crate::returnable::{PathSegment, ReturnPath};
-use noise_storage::{convert_bytes_to_i32, BackendSnapshot, Cursor, SeekFrom};
+use noise_storage::{decode_varints, decode_zigzag_i32, BackendSnapshot, Cursor, SeekFrom};
 
 pub struct Snapshot<S: BackendSnapshot> {
     snap: S,
@@ -65,25 +61,23 @@ impl<S: BackendSnapshot> Snapshot<S> {
 
 pub struct DocResultIterator {
     iter: Cursor,
-    keypathword: String,
+    keypathword: Vec<u8>,
 }
 
 impl DocResultIterator {
     pub fn advance_gte(&mut self, start: &DocResult) {
-        KeyBuilder::add_doc_result_to_kp_word(&mut self.keypathword, start);
-        // Seek in index to >= entry
-        self.iter.seek(SeekFrom::Key(self.keypathword.as_bytes()));
-        KeyBuilder::truncate_to_kp_word(&mut self.keypathword);
+        let mut seek_key = self.keypathword.clone();
+        KeyBuilder::add_doc_result_to_kp_word(&mut seek_key, start);
+        self.iter.seek(SeekFrom::Key(&seek_key));
     }
 
     pub fn next(&mut self) -> Option<(DocResult, TermPositions)> {
         let (key, value) = self.iter.current()?;
-        if !key.starts_with(self.keypathword.as_bytes()) {
+        if !key.starts_with(&self.keypathword) {
             // we passed the key path we are interested in. nothing left to do
             return None;
         }
-        let key_str = unsafe { str::from_utf8_unchecked(key) };
-        let dr = KeyBuilder::parse_doc_result_from_kp_word_key(key_str);
+        let dr = KeyBuilder::parse_doc_result_from_kp_word_key(key, self.keypathword.len());
         let pos = value.to_vec();
         self.iter.advance();
         Some((dr, TermPositions { pos }))
@@ -96,12 +90,10 @@ pub struct TermPositions {
 
 impl TermPositions {
     pub fn positions(self) -> Vec<u32> {
-        let mut bytes = IoCursor::new(self.pos);
-        let mut positions = Vec::new();
-        while let Ok(pos) = bytes.read_unsigned_varint_32() {
-            positions.push(pos);
-        }
-        positions
+        decode_varints(&self.pos)
+            .into_iter()
+            .map(|p| p as u32)
+            .collect()
     }
 }
 
@@ -118,14 +110,14 @@ impl Scorer {
     pub fn init(&mut self, qsi: &mut QueryScoringInfo) {
         let key = self.kb.kp_word_count_key(&self.term);
         let doc_freq = if let Some(bytes) = self.get_value(&key) {
-            convert_bytes_to_i32(bytes.as_ref()) as f32
+            decode_zigzag_i32(bytes.as_ref()) as f32
         } else {
             0.0
         };
 
         let key = self.kb.kp_field_count_key();
         let num_docs = if let Some(bytes) = self.get_value(&key) {
-            convert_bytes_to_i32(bytes.as_ref()) as f32
+            decode_zigzag_i32(bytes.as_ref()) as f32
         } else {
             0.0
         };
@@ -136,10 +128,10 @@ impl Scorer {
         qsi.sum_of_idt_sqs += self.idf * self.idf;
     }
 
-    pub fn get_value(&mut self, key: &str) -> Option<Box<[u8]>> {
-        if let Some((ret_key, ret_value)) = self.iter.seek(SeekFrom::Key(key.as_bytes())) {
-            if ret_key.len() == key.len() && ret_key.starts_with(key.as_bytes()) {
-                Some(ret_value.to_vec().into_boxed_slice())
+    pub fn get_value(&mut self, key: &[u8]) -> Option<Box<[u8]>> {
+        if let Some((ret_key, ret_value)) = self.iter.seek(SeekFrom::Key(key)) {
+            if ret_key.len() == key.len() && ret_key.starts_with(key) {
+                Some(Box::from(ret_value))
             } else {
                 None
             }
@@ -152,7 +144,7 @@ impl Scorer {
         if self.should_score() {
             let key = self.kb.kp_field_length_key_from_doc_result(dr);
             let total_field_words = if let Some(bytes) = self.get_value(&key) {
-                convert_bytes_to_i32(bytes.as_ref()) as f32
+                decode_zigzag_i32(bytes.as_ref()) as f32
             } else {
                 panic!("Couldn't find field length for a match!! WHAT!");
             };
@@ -171,6 +163,12 @@ impl Scorer {
 
 pub struct JsonFetcher {
     iter: Cursor,
+}
+
+/// The keypath of `key` beyond the `value_key` prefix. A V-key is a binary seq followed by
+/// the keypath text, so everything past a V-key prefix is valid UTF-8 by construction.
+fn keypath_text<'a>(key: &'a [u8], value_key: &[u8]) -> &'a str {
+    unsafe { str::from_utf8_unchecked(&key[value_key.len()..]) }
 }
 
 impl JsonFetcher {
@@ -244,10 +242,8 @@ impl JsonFetcher {
                             kb.pop_array();
 
                             // Seek in index to >= entry
-                            if let Some((key, _value)) =
-                                iter.seek(SeekFrom::Key(value_key.as_bytes()))
-                            {
-                                if key.starts_with(value_key.as_bytes()) {
+                            if let Some((key, _value)) = iter.seek(SeekFrom::Key(&value_key)) {
+                                if key.starts_with(&value_key) {
                                     // yes it exists. loop again.
                                     continue;
                                 }
@@ -270,9 +266,8 @@ impl JsonFetcher {
         let value_key = kb.kp_value_key(seq);
 
         // Seek in index to >= entry
-        let (key, _value) = iter.seek(SeekFrom::Key(value_key.as_bytes()))?;
-        let key_str = unsafe { str::from_utf8_unchecked(key) };
-        if !KeyBuilder::is_kp_value_key_prefix(&value_key, key_str) {
+        let (key, _value) = iter.seek(SeekFrom::Key(&value_key))?;
+        if !KeyBuilder::is_kp_value_key_prefix(&value_key, key) {
             // the cursor landed past the keypath, there is no value to fetch
             return None;
         }
@@ -292,7 +287,7 @@ impl JsonFetcher {
     /// advances once; a container leaves the cursor wherever its deepest leaf did). No entry
     /// is advanced past until it has been fully consumed, so the cursor's own position is the
     /// one-entry lookahead that the whole recursion shares.
-    fn do_fetch(iter: &mut Cursor, value_key: &str) -> JsonValue {
+    fn do_fetch(iter: &mut Cursor, value_key: &[u8]) -> JsonValue {
         let (key, value) = iter.current().expect("cursor not to be exhausted");
         if key.len() == value_key.len() {
             // we have a key match! Consume the leaf and move past it.
@@ -300,10 +295,9 @@ impl JsonFetcher {
             iter.advance();
             return json;
         }
-        let key_str = unsafe { str::from_utf8_unchecked(key) };
         // The segment is owned, so the cursor borrow ends here and the recursion below is
         // free to advance the cursor.
-        let segment = KeyBuilder::parse_first_kp_value_segment(&key_str[value_key.len()..]);
+        let segment = KeyBuilder::parse_first_kp_value_segment(keypath_text(key, value_key));
 
         match segment {
             Some((Segment::ObjectKey(unescaped), escaped)) => {
@@ -312,36 +306,35 @@ impl JsonFetcher {
             Some((Segment::Array(index), escaped)) => {
                 JsonFetcher::fetch_array(iter, value_key, index, escaped)
             }
-            None => panic!("somehow couldn't parse key segment {}", value_key),
+            None => panic!("somehow couldn't parse key segment {:?}", value_key),
         }
     }
 
     /// The first keypath segment of the entry the cursor is on, relative to `value_key`, or
     /// `None` if the cursor is exhausted or has moved past the `value_key` subtree.
-    fn current_segment(iter: &Cursor, value_key: &str) -> Option<(Segment, String)> {
+    fn current_segment(iter: &Cursor, value_key: &[u8]) -> Option<(Segment, String)> {
         let (key, _value) = iter.current()?;
-        let key_str = unsafe { str::from_utf8_unchecked(key) };
-        if !KeyBuilder::is_kp_value_key_prefix(value_key, key_str) {
+        if !KeyBuilder::is_kp_value_key_prefix(value_key, key) {
             return None;
         }
-        KeyBuilder::parse_first_kp_value_segment(&key_str[value_key.len()..])
+        KeyBuilder::parse_first_kp_value_segment(keypath_text(key, value_key))
     }
 
     /// Fetches the object at `value_key`, whose first key is the already-parsed segment
     /// `unescaped`/`escaped`. Ends at the first entry that isn't another key of this object.
     fn fetch_object(
         iter: &mut Cursor,
-        value_key: &str,
+        value_key: &[u8],
         mut unescaped: String,
         mut escaped: String,
     ) -> JsonValue {
         let mut object: Vec<(String, JsonValue)> = Vec::new();
-        let mut child_key = value_key.to_string();
+        let mut child_key = value_key.to_vec();
         loop {
             // `child_key` is reused across the keys, so reset it to `value_key` before
             // appending this key's segment
             child_key.truncate(value_key.len());
-            child_key.push_str(&escaped);
+            child_key.extend_from_slice(escaped.as_bytes());
             object.push((unescaped, JsonFetcher::do_fetch(iter, &child_key)));
 
             // `do_fetch` left the cursor on the first entry beyond the child's subtree.
@@ -359,19 +352,19 @@ impl JsonFetcher {
     /// `index`/`escaped`. Ends at the first entry that isn't another element of this array.
     fn fetch_array(
         iter: &mut Cursor,
-        value_key: &str,
+        value_key: &[u8],
         mut index: u64,
         mut escaped: String,
     ) -> JsonValue {
         // we keep the ordinal because we encounter elements in lexical sorting order
         // instead of ordinal order, `return_array` sorts them
         let mut array: Vec<(u64, JsonValue)> = Vec::new();
-        let mut child_key = value_key.to_string();
+        let mut child_key = value_key.to_vec();
         loop {
             // `child_key` is reused across the elements, so reset it to `value_key` before
             // appending this element's segment
             child_key.truncate(value_key.len());
-            child_key.push_str(&escaped);
+            child_key.extend_from_slice(escaped.as_bytes());
             array.push((index, JsonFetcher::do_fetch(iter, &child_key)));
 
             // `do_fetch` left the cursor on the first entry beyond the element's subtree.
@@ -393,8 +386,7 @@ pub struct AllDocsIterator {
 impl AllDocsIterator {
     pub fn next(&mut self) -> Option<DocResult> {
         let (key, _value) = self.iter.current()?;
-        let key_str = unsafe { str::from_utf8_unchecked(key) };
-        let seq = KeyBuilder::parse_seq_key(key_str)?;
+        let seq = KeyBuilder::parse_seq_key(key)?;
         self.iter.advance();
         let mut dr = DocResult::new();
         dr.seq = seq;

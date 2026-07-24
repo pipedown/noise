@@ -1,19 +1,16 @@
 extern crate rustc_serialize;
-extern crate varint;
 
 use std::collections::{BTreeMap, HashMap};
-use std::io::Cursor;
 use std::io::Write;
 use std::str::Chars;
 use std::{self, f64, str};
 
 use self::rustc_serialize::json::{JsonEvent, Parser, StackElement};
-use self::varint::VarintWrite;
 
 use crate::error::Error;
 use crate::key_builder::KeyBuilder;
 use crate::stems::Stems;
-use noise_storage::{convert_i32_to_bytes, BackendBatch, Namespace};
+use noise_storage::{encode_varint, encode_zigzag_i32, BackendBatch, Namespace};
 
 // Good example of using rustc_serialize:
 //   https://github.com/ajroetker/beautician/blob/master/src/lib.rs
@@ -22,8 +19,13 @@ use noise_storage::{convert_i32_to_bytes, BackendBatch, Namespace};
 // Another parser pased on rustc_serializ:
 //   https://github.com/isagalaev/ijson-rust/blob/master/src/test.rs#L11
 
-/// Key-value pairs, where the key is the path to the value, the value is the actual value.
-pub(crate) type KeyValues = BTreeMap<String, Vec<u8>>;
+/// Key-value pairs read from disk for an existing document. The key is the full V-key
+/// (`V<varint seq>#<keypath>`), which is not valid UTF-8 because of the binary varint.
+pub(crate) type KeyValues = BTreeMap<Vec<u8>, Vec<u8>>;
+
+/// Key-value pairs collected during shredding. The key is a `kp_value_no_seq` keypath
+/// string (text only, no doc seq prefix); the value carries a one-byte type tag.
+type ShreddedKeyValues = BTreeMap<String, Vec<u8>>;
 
 // `GeometryCollection` is left out as we will process the individual geometries of it
 const GEOJSON_TYPES: &[&str] = &[
@@ -49,7 +51,7 @@ pub struct Shredder {
     kb: KeyBuilder,
     doc_id: Option<String>,
     object_keys_indexed: Vec<bool>,
-    shredded_key_values: KeyValues,
+    shredded_key_values: ShreddedKeyValues,
     existing_key_value_to_delete: KeyValues,
     // Whether the current object is a GeoJSON geometry or not. It's a counter that increases
     // the more of the geometry was seen. It is increased for the following cases:
@@ -116,10 +118,10 @@ impl Shredder {
         // Add/delete the key that is used for range lookups
         let number_key = kb.number_key(docseq);
         if delete {
-            batch.delete(Namespace::Default, number_key.as_bytes())?;
+            batch.delete(Namespace::Default, &number_key)?;
         } else {
             // The number contains the `f` prefix
-            batch.put(Namespace::Default, number_key.as_bytes(), &number[1..])?;
+            batch.put(Namespace::Default, &number_key, &number[1..])?;
         }
 
         Ok(())
@@ -134,10 +136,10 @@ impl Shredder {
     ) -> Result<(), Error> {
         let key = kb.bool_null_key(prefix, docseq);
         if delete {
-            batch.delete(Namespace::Default, key.as_bytes())?;
+            batch.delete(Namespace::Default, &key)?;
         } else {
             // No need to store any value as the key already contains it
-            batch.put(Namespace::Default, key.as_bytes(), &[])?;
+            batch.put(Namespace::Default, &key, &[])?;
         }
 
         Ok(())
@@ -154,19 +156,16 @@ impl Shredder {
         let mut word_to_word_positions = HashMap::new();
         let mut total_words: i32 = 0;
 
-        let mut one_enc_bytes = Cursor::new(Vec::new());
         let num = if delete { -1 } else { 1 };
-        assert!(one_enc_bytes.write_signed_varint_32(num).is_ok());
+        let one_enc_bytes = encode_zigzag_i32(num);
 
         for stem in stems {
             total_words += 1;
             let &mut (ref mut word_positions, ref mut count) = word_to_word_positions
                 .entry(stem.stemmed)
-                .or_insert((Cursor::new(Vec::new()), 0));
+                .or_insert((Vec::new(), 0));
             if !delete {
-                assert!(word_positions
-                    .write_unsigned_varint_32(stem.word_pos)
-                    .is_ok());
+                encode_varint(word_positions, u64::from(stem.word_pos));
             }
             *count += 1;
         }
@@ -174,35 +173,27 @@ impl Shredder {
         for (stemmed, (word_positions, count)) in word_to_word_positions {
             let key = kb.kp_word_key(&stemmed, docseq);
             if delete {
-                batch.delete(Namespace::Default, &key.into_bytes())?;
+                batch.delete(Namespace::Default, &key)?;
             } else {
-                batch.put(
-                    Namespace::Default,
-                    &key.into_bytes(),
-                    &word_positions.into_inner(),
-                )?;
+                batch.put(Namespace::Default, &key, &word_positions)?;
             }
 
             let key = kb.kp_field_length_key(docseq);
             if delete {
-                batch.delete(Namespace::Default, &key.into_bytes())?;
+                batch.delete(Namespace::Default, &key)?;
             } else {
-                batch.put(
-                    Namespace::Default,
-                    &key.into_bytes(),
-                    &convert_i32_to_bytes(total_words),
-                )?;
+                batch.put(Namespace::Default, &key, &encode_zigzag_i32(total_words))?;
             }
 
             let key = kb.kp_word_count_key(&stemmed);
             if delete {
-                batch.merge(&key.into_bytes(), &convert_i32_to_bytes(-count))?;
+                batch.merge(&key, &encode_zigzag_i32(-count))?;
             } else {
-                batch.merge(&key.into_bytes(), &convert_i32_to_bytes(count))?;
+                batch.merge(&key, &encode_zigzag_i32(count))?;
             }
 
             let key = kb.kp_field_count_key();
-            batch.merge(&key.into_bytes(), one_enc_bytes.get_ref())?;
+            batch.merge(&key, &one_enc_bytes)?;
         }
 
         Ok(())
@@ -325,7 +316,7 @@ impl Shredder {
         for (key, value) in &self.existing_key_value_to_delete {
             self.kb.clear();
             self.kb
-                .parse_kp_value_no_seq(KeyBuilder::kp_value_no_seq_from_str(key));
+                .parse_kp_value_no_seq(KeyBuilder::kp_value_no_seq_from_bytes(key));
             match value[0] as char {
                 's' => {
                     let text = unsafe { str::from_utf8_unchecked(&value[1..]) };
@@ -351,7 +342,7 @@ impl Shredder {
             // If it was a bounding box for the multi-dimensional namespace, it's not part of the
             // shredded original JSON document
             if value[0] as char != 'r' {
-                batch.delete(Namespace::Default, key.as_bytes())?;
+                batch.delete(Namespace::Default, key)?;
             }
         }
         self.existing_key_value_to_delete = BTreeMap::new();
@@ -385,20 +376,16 @@ impl Shredder {
             // to be part of the shredded original JSON document
             if value[0] as char != 'r' {
                 let key = self.kb.kp_value_key(seq);
-                batch.put(Namespace::Default, key.as_bytes(), value.as_ref())?;
+                batch.put(Namespace::Default, &key, value.as_ref())?;
             }
         }
         self.shredded_key_values = BTreeMap::new();
 
         let key = KeyBuilder::id_to_seq_key(self.doc_id.as_ref().unwrap());
-        batch.put(
-            Namespace::Default,
-            &key.into_bytes(),
-            seq.to_string().as_bytes(),
-        )?;
+        batch.put(Namespace::Default, &key, seq.to_string().as_bytes())?;
 
         let key = KeyBuilder::seq_key(seq);
-        batch.put(Namespace::Default, &key.into_bytes(), b"")?;
+        batch.put(Namespace::Default, &key, b"")?;
 
         Ok(())
     }
@@ -414,7 +401,7 @@ impl Shredder {
         for (key, value) in existing.into_iter() {
             self.kb.clear();
             self.kb
-                .parse_kp_value_no_seq(KeyBuilder::kp_value_no_seq_from_str(&key));
+                .parse_kp_value_no_seq(KeyBuilder::kp_value_no_seq_from_bytes(&key));
             match value[0] as char {
                 's' => {
                     let text = unsafe { str::from_utf8_unchecked(&value[1..]) };
@@ -434,13 +421,13 @@ impl Shredder {
                 }
                 _ => {}
             }
-            batch.delete(Namespace::Default, key.as_bytes())?;
+            batch.delete(Namespace::Default, &key)?;
         }
         let key = KeyBuilder::id_to_seq_key(self.doc_id.as_ref().unwrap());
-        batch.delete(Namespace::Default, &key.into_bytes())?;
+        batch.delete(Namespace::Default, &key)?;
 
         let key = KeyBuilder::seq_key(seq);
-        batch.delete(Namespace::Default, &key.into_bytes())?;
+        batch.delete(Namespace::Default, &key)?;
         Ok(())
     }
 
@@ -450,7 +437,7 @@ impl Shredder {
         // and don't even need to reindex.
         for (existing_key, existing_value) in existing {
             let matches = {
-                let key = KeyBuilder::kp_value_no_seq_from_str(&existing_key);
+                let key = KeyBuilder::kp_value_no_seq_from_bytes(&existing_key);
                 if let Some(new_value) = self.shredded_key_values.get(key) {
                     *new_value == existing_value
                 } else {
@@ -459,7 +446,7 @@ impl Shredder {
             };
             if matches {
                 // we don't need to write or index these values, they already exist!
-                let key = KeyBuilder::kp_value_no_seq_from_str(&existing_key);
+                let key = KeyBuilder::kp_value_no_seq_from_bytes(&existing_key);
                 self.shredded_key_values.remove(key).unwrap();
             } else {
                 // we need to delete these keys and the index keys assocaited with the valuess
@@ -498,12 +485,7 @@ impl Shredder {
                         self.maybe_add_value(&parser, 'o', &[])?;
                     }
                     if self.maybe_geometry == 2 {
-                        let mut encoded_bbox = Vec::new();
-                        encoded_bbox.extend_from_slice(&self.bounding_box[0].to_le_bytes());
-                        encoded_bbox.extend_from_slice(&self.bounding_box[2].to_le_bytes());
-                        encoded_bbox.extend_from_slice(&self.bounding_box[1].to_le_bytes());
-                        encoded_bbox.extend_from_slice(&self.bounding_box[3].to_le_bytes());
-
+                        let encoded_bbox = KeyBuilder::encode_bbox(self.bounding_box);
                         let _ = self.add_value('r', encoded_bbox.as_slice());
                     }
                     // Reset the values as it either wasn't a valid geometry, or it was already
@@ -573,11 +555,7 @@ impl Shredder {
 
 #[cfg(test)]
 mod tests {
-    extern crate varint;
-
-    use self::varint::VarintRead;
-
-    use std::io::Cursor;
+    use std::str;
 
     use crate::index::{Index, OpenOptions};
     use crate::json_value::JsonValue;
@@ -587,30 +565,45 @@ mod tests {
 
     type Idx = Index<Database>;
 
-    fn positions_from_db(db: &Database) -> Vec<(String, Vec<u32>)> {
+    /// Decodes word-index keys into (kp_word_text_prefix, seq, arraypath, positions). The
+    /// prefix is the text portion through the trailing `#`; the seq and arraypath are
+    /// decoded from the binary suffix.
+    fn positions_from_db(db: &Database) -> Vec<(String, u64, Vec<u64>, Vec<u32>)> {
+        use noise_storage::decode_seq_arraypath;
         let mut iter = db.iterator();
         iter.entries()
-            .filter(|(key, _value)| key[0] as char == 'W')
+            .filter(|(key, _value)| key.first() == Some(&b'W'))
             .map(|(key, value)| {
-                let mut bytes = Cursor::new(value);
-                let mut positions = Vec::new();
-                while let Ok(pos) = bytes.read_unsigned_varint_32() {
-                    positions.push(pos);
+                let positions: Vec<u32> = noise_storage::decode_varints(&value)
+                    .into_iter()
+                    .map(|p| p as u32)
+                    .collect();
+                // The keypath escapes special bytes with a leading `\`. Scan for the separator
+                // `#`, skipping the byte after each `\` so an escaped `#` (or `\`) isn't taken
+                // as the separator.
+                let mut hash_pos = 0;
+                loop {
+                    match key[hash_pos] {
+                        b'#' => break,
+                        b'\\' => hash_pos += 2,
+                        _ => hash_pos += 1,
+                    }
                 }
-                (unsafe { String::from_utf8_unchecked(key) }, positions)
+                let prefix = unsafe { str::from_utf8_unchecked(&key[..=hash_pos]) }.to_string();
+                let (seq, arraypath) = decode_seq_arraypath(&key[hash_pos + 1..]);
+                (prefix, seq, arraypath, positions)
             })
             .collect()
     }
 
-    fn values_from_db(db: &Database) -> Vec<(String, JsonValue)> {
+    fn values_from_db(db: &Database) -> Vec<(u64, String, JsonValue)> {
         let mut iter = db.iterator();
         iter.entries()
-            .filter(|(key, _value)| key[0] as char == 'V')
+            .filter(|(key, _value)| key.first() == Some(&b'V'))
             .map(|(key, value)| {
-                (
-                    unsafe { String::from_utf8_unchecked(key) },
-                    JsonFetcher::bytes_to_json_value(&value),
-                )
+                let (seq, n) = noise_storage::decode_varint(&key[1..]).unwrap();
+                let kp = unsafe { str::from_utf8_unchecked(&key[1 + n + 1..]) }.to_string();
+                (seq, kp, JsonFetcher::bytes_to_json_value(&value))
             })
             .collect()
     }
@@ -633,11 +626,11 @@ mod tests {
         let result = positions_from_db(&index.db);
 
         let expected = vec![
-            ("W._id!foo#123,".to_string(), vec![0]),
-            ("W.some$!array#123,0".to_string(), vec![0]),
-            ("W.some$!data#123,1".to_string(), vec![0]),
-            ("W.some$$!also#123,2,0".to_string(), vec![0]),
-            ("W.some$$!nest#123,2,1".to_string(), vec![0]),
+            ("W._id!foo#".to_string(), 123, vec![], vec![0]),
+            ("W.some$!array#".to_string(), 123, vec![0], vec![0]),
+            ("W.some$!data#".to_string(), 123, vec![1], vec![0]),
+            ("W.some$$!also#".to_string(), 123, vec![2, 0], vec![0]),
+            ("W.some$$!nest#".to_string(), 123, vec![2, 1], vec![0]),
         ];
         assert_eq!(result, expected);
     }
@@ -661,10 +654,11 @@ mod tests {
 
         let expected = vec![
             (
-                "V123#._id".to_string(),
+                123,
+                "._id".to_string(),
                 JsonValue::String("foo".to_string()),
             ),
-            ("V123#.a.a".to_string(), JsonValue::String("b".to_string())),
+            (123, ".a.a".to_string(), JsonValue::String("b".to_string())),
         ];
         assert_eq!(result, expected);
     }
@@ -690,14 +684,14 @@ mod tests {
         index.write_batch(batch).unwrap();
         let result = positions_from_db(&index.db);
         let expected = vec![
-            ("W.A$.B!b1#1234,1".to_string(), vec![0]),
-            ("W.A$.B!b2vmx#1234,0".to_string(), vec![0]),
-            ("W.A$.B!three#1234,0".to_string(), vec![10]),
-            ("W.A$.B!two#1234,0".to_string(), vec![6]),
-            ("W.A$.C!..#1234,0".to_string(), vec![0]),
-            ("W.A$.C!..#1234,1".to_string(), vec![0]),
-            ("W.A$.C!c2#1234,0".to_string(), vec![2]),
-            ("W.A$.C!c2#1234,1".to_string(), vec![2]),
+            ("W.A$.B!b1#".to_string(), 1234, vec![1], vec![0]),
+            ("W.A$.B!b2vmx#".to_string(), 1234, vec![0], vec![0]),
+            ("W.A$.B!three#".to_string(), 1234, vec![0], vec![10]),
+            ("W.A$.B!two#".to_string(), 1234, vec![0], vec![6]),
+            ("W.A$.C!..#".to_string(), 1234, vec![0], vec![0]),
+            ("W.A$.C!..#".to_string(), 1234, vec![1], vec![0]),
+            ("W.A$.C!c2#".to_string(), 1234, vec![0], vec![2]),
+            ("W.A$.C!c2#".to_string(), 1234, vec![1], vec![2]),
         ];
         assert_eq!(result, expected);
     }
@@ -719,7 +713,7 @@ mod tests {
 
         index.write_batch(batch).unwrap();
         let result = positions_from_db(&index.db);
-        let expected = vec![("W._id!foo#123,".to_string(), vec![0])];
+        let expected = vec![("W._id!foo#".to_string(), 123, vec![], vec![0])];
         assert_eq!(result, expected);
     }
 }

@@ -89,7 +89,7 @@ pub trait Returnable {
         fetcher: &mut JsonFetcher,
         seq: u64,
         score: f32,
-        bind_var_keys: &HashMap<String, Vec<String>>,
+        bind_var_keys: &HashMap<String, Vec<Vec<u8>>>,
         result: &mut VecDeque<JsonValue>,
     );
 
@@ -126,7 +126,7 @@ impl Returnable for RetObject {
         fetcher: &mut JsonFetcher,
         seq: u64,
         score: f32,
-        bind_var_keys: &HashMap<String, Vec<String>>,
+        bind_var_keys: &HashMap<String, Vec<Vec<u8>>>,
         result: &mut VecDeque<JsonValue>,
     ) {
         for (_key, field) in self.fields.iter() {
@@ -172,7 +172,7 @@ impl Returnable for RetArray {
         fetcher: &mut JsonFetcher,
         seq: u64,
         score: f32,
-        bind_var_keys: &HashMap<String, Vec<String>>,
+        bind_var_keys: &HashMap<String, Vec<Vec<u8>>>,
         result: &mut VecDeque<JsonValue>,
     ) {
         for slot in self.slots.iter() {
@@ -220,7 +220,7 @@ impl Returnable for RetHidden {
         fetcher: &mut JsonFetcher,
         seq: u64,
         score: f32,
-        bind_var_keys: &HashMap<String, Vec<String>>,
+        bind_var_keys: &HashMap<String, Vec<Vec<u8>>>,
         result: &mut VecDeque<JsonValue>,
     ) {
         for unrendered in self.unrendered.iter() {
@@ -268,7 +268,7 @@ impl Returnable for RetLiteral {
         _fetcher: &mut JsonFetcher,
         _seq: u64,
         _score: f32,
-        _bind_var_keys: &HashMap<String, Vec<String>>,
+        _bind_var_keys: &HashMap<String, Vec<Vec<u8>>>,
         _result: &mut VecDeque<JsonValue>,
     ) {
     }
@@ -305,7 +305,7 @@ impl Returnable for RetValue {
         fetcher: &mut JsonFetcher,
         seq: u64,
         _score: f32,
-        _bind_var_keys: &HashMap<String, Vec<String>>,
+        _bind_var_keys: &HashMap<String, Vec<Vec<u8>>>,
         result: &mut VecDeque<JsonValue>,
     ) {
         if Some((AggregateFun::Count, None)) == self.ag {
@@ -359,14 +359,14 @@ impl Returnable for RetBind {
         fetcher: &mut JsonFetcher,
         seq: u64,
         _score: f32,
-        bind_var_keys: &HashMap<String, Vec<String>>,
+        bind_var_keys: &HashMap<String, Vec<Vec<u8>>>,
         result: &mut VecDeque<JsonValue>,
     ) {
         if let Some(value_keys) = bind_var_keys.get(&self.bind_name) {
             let mut array = Vec::with_capacity(value_keys.len());
             for base_key in value_keys {
                 let mut kb = KeyBuilder::new();
-                kb.parse_kp_value_no_seq(KeyBuilder::kp_value_no_seq_from_str(base_key));
+                kb.parse_kp_value_no_seq(KeyBuilder::kp_value_no_seq_from_bytes(base_key));
 
                 if let Some(json) = fetcher.fetch(seq, &mut kb, &self.extra_rp) {
                     array.push(json);
@@ -412,7 +412,7 @@ impl Returnable for RetScore {
         _fetcher: &mut JsonFetcher,
         _seq: u64,
         score: f32,
-        _bind_var_keys: &HashMap<String, Vec<String>>,
+        _bind_var_keys: &HashMap<String, Vec<Vec<u8>>>,
         result: &mut VecDeque<JsonValue>,
     ) {
         result.push_back(JsonValue::Number(score as f64));
