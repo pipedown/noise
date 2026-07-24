@@ -1,20 +1,17 @@
-extern crate varint;
-
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::collections::HashSet;
-use std::io::Cursor;
 use std::rc::Rc;
 use std::{self, str};
-
-use self::varint::VarintRead;
 
 use crate::error::Error;
 use crate::json_value::JsonValue;
 use crate::key_builder::KeyBuilder;
 use crate::query::{DocResult, QueryScoringInfo};
 use crate::snapshot::{AllDocsIterator, DocResultIterator, JsonFetcher, Scorer, Snapshot};
-use noise_storage::{BackendSnapshot, Cursor as StorageCursor, SeekFrom};
+use noise_storage::{
+    encode_seq_arraypath, BackendSnapshot, Cursor as StorageCursor, SeekFrom, KEY_PREFIX_NUMBER,
+};
 
 pub trait QueryRuntimeFilter {
     fn first_result(&mut self, start: &DocResult) -> Option<DocResult>;
@@ -307,8 +304,8 @@ impl ExactMatchFilter {
         loop {
             let value_key = self.kb.kp_value_key_from_doc_result(&dr);
 
-            if let Some((key, value)) = self.iter.seek(SeekFrom::Key(value_key.as_bytes())) {
-                debug_assert!(key.starts_with(value_key.as_bytes())); // must always be true!
+            if let Some((key, value)) = self.iter.seek(SeekFrom::Key(&value_key)) {
+                debug_assert!(key.starts_with(&value_key)); // must always be true!
                 if let JsonValue::String(string) = JsonFetcher::bytes_to_json_value(value) {
                     let matches = if self.case_sensitive {
                         self.phrase == string
@@ -373,7 +370,7 @@ pub struct RangeFilter {
     kb: KeyBuilder,
     min: Option<RangeOperator>,
     max: Option<RangeOperator>,
-    keypath: String,
+    keypath: Vec<u8>,
     term_ordinal: Option<usize>,
 }
 
@@ -390,7 +387,7 @@ impl RangeFilter {
             min,
             max,
             // The keypath we use to seek to the correct key within RocksDB
-            keypath: String::new(),
+            keypath: Vec::new(),
             term_ordinal: None,
         }
     }
@@ -433,23 +430,20 @@ impl RangeFilter {
 
 impl QueryRuntimeFilter for RangeFilter {
     fn first_result(&mut self, start: &DocResult) -> Option<DocResult> {
-        let mut value_key = {
-            // `min` and `max` have the save type, so picking one is OK
-            let range_operator = self.min.as_ref().or(self.max.as_ref()).unwrap();
-            match range_operator {
-                &RangeOperator::Inclusive(_) | &RangeOperator::Exclusive(_) => {
-                    self.kb.number_key(start.seq)
-                }
-                &RangeOperator::True => self.kb.bool_null_key('T', start.seq),
-                &RangeOperator::False => self.kb.bool_null_key('F', start.seq),
-                &RangeOperator::Null => self.kb.bool_null_key('N', start.seq),
-            }
+        let range_operator = self.min.as_ref().or(self.max.as_ref()).unwrap();
+        let prefix_char = match range_operator {
+            &RangeOperator::Inclusive(_) | &RangeOperator::Exclusive(_) => KEY_PREFIX_NUMBER,
+            &RangeOperator::True => 'T',
+            &RangeOperator::False => 'F',
+            &RangeOperator::Null => 'N',
         };
+        let kp_only = self.kb.kp_only(prefix_char);
+        let mut value_key = kp_only.clone();
+        encode_seq_arraypath(&mut value_key, start.seq, &self.kb.arraypath);
         // NOTE vmx 2017-04-13: Iterating over keys is really similar to the
         // `DocResultIterator` in `snapshot.rs`. It should probablly be unified.
-        self.iter.seek(SeekFrom::Key(value_key.as_bytes()));
-        KeyBuilder::truncate_to_kp_word(&mut value_key);
-        self.keypath = value_key;
+        self.iter.seek(SeekFrom::Key(&value_key));
+        self.keypath = kp_only;
         self.next_result()
     }
 
@@ -459,13 +453,15 @@ impl QueryRuntimeFilter for RangeFilter {
             // completely here and only the owned `DocResult` leaves the block.
             let doc_result = {
                 let (key, value) = self.iter.current()?;
-                if !key.starts_with(self.keypath.as_bytes()) {
+                if !key.starts_with(&self.keypath) {
                     // we passed the key path we are interested in. nothing left to do
                     return None;
                 }
                 if self.value_matches(value) {
-                    let key_str = unsafe { str::from_utf8_unchecked(key) };
-                    Some(KeyBuilder::parse_doc_result_from_kp_word_key(key_str))
+                    Some(KeyBuilder::parse_doc_result_from_kp_word_key(
+                        key,
+                        self.keypath.len(),
+                    ))
                 } else {
                     None
                 }
@@ -510,17 +506,11 @@ pub struct BboxFilter<S: BackendSnapshot> {
 
 impl<S: BackendSnapshot> BboxFilter<S> {
     pub fn new(snapshot: Rc<Snapshot<S>>, kb: KeyBuilder, bbox: [f64; 4]) -> BboxFilter<S> {
-        let mut bbox_vec = Vec::with_capacity(32);
-        bbox_vec.extend_from_slice(&bbox[0].to_le_bytes());
-        bbox_vec.extend_from_slice(&bbox[2].to_le_bytes());
-        bbox_vec.extend_from_slice(&bbox[1].to_le_bytes());
-        bbox_vec.extend_from_slice(&bbox[3].to_le_bytes());
-
         BboxFilter {
             snapshot,
             iter: None,
             kb,
-            bbox: bbox_vec,
+            bbox: KeyBuilder::encode_bbox(bbox),
             term_ordinal: None,
         }
     }
@@ -546,19 +536,8 @@ impl<S: BackendSnapshot> QueryRuntimeFilter for BboxFilter<S> {
     fn next_result(&mut self) -> Option<DocResult> {
         let iter = self.iter.as_mut().unwrap();
         let (key, value) = iter.current()?;
-        let mut vec = Vec::with_capacity(key.len());
-        vec.extend_from_slice(key);
-        let mut read = Cursor::new(vec);
-        let key_len = read.read_unsigned_varint_32().unwrap();
-        let offset = read.position() as usize;
-
-        let iid = unsafe {
-            let array = *(key[offset + key_len as usize..].as_ptr() as *const [_; 8]);
-            u64::from_ne_bytes(array)
-        };
-
         let mut dr = DocResult::new();
-        dr.seq = iid;
+        dr.seq = KeyBuilder::multidim_seq_from_bytes(key);
         dr.arraypath = Self::from_u8_slice(value);
         iter.advance();
         if let Some(to) = self.term_ordinal {
@@ -969,9 +948,8 @@ impl NotFilter {
                 // if not, it means other elements did a regular match and skipped them, then we
                 // ran off the end of the array.
                 let value_key = self.kb.kp_value_key_from_doc_result(dr);
-                if let Some((key, _value)) = self.iter.seek(SeekFrom::Key(value_key.as_bytes())) {
-                    let key_str = unsafe { str::from_utf8_unchecked(key) };
-                    KeyBuilder::is_kp_value_key_prefix(&value_key, key_str)
+                if let Some((key, _value)) = self.iter.seek(SeekFrom::Key(&value_key)) {
+                    KeyBuilder::is_kp_value_key_prefix(&value_key, key)
                 } else {
                     false
                 }
@@ -986,9 +964,8 @@ impl NotFilter {
             let mut kb = KeyBuilder::new();
             kb.push_object_key("_id");
             let value_key = kb.kp_value_key_from_doc_result(dr);
-            if let Some((key, _value)) = self.iter.seek(SeekFrom::Key(value_key.as_bytes())) {
-                let key_str = unsafe { str::from_utf8_unchecked(key) };
-                value_key == key_str
+            if let Some((key, _value)) = self.iter.seek(SeekFrom::Key(&value_key)) {
+                value_key.as_slice() == key
             } else {
                 false
             }

@@ -21,8 +21,10 @@ use noise_storage::{BackendDatabase, DatabaseConfig};
 /// access to this crate's source tree.
 static REPL_CORPUS: Dir = include_dir!("$CARGO_MANIFEST_DIR/repl-tests");
 
-/// Iteration must observe the numeric-aware key ordering defined by
-/// `noise_storage::compare_keys`: seq numbers sort numerically, not lexically.
+/// Iteration must observe plain byte (lexicographic) key order. The engine
+/// encodes seq numbers byte-orderably (`encode_seq_arraypath`), so byte order is
+/// numeric order: `[1, 2, 9, 10, 11]` must come back in that order, not the
+/// lexicographic `1, 10, 11, 2, 9`.
 pub fn seq_ordering<D: BackendDatabase>() {
     let dbname = "target/tests/seq_ordering";
     let _ = D::destroy(dbname);
@@ -34,19 +36,23 @@ pub fn seq_ordering<D: BackendDatabase>() {
     )
     .unwrap();
 
+    // A fixed word-index-style prefix shared by every key, followed by the
+    // byte-orderable seq encoding the engine itself uses.
+    let prefix = b"W.foo$!hello#";
     let seqs: Vec<u64> = vec![1, 2, 9, 10, 11];
     for seq in &seqs {
-        let key = format!("W.foo$!hello#{seq},");
-        db.put(key.as_bytes(), b"v").unwrap();
+        let mut key = prefix.to_vec();
+        noise_storage::encode_seq_arraypath(&mut key, *seq, &[]);
+        db.put(&key, b"v").unwrap();
     }
 
     let mut iter = db.iterator();
     let observed: Vec<u64> = iter
         .keys()
         .filter_map(|key| {
-            let key_str = String::from_utf8(key).unwrap();
-            let seq_str = key_str.strip_prefix('W')?.rsplit('#').next().unwrap();
-            Some(seq_str.trim_end_matches(',').parse::<u64>().unwrap())
+            let suffix = key.strip_prefix(prefix.as_slice())?;
+            let (seq, _arraypath) = noise_storage::decode_seq_arraypath(suffix);
+            Some(seq)
         })
         .collect();
 

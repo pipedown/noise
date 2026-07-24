@@ -13,6 +13,7 @@ use crate::aggregates::{AggregateActionFun, AggregateExtractFun, AggregateFun, A
 use crate::error::Error;
 use crate::filters::QueryRuntimeFilter;
 use crate::json_value::JsonValue;
+use crate::key_builder::KeyBuilder;
 use crate::parser::Parser;
 use crate::returnable::{RetHidden, RetScore, RetValue, ReturnPath, Returnable};
 use crate::snapshot::{JsonFetcher, Snapshot};
@@ -22,7 +23,7 @@ use noise_storage::BackendSnapshot;
 pub struct DocResult {
     pub seq: u64,
     pub arraypath: Vec<u64>,
-    pub bind_name_result: HashMap<String, Vec<String>>,
+    pub bind_name_result: HashMap<String, Vec<Vec<u8>>>,
     pub scores: Vec<(f32, usize)>, // (sum of score, num matches of term)
 }
 
@@ -36,7 +37,7 @@ impl DocResult {
         }
     }
 
-    pub fn add_bind_name_result(&mut self, bind_name: &str, result_key: String) {
+    pub fn add_bind_name_result(&mut self, bind_name: &str, result_key: Vec<u8>) {
         if let Some(ref mut result_keys) = self.bind_name_result.get_mut(bind_name) {
             result_keys.push(result_key);
             return;
@@ -501,10 +502,12 @@ impl<S: BackendSnapshot + 'static> QueryResults<S> {
 
     pub fn get_next_id(&mut self) -> Option<String> {
         self.get_next().and_then(|seq| {
-            let key = format!("V{}#._id", seq);
+            let mut kb = KeyBuilder::new();
+            kb.push_object_key("_id");
+            let key = kb.kp_value_key(seq);
             // If there is an id, it's UTF-8. Strip off type leading byte
             self.snapshot
-                .get(key.as_bytes())
+                .get(&key)
                 .map(|id| str::from_utf8(&id).unwrap()[1..].to_string())
         })
     }

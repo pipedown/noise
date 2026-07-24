@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use noise_storage::{
-    compare_keys, compare_keys_multidim, should_drop_key, sum_merge, BackendBatch, BackendDatabase,
-    BackendSnapshot, Cursor, CursorBackend, DatabaseConfig, Namespace, SeekFrom, StorageError,
+    should_drop_key, sum_merge, BackendBatch, BackendDatabase, BackendSnapshot, Cursor,
+    CursorBackend, DatabaseConfig, Namespace, SeekFrom, StorageError,
 };
 use rocksdb::{
     self, BlockBasedIndexType, BlockBasedOptions, CompactionDecision, DBRawIterator, IteratorMode,
@@ -124,7 +124,6 @@ impl BackendDatabase for RocksDatabase {
 impl RocksDatabase {
     fn build_options() -> rocksdb::Options {
         let mut opts = rocksdb::Options::default();
-        opts.set_comparator("noise_cmp", compare_keys);
         opts.set_merge_operator("noise_merge", rocksdb_merge_adapter);
         opts.set_compaction_filter("noise_compact", rocksdb_compaction_adapter);
         opts
@@ -136,7 +135,6 @@ impl RocksDatabase {
         let mut block_opts = BlockBasedOptions::default();
         block_opts.set_index_type(BlockBasedIndexType::RtreeSearch);
         opts.set_block_based_table_factory(&block_opts);
-        opts.set_comparator("noise_rtree_cmp", compare_keys_multidim);
         opts
     }
 }

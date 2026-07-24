@@ -9,7 +9,7 @@ use std::sync::{LockResult, Mutex, MutexGuard};
 
 use crate::error::Error;
 use crate::json_shred::{KeyValues, Shredder};
-use crate::key_builder::{self, KeyBuilder};
+use crate::key_builder::KeyBuilder;
 use crate::query::QueryResults;
 use crate::snapshot::Snapshot;
 use noise_storage::{BackendBatch, BackendDatabase, DatabaseConfig, Namespace, SeekFrom};
@@ -160,11 +160,10 @@ impl<D: BackendDatabase> Index<D> {
             let value_key = kb.kp_value_key(seq);
             let mut iter = self.db.iterator();
             // Seek in index to >= entry
-            iter.seek(SeekFrom::Key(value_key.as_bytes()));
+            iter.seek(SeekFrom::Key(&value_key));
             let key_values: KeyValues = iter
                 .entries()
-                .take_while(|(key, _value)| key.starts_with(value_key.as_bytes()))
-                .map(|(key, value)| (unsafe { String::from_utf8_unchecked(key) }, value))
+                .take_while(|(key, _value)| key.starts_with(&value_key))
                 .collect();
             Ok(Some((seq, key_values)))
         } else {
@@ -193,8 +192,8 @@ impl<D: BackendDatabase> Index<D> {
     }
 
     pub fn fetch_seq(&self, id: &str) -> Result<Option<u64>, Error> {
-        let key = format!("{}{}", key_builder::KEY_PREFIX_ID_TO_SEQ, id);
-        match self.db.get(key.as_bytes())? {
+        let key = KeyBuilder::id_to_seq_key(id);
+        match self.db.get(&key)? {
             // If there is an id, it's UTF-8
             Some(bytes) => Ok(Some(str::from_utf8(&bytes).unwrap().parse().unwrap())),
             None => Ok(None),
@@ -245,6 +244,7 @@ unsafe impl<T> Sync for MvccRwLock<T> {}
 mod tests {
     use super::{Index, MvccRwLock, OpenOptions};
     use crate::json_value::JsonValue;
+    use crate::key_builder::KeyBuilder;
     use crate::snapshot::JsonFetcher;
     use crate::test_backend::Database;
     use noise_storage::{BackendDatabase, Cursor};
@@ -257,10 +257,10 @@ mod tests {
     /// The value entries the cursor still has ahead of it, decoded.
     fn value_entries(iter: &mut Cursor) -> Vec<(String, JsonValue)> {
         iter.entries()
-            .filter(|(key, _value)| key[0] as char == 'V')
+            .filter(|(key, _value)| key.first() == Some(&b'V'))
             .map(|(key, value)| {
                 (
-                    unsafe { String::from_utf8_unchecked(key) },
+                    KeyBuilder::kp_value_no_seq_from_bytes(&key).to_string(),
                     JsonFetcher::bytes_to_json_value(&value),
                 )
             })
@@ -341,16 +341,13 @@ mod tests {
             let results = value_entries(&mut iter);
 
             let expected = vec![
-                ("V1#._id".to_string(), JsonValue::String("1".to_string())),
-                ("V1#.baz$0".to_string(), JsonValue::Number(1.0)),
-                ("V1#.baz$1".to_string(), JsonValue::Number(2.0)),
-                ("V1#.baz$2$0".to_string(), JsonValue::Number(3.0)),
-                ("V1#.baz$2$1".to_string(), JsonValue::Number(4.0)),
-                ("V1#.baz$2$2$0".to_string(), JsonValue::Number(5.0)),
-                (
-                    "V1#.foo".to_string(),
-                    JsonValue::String("array".to_string()),
-                ),
+                ("._id".to_string(), JsonValue::String("1".to_string())),
+                (".baz$0".to_string(), JsonValue::Number(1.0)),
+                (".baz$1".to_string(), JsonValue::Number(2.0)),
+                (".baz$2$0".to_string(), JsonValue::Number(3.0)),
+                (".baz$2$1".to_string(), JsonValue::Number(4.0)),
+                (".baz$2$2$0".to_string(), JsonValue::Number(5.0)),
+                (".foo".to_string(), JsonValue::String("array".to_string())),
             ];
             assert_eq!(results, expected);
         }
@@ -364,12 +361,9 @@ mod tests {
         let mut iter = index.db.iterator();
         let results = value_entries(&mut iter);
         let expected = vec![
-            ("V1#._id".to_string(), JsonValue::String("1".to_string())),
-            ("V1#.baz".to_string(), JsonValue::Array(vec![])),
-            (
-                "V1#.foo".to_string(),
-                JsonValue::String("array".to_string()),
-            ),
+            ("._id".to_string(), JsonValue::String("1".to_string())),
+            (".baz".to_string(), JsonValue::Array(vec![])),
+            (".foo".to_string(), JsonValue::String("array".to_string())),
         ];
         assert_eq!(results, expected);
     }

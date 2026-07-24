@@ -1,14 +1,41 @@
 extern crate unicode_normalization;
-extern crate varint;
 
 use crate::query::DocResult;
 use noise_storage::{
-    split_seq_arraypath_from_kp_word_key, KEY_PREFIX_FIELD_COUNT, KEY_PREFIX_NUMBER,
-    KEY_PREFIX_WORD, KEY_PREFIX_WORD_COUNT,
+    decode_seq_arraypath, decode_varint, encode_seq_arraypath, encode_varint,
+    put_length_prefixed_slice, KEY_PREFIX_FIELD_COUNT, KEY_PREFIX_NUMBER, KEY_PREFIX_WORD,
+    KEY_PREFIX_WORD_COUNT,
 };
-use std::io::Cursor;
+use std::str;
 
-use self::varint::VarintWrite;
+/// Encode a `u64` as 8 big-endian bytes. Byte-wise comparison preserves numeric
+/// order for non-negative integers.
+fn encode_byte_orderable_u64(buf: &mut Vec<u8>, value: u64) {
+    buf.extend_from_slice(&value.to_be_bytes());
+}
+
+/// Decode 8 big-endian bytes into a `u64`. Inverse of [`encode_byte_orderable_u64`].
+fn decode_byte_orderable_u64(bytes: &[u8]) -> u64 {
+    let chunk = bytes.first_chunk::<8>().expect("expected 8 bytes");
+    u64::from_be_bytes(*chunk)
+}
+
+/// Encode an `f64` as 8 big-endian bytes whose lexicographic order matches
+/// IEEE 754 numeric order (NaN handling left to the caller).
+///
+/// Trick: positive values get their sign bit flipped (so they compare greater
+/// than any negative); negative values get every bit flipped (which both
+/// inverts the sign and reverses the magnitude ordering, since larger negative
+/// magnitudes have larger raw bit patterns).
+fn encode_byte_orderable_f64(buf: &mut Vec<u8>, value: f64) {
+    let bits = value.to_bits();
+    let encoded = if bits >> 63 == 0 {
+        bits ^ 0x8000_0000_0000_0000
+    } else {
+        !bits
+    };
+    buf.extend_from_slice(&encoded.to_be_bytes());
+}
 
 /// For index header. This constant isn't actually used in the code, but provided here for
 /// completeness.
@@ -49,209 +76,221 @@ impl KeyBuilder {
 
     /// Builds a stemmed word key for the input word and seq, using the key_path and arraypath
     /// built up internally.
-    pub fn kp_word_key(&self, word: &str, seq: u64) -> String {
-        let mut string = self.get_kp_word_only(word);
-        string.push_str(seq.to_string().as_str());
-
-        KeyBuilder::add_arraypath(&mut string, &self.arraypath);
-        string
+    ///
+    /// The returned bytes are not valid UTF-8: the seq and arraypath are appended as
+    /// order-preserving varints.
+    pub fn kp_word_key(&self, word: &str, seq: u64) -> Vec<u8> {
+        let mut key = self.get_kp_word_only(word);
+        encode_seq_arraypath(&mut key, seq, &self.arraypath);
+        key
     }
 
-    pub fn get_kp_word_only(&self, word: &str) -> String {
-        let mut string = String::with_capacity(100);
-        string.push(KEY_PREFIX_WORD);
+    /// Appends the keypath segments (concatenated, no delimiters) to `buf`.
+    fn append_keypath(&self, buf: &mut Vec<u8>) {
         for segment in &self.keypath {
-            string.push_str(segment);
+            buf.extend_from_slice(segment.as_bytes());
         }
-        string.push('!');
-        string.push_str(word);
-        string.push('#');
-        string
     }
 
-    pub fn kp_word_count_key(&self, word: &str) -> String {
-        let mut string = String::with_capacity(100);
-        string.push(KEY_PREFIX_WORD_COUNT);
-        for segment in &self.keypath {
-            string.push_str(segment);
+    /// Returns the text-only kp_word prefix `W<keypath>!<word>#` as bytes. The trailing `#`
+    /// separates the prefix from the binary seq+arraypath suffix that follows in the full key.
+    pub fn get_kp_word_only(&self, word: &str) -> Vec<u8> {
+        let mut key = Vec::with_capacity(100);
+        key.push(KEY_PREFIX_WORD as u8);
+        self.append_keypath(&mut key);
+        key.push(b'!');
+        key.extend_from_slice(word.as_bytes());
+        key.push(b'#');
+        key
+    }
+
+    /// Returns the text-only `<prefix><keypath>#` prefix used by non-word value keys
+    /// (number, true, false, null, field length) as bytes. Pair with [`encode_seq_arraypath`]
+    /// to build the full key.
+    pub fn kp_only(&self, prefix: char) -> Vec<u8> {
+        let mut key = Vec::with_capacity(100);
+        key.push(prefix as u8);
+        self.append_keypath(&mut key);
+        key.push(b'#');
+        key
+    }
+
+    pub fn kp_word_count_key(&self, word: &str) -> Vec<u8> {
+        let mut key = Vec::with_capacity(100);
+        key.push(KEY_PREFIX_WORD_COUNT as u8);
+        self.append_keypath(&mut key);
+        key.push(b'!');
+        key.extend_from_slice(word.as_bytes());
+        key
+    }
+
+    pub fn kp_field_count_key(&self) -> Vec<u8> {
+        let mut key = Vec::with_capacity(100);
+        key.push(KEY_PREFIX_FIELD_COUNT as u8);
+        self.append_keypath(&mut key);
+        key
+    }
+
+    pub fn id_to_seq_key(id: &str) -> Vec<u8> {
+        let mut key = Vec::with_capacity(id.len() + 1);
+        key.push(KEY_PREFIX_ID_TO_SEQ as u8);
+        key.extend_from_slice(id.as_bytes());
+        key
+    }
+
+    /// Build a sequence key `S<varint seq>`. The varint encoding sorts byte-wise in
+    /// numeric order, so iterating `S`-prefixed keys yields seqs in ascending order.
+    pub fn seq_key(seq: u64) -> Vec<u8> {
+        let mut key = Vec::with_capacity(10);
+        key.push(KEY_PREFIX_SEQ as u8);
+        encode_varint(&mut key, seq);
+        key
+    }
+
+    /// Decode a sequence key produced by [`Self::seq_key`]. Returns `None` if the key
+    /// does not start with the `S` prefix or the varint is malformed.
+    pub fn parse_seq_key(key: &[u8]) -> Option<u64> {
+        let rest = key.strip_prefix(&[KEY_PREFIX_SEQ as u8])?;
+        let (seq, n) = decode_varint(rest)?;
+        if n != rest.len() {
+            return None;
         }
-        string.push('!');
-        string.push_str(word);
-        string
+        Some(seq)
     }
 
-    pub fn kp_field_count_key(&self) -> String {
-        let mut string = String::with_capacity(100);
-        string.push(KEY_PREFIX_FIELD_COUNT);
-        for segment in &self.keypath {
-            string.push_str(segment);
-        }
-        string
-    }
-
-    pub fn id_to_seq_key(id: &str) -> String {
-        let mut str = String::with_capacity(id.len() + 1);
-        str.push(KEY_PREFIX_ID_TO_SEQ);
-        str.push_str(id);
-        str
-    }
-
-    pub fn seq_key(seq: u64) -> String {
-        let seq = seq.to_string();
-        let mut str = String::with_capacity(seq.len() + 1);
-        str.push(KEY_PREFIX_SEQ);
-        str.push_str(&seq);
-        str
-    }
-
-    pub fn parse_seq_key(key: &str) -> Option<u64> {
-        key.strip_prefix('S')?.parse().ok()
-    }
-
-    /// Build key to query the multi-dimensional namespace
+    /// Build key to query the multi-dimensional namespace.
+    ///
+    /// Layout: `<prefix-varint keypath_len><keypath bytes><BE u64 seq_min>
+    /// <BE u64 seq_max><bbox: 4 byte-orderable f64s>`. The keypath length uses
+    /// the same Cassandra ByteComparable-style prefix varint as the rocksdb
+    /// fork's `GetPrefixLengthPrefixedSlice`. The seq range and bbox are
+    /// encoded byte-orderably so lexicographic ordering on the key bytes
+    /// matches numeric ordering on the underlying values, preserving the
+    /// rtree's per-block spatial clustering on disk under RocksDB's default
+    /// byte-wise comparator.
     pub fn multidim_query_key(&self, seq_min: u64, seq_max: u64, bbox: &[u8]) -> Vec<u8> {
-        let mut keypath = String::with_capacity(100);
-        for segment in &self.keypath {
-            keypath.push_str(segment);
-        }
+        let mut keypath = Vec::with_capacity(100);
+        self.append_keypath(&mut keypath);
         let mut key = Vec::new();
-        let mut keypath_len = Cursor::new(Vec::new());
-        let _ = keypath_len.write_unsigned_varint_32(keypath.len() as u32);
-        key.append(keypath_len.get_mut());
-        key.extend_from_slice(keypath.as_bytes());
-        key.extend_from_slice(&seq_min.to_le_bytes());
-        key.extend_from_slice(&seq_max.to_le_bytes());
+        put_length_prefixed_slice(&mut key, &keypath);
+        encode_byte_orderable_u64(&mut key, seq_min);
+        encode_byte_orderable_u64(&mut key, seq_max);
         key.extend_from_slice(bbox);
         key
     }
 
-    /// Build key for the multi-dimensional namespace
+    /// Build key for the multi-dimensional namespace.
     /// The structure is a bit different from other keypath. It doesn't have a prefix as those
     /// keys are stored in a separate namespace. The Arraypath is not part of the key, but
     /// stored as value. The sequence number is encoded as integer as it is the first dimension.
     /// The second and third dimensions are the values of the bounding box.
     pub fn multidim_key(&self, seq: u64, bbox: &[u8]) -> Vec<u8> {
-        let mut keypath = String::with_capacity(100);
-        for segment in &self.keypath {
-            keypath.push_str(segment);
-        }
+        let mut keypath = Vec::with_capacity(100);
+        self.append_keypath(&mut keypath);
         let mut key = Vec::new();
-        let mut keypath_len = Cursor::new(Vec::new());
-        let _ = keypath_len.write_unsigned_varint_32(keypath.len() as u32);
-        key.append(keypath_len.get_mut());
-        key.extend_from_slice(keypath.as_bytes());
+        put_length_prefixed_slice(&mut key, &keypath);
         // The Internal Id is always only a single value, hence don't store a range, but only
-        // that single valye as first dimension
-        key.extend_from_slice(&seq.to_le_bytes());
+        // that single value as first dimension. Encoded byte-orderably so the on-disk
+        // ordering matches numeric ordering and the rtree clusters spatially.
+        encode_byte_orderable_u64(&mut key, seq);
         key.extend_from_slice(bbox);
         key
     }
 
-    /// Build the index key that corresponds to a number primitive
-    pub fn number_key(&self, seq: u64) -> String {
-        let mut string = String::with_capacity(100);
-        string.push(KEY_PREFIX_NUMBER);
-        for segment in &self.keypath {
-            string.push_str(segment);
-        }
-        string.push('#');
-        string.push_str(&seq.to_string());
-
-        KeyBuilder::add_arraypath(&mut string, &self.arraypath);
-        string
+    /// Encode a `[x_min, y_min, x_max, y_max]` bounding box into the byte layout
+    /// the multi-dimensional keys expect: one contiguous `[min, max]` range per
+    /// dimension, so the x range comes first and the y range second. Index time
+    /// and query time must agree on this layout, so both go through here.
+    ///
+    /// The values are encoded byte-orderably so the rtree's per-block MBBs
+    /// cluster correctly under the default byte-wise comparator.
+    pub fn encode_bbox(bbox: [f64; 4]) -> Vec<u8> {
+        let mut encoded = Vec::with_capacity(32);
+        encode_byte_orderable_f64(&mut encoded, bbox[0]);
+        encode_byte_orderable_f64(&mut encoded, bbox[2]);
+        encode_byte_orderable_f64(&mut encoded, bbox[1]);
+        encode_byte_orderable_f64(&mut encoded, bbox[3]);
+        encoded
     }
 
-    /// Build the index key that corresponds to a true, false or null primitive
-    pub fn bool_null_key(&self, prefix: char, seq: u64) -> String {
-        let mut string = String::with_capacity(100);
-        string.push(prefix);
-        for segment in &self.keypath {
-            string.push_str(segment);
-        }
-        string.push('#');
-        string.push_str(&seq.to_string());
+    /// Returns the doc seq from a key produced by [`Self::multidim_key`]. It is
+    /// the first dimension, stored byte-orderably right after the
+    /// length-prefixed keypath.
+    pub fn multidim_seq_from_bytes(key: &[u8]) -> u64 {
+        let (keypath_len, keypath_start) =
+            decode_varint(key).expect("malformed multidim keypath length");
+        let seq_start = keypath_start + keypath_len as usize;
+        decode_byte_orderable_u64(&key[seq_start..])
+    }
 
-        KeyBuilder::add_arraypath(&mut string, &self.arraypath);
-        string
+    /// Build the index key that corresponds to a number primitive.
+    pub fn number_key(&self, seq: u64) -> Vec<u8> {
+        let mut key = self.kp_only(KEY_PREFIX_NUMBER);
+        encode_seq_arraypath(&mut key, seq, &self.arraypath);
+        key
+    }
+
+    /// Build the index key that corresponds to a true, false or null primitive.
+    pub fn bool_null_key(&self, prefix: char, seq: u64) -> Vec<u8> {
+        let mut key = self.kp_only(prefix);
+        encode_seq_arraypath(&mut key, seq, &self.arraypath);
+        key
     }
 
     /// Builds a field length key for the seq, using the key_path and arraypath
     /// built up internally.
-    pub fn kp_field_length_key(&self, seq: u64) -> String {
-        let mut string = String::with_capacity(100);
-        string.push(KEY_PREFIX_FIELD_LENGTH);
-        for segment in &self.keypath {
-            string.push_str(segment);
-        }
-        string.push('#');
-        string.push_str(seq.to_string().as_str());
-
-        KeyBuilder::add_arraypath(&mut string, &self.arraypath);
-        string
+    pub fn kp_field_length_key(&self, seq: u64) -> Vec<u8> {
+        let mut key = self.kp_only(KEY_PREFIX_FIELD_LENGTH);
+        encode_seq_arraypath(&mut key, seq, &self.arraypath);
+        key
     }
 
     /// Builds a field length key for the DocResult, using the key_path
     /// built up internally and the arraypath from the DocResult.
-    pub fn kp_field_length_key_from_doc_result(&self, dr: &DocResult) -> String {
-        let mut string = String::with_capacity(100);
-        string.push(KEY_PREFIX_FIELD_LENGTH);
-        for segment in &self.keypath {
-            string.push_str(segment);
-        }
-        string.push('#');
-        string.push_str(dr.seq.to_string().as_str());
-
-        KeyBuilder::add_arraypath(&mut string, &dr.arraypath);
-        string
+    pub fn kp_field_length_key_from_doc_result(&self, dr: &DocResult) -> Vec<u8> {
+        let mut key = self.kp_only(KEY_PREFIX_FIELD_LENGTH);
+        encode_seq_arraypath(&mut key, dr.seq, &dr.arraypath);
+        key
     }
 
-    /// Adds DocResult seq and array path an already created kp_word.
-    pub fn add_doc_result_to_kp_word(keypathword: &mut String, dr: &DocResult) {
-        keypathword.push_str(dr.seq.to_string().as_str());
-        KeyBuilder::add_arraypath(keypathword, &dr.arraypath);
-    }
-
-    /// Truncates key to keypath only
-    pub fn truncate_to_kp_word(stemmed_word_key: &mut String) {
-        let n = stemmed_word_key.rfind('#').unwrap();
-        stemmed_word_key.truncate(n + 1);
+    /// Append a DocResult's seq + arraypath onto an existing kp_word prefix as varints.
+    pub fn add_doc_result_to_kp_word(buf: &mut Vec<u8>, dr: &DocResult) {
+        encode_seq_arraypath(buf, dr.seq, &dr.arraypath);
     }
 
     /// Builds a value key for seq (value keys are the original json terminal value with
     /// keyed on keypath and arraypath built up internally).
-    pub fn kp_value_key(&self, seq: u64) -> String {
-        let mut string = String::with_capacity(100);
-        string.push(KEY_PREFIX_VALUE);
-        string.push_str(&seq.to_string());
-        string.push('#');
-        let mut i = 0;
-        for segment in &self.keypath {
-            string.push_str(segment);
-            if segment == "$" {
-                string.push_str(&self.arraypath[i].to_string());
-                i += 1;
-            }
-        }
-        string
+    ///
+    /// The returned bytes are not valid UTF-8: the seq is encoded as a varint between
+    /// the `V` prefix and the `#` separator that introduces the keypath text.
+    pub fn kp_value_key(&self, seq: u64) -> Vec<u8> {
+        let mut key = Vec::with_capacity(100);
+        key.push(KEY_PREFIX_VALUE as u8);
+        encode_varint(&mut key, seq);
+        key.push(b'#');
+        Self::append_kp_value_no_seq(&mut key, &self.keypath, &self.arraypath);
+        key
     }
 
     /// Returns a value key without the doc seq prepended.
     pub fn kp_value_no_seq(&self) -> String {
-        let mut string = String::with_capacity(100);
-        let mut i = 0;
-        for segment in &self.keypath {
-            string.push_str(segment);
-            if segment == "$" {
-                string.push_str(&self.arraypath[i].to_string());
-                i += 1;
-            }
-        }
-        string
+        let mut buf = Vec::with_capacity(100);
+        Self::append_kp_value_no_seq(&mut buf, &self.keypath, &self.arraypath);
+        // Keypath segments are UTF-8 and array indices are ASCII digits, so this never fails.
+        String::from_utf8(buf).expect("kp_value_no_seq is valid UTF-8")
     }
 
-    /// Returns a value key without the doc seq prepended.
-    pub fn kp_value_no_seq_from_str(str: &str) -> &str {
-        &str[str.find('#').unwrap() + 1..]
+    /// Returns the keypath portion (no doc seq) from a full V-key produced by
+    /// [`Self::kp_value_key`]. The returned slice is the text after the `#`
+    /// separator and is valid UTF-8.
+    pub fn kp_value_no_seq_from_bytes(key: &[u8]) -> &str {
+        debug_assert_eq!(key.first().copied(), Some(KEY_PREFIX_VALUE as u8));
+        let (_seq, n) = decode_varint(&key[1..]).expect("malformed V-key seq varint");
+        let after_seq = &key[1 + n..];
+        debug_assert_eq!(after_seq.first().copied(), Some(b'#'));
+        let suffix = &after_seq[1..];
+        // The keypath portion is constructed from valid UTF-8 strings, so this is safe.
+        unsafe { str::from_utf8_unchecked(suffix) }
     }
 
     /// parses a kp_value_key and sets the internally elements appropriately
@@ -272,39 +311,33 @@ impl KeyBuilder {
     }
 
     /// Build a key to a value from a DocResult
-    pub fn kp_value_key_from_doc_result(&self, dr: &DocResult) -> String {
-        let mut string = String::with_capacity(100);
-        string.push(KEY_PREFIX_VALUE);
-        string.push_str(&dr.seq.to_string());
-        string.push('#');
+    pub fn kp_value_key_from_doc_result(&self, dr: &DocResult) -> Vec<u8> {
+        let mut key = Vec::with_capacity(100);
+        key.push(KEY_PREFIX_VALUE as u8);
+        encode_varint(&mut key, dr.seq);
+        key.push(b'#');
+        Self::append_kp_value_no_seq(&mut key, &self.keypath, &dr.arraypath);
+        key
+    }
+
+    fn append_kp_value_no_seq(buf: &mut Vec<u8>, keypath: &[String], arraypath: &[u64]) {
         let mut i = 0;
-        for segment in &self.keypath {
-            string.push_str(segment);
+        for segment in keypath {
+            buf.extend_from_slice(segment.as_bytes());
             if segment == "$" {
-                string.push_str(&dr.arraypath[i].to_string());
+                buf.extend_from_slice(arraypath[i].to_string().as_bytes());
                 i += 1;
             }
         }
-        string
     }
 
-    fn add_arraypath(string: &mut String, arraypath: &[u64]) {
-        if arraypath.is_empty() {
-            string.push(',');
-        } else {
-            for i in arraypath {
-                string.push(',');
-                string.push_str(i.to_string().as_str());
-            }
-        }
-    }
-
-    // Returns true if the prefix str is a prefix of the true keypath
-    pub fn is_kp_value_key_prefix(prefix: &str, keypath: &str) -> bool {
+    // Returns true if the prefix is a prefix of the keypath, with a delimiter check on the
+    // first byte after the prefix. Both arguments are kp_value_no_seq forms (or full V-keys
+    // — comparison is purely byte-wise so either works).
+    pub fn is_kp_value_key_prefix(prefix: &[u8], keypath: &[u8]) -> bool {
         match keypath.strip_prefix(prefix) {
-            Some(stripped) => match stripped.chars().next() {
-                Some('.') => true,
-                Some('$') => true,
+            Some(stripped) => match stripped.first() {
+                Some(b'.') | Some(b'$') => true,
                 Some(_) => false,
                 None => true,
             },
@@ -432,16 +465,13 @@ impl KeyBuilder {
         self.keypath.len()
     }
 
-    /// parses a seq and array path portion (ex "123,0,0,10) of a key into a doc result
-    pub fn parse_doc_result_from_kp_word_key(str: &str) -> DocResult {
+    /// Decode the seq + arraypath that follow a kp_word prefix. `prefix_len` is the
+    /// length of that prefix (up to and including its trailing `#` separator).
+    pub fn parse_doc_result_from_kp_word_key(key: &[u8], prefix_len: usize) -> DocResult {
+        let (seq, arraypath) = decode_seq_arraypath(&key[prefix_len..]);
         let mut dr = DocResult::new();
-        let (_path_str, seq_str, arraypath_str) = split_seq_arraypath_from_kp_word_key(str);
-        dr.seq = seq_str.parse().unwrap();
-        if !arraypath_str.is_empty() {
-            for numstr in arraypath_str.split(',') {
-                dr.arraypath.push(numstr.parse().unwrap());
-            }
-        }
+        dr.seq = seq;
+        dr.arraypath = arraypath;
         dr
     }
 }
@@ -454,9 +484,11 @@ impl Default for KeyBuilder {
 
 #[cfg(test)]
 mod tests {
-    use super::KeyBuilder;
+    use super::{
+        decode_byte_orderable_u64, encode_byte_orderable_f64, encode_byte_orderable_u64, KeyBuilder,
+    };
     use crate::query::DocResult;
-    use noise_storage::split_seq_arraypath_from_kp_word_key;
+    use noise_storage::encode_seq_arraypath;
 
     #[test]
     fn test_segments_push() {
@@ -481,9 +513,11 @@ mod tests {
         kb.push_array();
 
         assert_eq!(kb.kp_segments_len(), 3, "three segments");
+        let mut expected: Vec<u8> = b"W.first.second$!astemmedword#".to_vec();
+        encode_seq_arraypath(&mut expected, 123, &[0]);
         assert_eq!(
             kb.kp_word_key("astemmedword", 123),
-            "W.first.second$!astemmedword#123,0",
+            expected,
             "Key for six segments is correct"
         );
 
@@ -499,23 +533,137 @@ mod tests {
 
     #[test]
     fn test_doc_result_parse() {
-        let key = "W.foo$.bar$!word#123,1,0".to_string();
-        let (keypathstr, seqstr, arraypathstr) = split_seq_arraypath_from_kp_word_key(&key);
-        assert_eq!(keypathstr, "W.foo$.bar$!word");
-        assert_eq!(seqstr, "123");
-        assert_eq!(arraypathstr, "1,0");
-
-        // make sure escaped commas and # in key path don't cause problems
-        let key1 = "W.foo\\#$.bar\\,$!word#123,2,0".to_string();
-        let (keypathstr1, seqstr1, arraypathstr1) = split_seq_arraypath_from_kp_word_key(&key1);
-        assert_eq!(keypathstr1, "W.foo\\#$.bar\\,$!word");
-        assert_eq!(seqstr1, "123");
-        assert_eq!(arraypathstr1, "2,0");
-
+        let prefix = "W.foo$.bar$!word#";
+        let mut key = prefix.as_bytes().to_vec();
+        encode_seq_arraypath(&mut key, 123, &[1, 0]);
         let mut dr = DocResult::new();
         dr.seq = 123;
         dr.arraypath = vec![1, 0];
 
-        assert!(dr == KeyBuilder::parse_doc_result_from_kp_word_key(&key));
+        assert!(dr == KeyBuilder::parse_doc_result_from_kp_word_key(&key, prefix.len()));
+    }
+
+    #[test]
+    fn test_kp_value_key_roundtrips_delimiter_chars_in_object_key() {
+        // Object keys can legitimately contain the bytes the key format uses as
+        // delimiters (`#`, `.`, `$`, `!`, `\`). Escaping in `push_object_key` must let
+        // them round-trip, so e.g. `{"a.b": ...}` stays one segment and isn't confused
+        // with a nested `{"a": {"b": ...}}`.
+        for object_key in ["fo#o", "a.b", "x$y", "ex!clam", "back\\slash"] {
+            let mut kb = KeyBuilder::new();
+            kb.push_object_key(object_key);
+            let key = kb.kp_value_key(123);
+
+            // Decode the keypath text out of the V-key and re-parse it into a fresh builder.
+            let no_seq = KeyBuilder::kp_value_no_seq_from_bytes(&key);
+            let mut decoded = KeyBuilder::new();
+            decoded.parse_kp_value_no_seq(no_seq);
+
+            // The delimiter byte stays inside a single segment, and re-encoding the
+            // round-tripped builder reproduces the exact same key bytes.
+            assert_eq!(
+                decoded.kp_segments_len(),
+                1,
+                "`{object_key}` should be one keypath segment"
+            );
+            assert_eq!(
+                decoded.kp_value_key(123),
+                key,
+                "`{object_key}` did not round-trip"
+            );
+        }
+    }
+
+    #[test]
+    fn test_multidim_seq_from_bytes() {
+        let mut kb = KeyBuilder::new();
+        kb.push_object_key("foo");
+        kb.push_object_key("bar");
+
+        let bbox = [0xAAu8; 32];
+        for seq in [0, 1, 127, 128, 1_000_000, u64::MAX] {
+            let key = kb.multidim_key(seq, &bbox);
+            assert_eq!(KeyBuilder::multidim_seq_from_bytes(&key), seq);
+        }
+    }
+
+    #[test]
+    fn test_byte_orderable_u64_roundtrip_and_order() {
+        // Listed in ascending order, so each encoding must sort strictly above
+        // the one before it.
+        let samples = [0, 1, 127, 128, 1_000_000, u64::MAX - 1, u64::MAX];
+
+        let mut previous: Option<Vec<u8>> = None;
+        for value in samples {
+            let mut encoded = Vec::new();
+            encode_byte_orderable_u64(&mut encoded, value);
+
+            assert_eq!(encoded.len(), 8);
+            assert_eq!(decode_byte_orderable_u64(&encoded), value);
+
+            if let Some(previous) = &previous {
+                assert!(
+                    previous < &encoded,
+                    "{value} does not sort above the preceding sample"
+                );
+            }
+            previous = Some(encoded);
+        }
+    }
+
+    #[test]
+    fn test_byte_orderable_f64_sorts_numerically() {
+        // Listed in ascending numeric order, so each encoding must sort strictly above
+        // the one before it. `-0.0` and `0.0` are numerically equal but encode
+        // distinctly, with `-0.0` sorting first.
+        let samples = [
+            -1e308,
+            -1.0,
+            -0.5,
+            -0.0,
+            0.0,
+            0.5,
+            1.0,
+            1e308,
+            f64::INFINITY,
+        ];
+
+        let mut previous: Option<Vec<u8>> = None;
+        for value in samples {
+            let mut encoded = Vec::new();
+            encode_byte_orderable_f64(&mut encoded, value);
+
+            if let Some(previous) = &previous {
+                assert!(
+                    previous < &encoded,
+                    "{value} does not sort above the preceding sample"
+                );
+            }
+            previous = Some(encoded);
+        }
+    }
+
+    #[test]
+    fn test_encode_bbox_layout() {
+        // Per dimension one contiguous [min, max] range: x first, then y.
+        let bbox = KeyBuilder::encode_bbox([1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(bbox.len(), 32);
+
+        let mut expected = Vec::new();
+        for v in [1.0, 3.0, 2.0, 4.0] {
+            encode_byte_orderable_f64(&mut expected, v);
+        }
+        assert_eq!(bbox, expected);
+    }
+
+    #[test]
+    fn test_multidim_seq_from_bytes_long_keypath() {
+        // A keypath long enough to need a multi-byte varint length prefix, so
+        // the seq offset depends on the prefix width being read back correctly.
+        let mut kb = KeyBuilder::new();
+        kb.push_object_key(&"a".repeat(300));
+
+        let key = kb.multidim_key(42, &[0xBB; 32]);
+        assert_eq!(KeyBuilder::multidim_seq_from_bytes(&key), 42);
     }
 }
