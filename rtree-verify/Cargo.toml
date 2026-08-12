@@ -1,0 +1,28 @@
+[package]
+name = "rtree-verify"
+version = "0.1.0"
+edition = "2021"
+autobins = false
+# A cross-checking tool for development, not part of the released library. It
+# lives in this workspace only for convenience.
+publish = false
+
+[features]
+default = ["storage-rocksdb"]
+storage-rocksdb = ["dep:noise-storage-rocksdb"]
+storage-memory = ["dep:noise-storage-memory"]
+
+[dependencies]
+noise-storage = { path = "../noise-storage" }
+noise-storage-rocksdb = { path = "../noise-storage-rocksdb", optional = true }
+noise-storage-memory = { path = "../noise-storage-memory", optional = true }
+
+[[bin]]
+name = "rtree-verify-rocksdb"
+path = "src/main.rs"
+required-features = ["storage-rocksdb"]
+
+[[bin]]
+name = "rtree-verify-memory"
+path = "src/main.rs"
+required-features = ["storage-memory"]
