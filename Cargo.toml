@@ -5,6 +5,7 @@ members = [
     "noise-storage-memory",
     "noise-storage-rocksdb",
     "noise-tests",
+    "rtree-verify",
 ]
 
 [package]

@@ -181,6 +181,19 @@ pub fn encode_byte_orderable_f64(buf: &mut Vec<u8>, value: f64) {
     buf.extend_from_slice(&encoded.to_be_bytes());
 }
 
+/// Decode 8 bytes written by [`encode_byte_orderable_f64`] back into an `f64`,
+/// undoing whichever of the two sign transforms was applied. The encoded high
+/// bit says which: it is 1 for the originally-positive values.
+pub fn decode_byte_orderable_f64(bytes: &[u8]) -> f64 {
+    let encoded = decode_byte_orderable_u64(bytes);
+    let bits = if encoded >> 63 == 1 {
+        encoded ^ 0x8000_0000_0000_0000
+    } else {
+        !encoded
+    };
+    f64::from_bits(bits)
+}
+
 /// Encodes an i32 as a zigzag-mapped prefix varint (see
 /// [`encode_varint`]): the value is mapped to an unsigned int
 /// (0 → 0, -1 → 1, 1 → 2, …) so small magnitudes of either sign stay in the
@@ -653,6 +666,7 @@ mod tests {
             .map(|&v| {
                 let mut buf = Vec::new();
                 encode_byte_orderable_f64(&mut buf, v);
+                assert_eq!(decode_byte_orderable_f64(&buf).to_bits(), v.to_bits());
                 (v, buf)
             })
             .collect();
