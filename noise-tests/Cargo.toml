@@ -8,5 +8,5 @@ edition = "2021"
 
 [dependencies]
 noise-storage = { path = "../noise-storage" }
-noise_search = { path = ".." }
+noise_search = { path = "../noise-search" }
 include_dir = "0.7"
