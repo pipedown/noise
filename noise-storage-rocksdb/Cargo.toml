@@ -13,4 +13,4 @@ self_cell = "1.0"
 
 [dev-dependencies]
 noise-tests = { path = "../noise-tests" }
-noise_search = { path = ".." }
+noise_search = { path = "../noise-search" }
