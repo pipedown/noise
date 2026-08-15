@@ -1,16 +1,18 @@
 [package]
 name = "noise-storage-rocksdb"
 version = "0.1.0"
-authors = ["Volker Mische <volker.mische@gmail.com>"]
-license = "MIT OR Apache-2.0"
+authors = { workspace = true }
 description = "RocksDB storage backend for Noise search engine"
-edition = "2021"
+repository = { workspace = true }
+homepage = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
 
 [dependencies]
-noise-storage = { path = "../noise-storage" }
+noise-storage = { workspace = true }
 noise_search_deps_rocksdb = "0.2.0"
-self_cell = "1.0"
+self_cell = { workspace = true }
 
 [dev-dependencies]
-noise-tests = { path = "../noise-tests" }
-noise_search = { path = "../noise-search" }
+noise-tests = { workspace = true }
+noise_search = { workspace = true }

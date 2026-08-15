@@ -10,3 +10,31 @@ members = [
     "noise-tests",
     "rtree-verify",
 ]
+
+[workspace.package]
+authors = ["Damien Katz <me@damienkatz.com>", "Volker Mische <volker.mische@gmail.com>"]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/pipedown/noise.git"
+homepage = "https://noisesearch.org/"
+
+# Internal crates carry a version alongside the path: the path is what local
+# builds use, the version is what ends up in the published manifest (a path-only
+# dependency cannot be published). cargo-release rewrites these versions when it
+# bumps a crate, so this table is the only place they need maintaining.
+#
+# Publish order follows from this graph: noise-storage, then noise_search, then
+# noise-tests, then the backends.
+[workspace.dependencies]
+noise_search = { version = "0.8.0", path = "noise-search" }
+noise-storage = { version = "0.1.0", path = "noise-storage" }
+noise-storage-memory = { version = "0.1.0", path = "noise-storage-memory" }
+noise-storage-rocksdb = { version = "0.1.0", path = "noise-storage-rocksdb" }
+noise-tests = { version = "0.1.0", path = "noise-tests" }
+self_cell = "1.0"
+
+[workspace.metadata.release]
+# The version bumps of all released crates land in a single commit, so it names
+# neither crate nor version; the per-crate tags carry those.
+pre-release-commit-message = "chore: release"
+tag-message = "release {{crate_name}} {{version}}"

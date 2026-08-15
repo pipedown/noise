@@ -1,15 +1,17 @@
 [package]
 name = "noise-storage-memory"
 version = "0.1.0"
-authors = ["Volker Mische <volker.mische@gmail.com>"]
-license = "MIT OR Apache-2.0"
+authors = { workspace = true }
 description = "In-memory storage backend for Noise search engine"
-edition = "2021"
+repository = { workspace = true }
+homepage = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
 
 [dependencies]
-noise-storage = { path = "../noise-storage" }
-self_cell = "1.0"
+noise-storage = { workspace = true }
+self_cell = { workspace = true }
 
 [dev-dependencies]
-noise-tests = { path = "../noise-tests" }
-noise_search = { path = "../noise-search" }
+noise-tests = { workspace = true }
+noise_search = { workspace = true }
