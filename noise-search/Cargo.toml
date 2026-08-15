@@ -1,13 +1,13 @@
 [package]
 name = "noise_search"
 version = "0.8.0"
-authors = ["Damien Katz <me@damienkatz.com>", "Volker Mische <volker.mische@gmail.com>"]
-repository = "https://github.com/pipedown/noise.git"
-homepage = "https://noisesearch.org/"
-license = "MIT OR Apache-2.0"
+authors = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+license = { workspace = true }
 readme = "README.md"
 description = "Nested Object Inverted Search Engine"
-edition = "2021"
+edition = { workspace = true }
 
 [lib]
 name = "noise_search"
@@ -19,7 +19,11 @@ stemmer = "0.3.2"
 unicode-normalization = "0.1.19"
 unicode-segmentation = "1.8.0"
 uuid = { version = "1.1.2", features = ["v4"] }
-noise-storage = { path = "../noise-storage" }
+noise-storage = { workspace = true }
 
+# Deliberately path-only: noise-storage-memory depends on this crate in turn, so
+# a version requirement here could never resolve on the first publish. Cargo
+# drops dev dependencies that carry no version when packaging, which breaks the
+# cycle.
 [dev-dependencies]
 noise-storage-memory = { path = "../noise-storage-memory" }
