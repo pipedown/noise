@@ -13,8 +13,9 @@ mod snapshot;
 mod stems;
 
 // Backend the engine's own unit tests run against. Centralised here so that
-// switching backends (for example to an in-memory one) is a one-line change.
+// switching backends is a one-line change. Rocksdb is covered by the
+// cross-backend suite in `noise-storage-rocksdb/tests/backend.rs`.
 #[cfg(test)]
 mod test_backend {
-    pub use noise_storage_rocksdb::RocksDatabase as Database;
+    pub use noise_storage_memory::MemoryDatabase as Database;
 }

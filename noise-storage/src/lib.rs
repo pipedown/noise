@@ -141,6 +141,46 @@ pub fn put_length_prefixed_slice(buf: &mut Vec<u8>, slice: &[u8]) {
     buf.extend_from_slice(slice);
 }
 
+/// Read a slice written by [`put_length_prefixed_slice`]. Returns the slice and
+/// the offset just past it, or `None` if the length varint or the payload is
+/// truncated.
+pub fn get_length_prefixed_slice(bytes: &[u8]) -> Option<(&[u8], usize)> {
+    let (len, n) = decode_varint(bytes)?;
+    // A corrupt varint can announce a length that runs past `usize`, which is
+    // as truncated as any other payload that isn't there.
+    let end = n.checked_add(len as usize)?;
+    Some((bytes.get(n..end)?, end))
+}
+
+/// Encode a `u64` as 8 big-endian bytes. Byte-wise comparison preserves numeric
+/// order for non-negative integers.
+pub fn encode_byte_orderable_u64(buf: &mut Vec<u8>, value: u64) {
+    buf.extend_from_slice(&value.to_be_bytes());
+}
+
+/// Decode 8 big-endian bytes into a `u64`. Inverse of [`encode_byte_orderable_u64`].
+pub fn decode_byte_orderable_u64(bytes: &[u8]) -> u64 {
+    let chunk = bytes.first_chunk::<8>().expect("expected 8 bytes");
+    u64::from_be_bytes(*chunk)
+}
+
+/// Encode an `f64` as 8 big-endian bytes whose lexicographic order matches
+/// IEEE 754 numeric order (NaN handling left to the caller).
+///
+/// Trick: positive values get their sign bit flipped (so they compare greater
+/// than any negative); negative values get every bit flipped (which both
+/// inverts the sign and reverses the magnitude ordering, since larger negative
+/// magnitudes have larger raw bit patterns).
+pub fn encode_byte_orderable_f64(buf: &mut Vec<u8>, value: f64) {
+    let bits = value.to_bits();
+    let encoded = if bits >> 63 == 0 {
+        bits ^ 0x8000_0000_0000_0000
+    } else {
+        !bits
+    };
+    buf.extend_from_slice(&encoded.to_be_bytes());
+}
+
 /// Encodes an i32 as a zigzag-mapped prefix varint (see
 /// [`encode_varint`]): the value is mapped to an unsigned int
 /// (0 → 0, -1 → 1, 1 → 2, …) so small magnitudes of either sign stay in the
@@ -546,5 +586,78 @@ mod tests {
         let mut buf = Vec::new();
         put_length_prefixed_slice(&mut buf, &payload);
         assert_eq!(buf, expected);
+    }
+
+    #[test]
+    fn length_prefixed_slice_roundtrip() {
+        // The reader must report the offset just past the payload so a caller
+        // can keep parsing the rest of the key.
+        for payload in [b"".as_slice(), b"abc".as_slice(), &[0xAA; 240]] {
+            let mut buf = Vec::new();
+            put_length_prefixed_slice(&mut buf, payload);
+            // Trailing bytes stand in for the rest of a composite key.
+            buf.extend_from_slice(b"trailing");
+
+            let (slice, end) = get_length_prefixed_slice(&buf).expect("decode failed");
+            assert_eq!(slice, payload);
+            assert_eq!(&buf[end..], b"trailing");
+        }
+    }
+
+    #[test]
+    fn length_prefixed_slice_truncation_returns_none() {
+        assert!(get_length_prefixed_slice(&[]).is_none());
+        // Announces 3 bytes but only 2 follow.
+        assert!(get_length_prefixed_slice(&[3, b'a', b'b']).is_none());
+        // Announces a length that doesn't fit in a `usize` at all.
+        let mut announces_u64_max = vec![0xFF; 9];
+        announces_u64_max.extend_from_slice(b"abc");
+        assert!(get_length_prefixed_slice(&announces_u64_max).is_none());
+    }
+
+    #[test]
+    fn byte_orderable_u64_roundtrip_and_order() {
+        let mut samples: Vec<u64> = vec![0, 1, 127, 128, 255, 1 << 20, u64::MAX - 1, u64::MAX];
+        samples.sort();
+        let mut encoded: Vec<(u64, Vec<u8>)> = samples
+            .iter()
+            .map(|&v| {
+                let mut buf = Vec::new();
+                encode_byte_orderable_u64(&mut buf, v);
+                assert_eq!(decode_byte_orderable_u64(&buf), v);
+                (v, buf)
+            })
+            .collect();
+        encoded.sort_by(|a, b| a.1.cmp(&b.1));
+        let order: Vec<u64> = encoded.into_iter().map(|(v, _)| v).collect();
+        assert_eq!(order, samples);
+    }
+
+    #[test]
+    fn byte_orderable_f64_sorts_numerically() {
+        // Negatives are where the all-bits flip matters: raw IEEE-754 bit
+        // patterns sort backwards for them.
+        let mut samples = vec![
+            f64::NEG_INFINITY,
+            -1e300,
+            -1.5,
+            -0.0,
+            0.0,
+            1.5,
+            1e300,
+            f64::INFINITY,
+        ];
+        samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let mut encoded: Vec<(f64, Vec<u8>)> = samples
+            .iter()
+            .map(|&v| {
+                let mut buf = Vec::new();
+                encode_byte_orderable_f64(&mut buf, v);
+                (v, buf)
+            })
+            .collect();
+        encoded.sort_by(|a, b| a.1.cmp(&b.1));
+        let order: Vec<f64> = encoded.into_iter().map(|(v, _)| v).collect();
+        assert_eq!(order, samples);
     }
 }
