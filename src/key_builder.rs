@@ -2,40 +2,11 @@ extern crate unicode_normalization;
 
 use crate::query::DocResult;
 use noise_storage::{
-    decode_seq_arraypath, decode_varint, encode_seq_arraypath, encode_varint,
-    put_length_prefixed_slice, KEY_PREFIX_FIELD_COUNT, KEY_PREFIX_NUMBER, KEY_PREFIX_WORD,
-    KEY_PREFIX_WORD_COUNT,
+    decode_byte_orderable_u64, decode_seq_arraypath, decode_varint, encode_byte_orderable_f64,
+    encode_byte_orderable_u64, encode_seq_arraypath, encode_varint, put_length_prefixed_slice,
+    KEY_PREFIX_FIELD_COUNT, KEY_PREFIX_NUMBER, KEY_PREFIX_WORD, KEY_PREFIX_WORD_COUNT,
 };
 use std::str;
-
-/// Encode a `u64` as 8 big-endian bytes. Byte-wise comparison preserves numeric
-/// order for non-negative integers.
-fn encode_byte_orderable_u64(buf: &mut Vec<u8>, value: u64) {
-    buf.extend_from_slice(&value.to_be_bytes());
-}
-
-/// Decode 8 big-endian bytes into a `u64`. Inverse of [`encode_byte_orderable_u64`].
-fn decode_byte_orderable_u64(bytes: &[u8]) -> u64 {
-    let chunk = bytes.first_chunk::<8>().expect("expected 8 bytes");
-    u64::from_be_bytes(*chunk)
-}
-
-/// Encode an `f64` as 8 big-endian bytes whose lexicographic order matches
-/// IEEE 754 numeric order (NaN handling left to the caller).
-///
-/// Trick: positive values get their sign bit flipped (so they compare greater
-/// than any negative); negative values get every bit flipped (which both
-/// inverts the sign and reverses the magnitude ordering, since larger negative
-/// magnitudes have larger raw bit patterns).
-fn encode_byte_orderable_f64(buf: &mut Vec<u8>, value: f64) {
-    let bits = value.to_bits();
-    let encoded = if bits >> 63 == 0 {
-        bits ^ 0x8000_0000_0000_0000
-    } else {
-        !bits
-    };
-    buf.extend_from_slice(&encoded.to_be_bytes());
-}
 
 /// For index header. This constant isn't actually used in the code, but provided here for
 /// completeness.
