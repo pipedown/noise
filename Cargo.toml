@@ -1,6 +1,9 @@
 [workspace]
+# A virtual manifest defaults to resolver 1 regardless of the members' edition,
+# so the edition 2021 default is spelled out here.
+resolver = "2"
 members = [
-    ".",
+    "noise-search",
     "noise-storage",
     "noise-storage-memory",
     "noise-storage-rocksdb",
@@ -8,29 +11,30 @@ members = [
     "rtree-verify",
 ]
 
-[package]
-name = "noise_search"
-version = "0.8.0"
+[workspace.package]
 authors = ["Damien Katz <me@damienkatz.com>", "Volker Mische <volker.mische@gmail.com>"]
+edition = "2021"
+license = "MIT OR Apache-2.0"
 repository = "https://github.com/pipedown/noise.git"
 homepage = "https://noisesearch.org/"
-license = "MIT OR Apache-2.0"
-readme = "README.md"
-description = "Nested Object Inverted Search Engine"
-build = "build.rs"
-edition = "2021"
 
-[lib]
-name = "noise_search"
-crate-type = ["lib"]
+# Internal crates carry a version alongside the path: the path is what local
+# builds use, the version is what ends up in the published manifest (a path-only
+# dependency cannot be published). cargo-release rewrites these versions when it
+# bumps a crate, so this table is the only place they need maintaining.
+#
+# Publish order follows from this graph: noise-storage, then noise_search, then
+# noise-tests, then the backends.
+[workspace.dependencies]
+noise_search = { version = "0.8.0", path = "noise-search" }
+noise-storage = { version = "0.1.0", path = "noise-storage" }
+noise-storage-memory = { version = "0.1.0", path = "noise-storage-memory" }
+noise-storage-rocksdb = { version = "0.1.0", path = "noise-storage-rocksdb" }
+noise-tests = { version = "0.1.0", path = "noise-tests" }
+self_cell = "1.0"
 
-[dependencies]
-rustc-serialize = "0.3.24"
-stemmer = "0.3.2"
-unicode-normalization = "0.1.19"
-unicode-segmentation = "1.8.0"
-uuid = { version = "1.1.2", features = ["v4"] }
-noise-storage = { path = "noise-storage" }
-
-[dev-dependencies]
-noise-storage-memory = { path = "noise-storage-memory" }
+[workspace.metadata.release]
+# The version bumps of all released crates land in a single commit, so it names
+# neither crate nor version; the per-crate tags carry those.
+pre-release-commit-message = "chore: release"
+tag-message = "release {{crate_name}} {{version}}"
