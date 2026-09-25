@@ -1,23 +1,32 @@
-extern crate rustc_serialize;
-
 use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
-use std::str::Chars;
 use std::{self, f64, str};
 
-use self::rustc_serialize::json::{JsonEvent, Parser, StackElement};
+use hifijson::num::LexWrite as _;
+use hifijson::str::LexAlloc as _;
+use hifijson::token::Lex as _;
+use hifijson::{Expect, SliceLexer};
 
 use crate::error::Error;
 use crate::key_builder::KeyBuilder;
 use crate::stems::Stems;
 use noise_storage::{encode_varint, encode_zigzag_i32, BackendBatch, Namespace};
 
-// Good example of using rustc_serialize:
-//   https://github.com/ajroetker/beautician/blob/master/src/lib.rs
-// Callback based JSON streaming parser:
-//   https://github.com/gyscos/json-streamer.rs
-// Another parser pased on rustc_serializ:
-//   https://github.com/isagalaev/ijson-rust/blob/master/src/test.rs#L11
+/// Converts a JSON number. Its integer part has to fit into a `u64` and its value into a finite
+/// `f64`. Negative zero is returned as zero.
+pub(crate) fn parse_number(literal: &str) -> Option<f64> {
+    let integer_end = literal.find(['.', 'e', 'E']).unwrap_or(literal.len());
+    literal[..integer_end]
+        .trim_start_matches('-')
+        .parse::<u64>()
+        .ok()?;
+    let number: f64 = literal
+        .parse()
+        .ok()
+        .filter(|value: &f64| value.is_finite())?;
+    // `-0.0 == 0.0`, hence this also turns negative zero into zero.
+    Some(if number == 0.0 { 0.0 } else { number })
+}
 
 /// Key-value pairs read from disk for an existing document. The key is the full V-key
 /// (`V<varint seq>#<keypath>`), which is not valid UTF-8 because of the binary varint.
@@ -37,14 +46,18 @@ const GEOJSON_TYPES: &[&str] = &[
     "MultiPolygon",
 ];
 
-enum ObjectKeyTypes {
+enum ObjectKeyTypes<'a> {
     /// _id field
     Id,
     /// Normal key
-    Key(String),
+    Key(&'a str),
     /// No key found
     NoKey,
 }
+
+/// The maximal nesting depth of objects and arrays in a document. Shredding recurses once per
+/// level, so this limit protects the stack.
+const MAX_DEPTH: usize = 128;
 
 #[derive(Debug)]
 pub struct Shredder {
@@ -223,11 +236,11 @@ impl Shredder {
 
     fn maybe_add_value(
         &mut self,
-        parser: &Parser<Chars>,
+        key: Option<&str>,
         code: char,
         value: &[u8],
     ) -> Result<(), Error> {
-        match self.extract_key(parser.stack().top()) {
+        match self.extract_key(key) {
             ObjectKeyTypes::Id => {
                 if code != 's' && self.kb.kp_segments_len() == 1 {
                     //nested fields can be _id, not root fields
@@ -241,8 +254,8 @@ impl Shredder {
                 *self.object_keys_indexed.last_mut().unwrap() = true;
                 self.add_value(code, value)?;
             }
-            ObjectKeyTypes::Key(key) => {
-                if key == "type" {
+            ObjectKeyTypes::Key(object_key) => {
+                if object_key == "type" {
                     let is_valid_type = GEOJSON_TYPES
                         .iter()
                         .position(|&tt| tt == unsafe { str::from_utf8_unchecked(value) });
@@ -250,10 +263,10 @@ impl Shredder {
                         self.maybe_geometry += 1;
                     }
                 }
-                // Pop the dummy object that makes ObjectEnd happy
+                // Pop the dummy object that makes `end_object` happy
                 // or the previous object key
                 self.kb.pop_object_key();
-                self.kb.push_object_key(&key);
+                self.kb.push_object_key(object_key);
                 *self.object_keys_indexed.last_mut().unwrap() = true;
                 self.add_value(code, value)?;
             }
@@ -268,16 +281,16 @@ impl Shredder {
     // Extract key if it exists and indicates if it's a special type of key
     // It is called when the value is a primitive type. If it is an array or object, then
     // `maybe_push_key` is called.
-    fn extract_key(&mut self, stack_element: Option<StackElement>) -> ObjectKeyTypes {
-        match stack_element {
-            Some(StackElement::Key(key)) => {
-                if self.kb.kp_segments_len() == 1 && key == "_id" {
+    fn extract_key<'a>(&self, key: Option<&'a str>) -> ObjectKeyTypes<'a> {
+        match key {
+            Some(object_key) => {
+                if self.kb.kp_segments_len() == 1 && object_key == "_id" {
                     ObjectKeyTypes::Id
                 } else {
-                    ObjectKeyTypes::Key(key.to_string())
+                    ObjectKeyTypes::Key(object_key)
                 }
             }
-            _ => ObjectKeyTypes::NoKey,
+            None => ObjectKeyTypes::NoKey,
         }
     }
 
@@ -285,26 +298,23 @@ impl Shredder {
     // Don't push them if they are reserved fields (starting with underscore)
     // It is called when the value is an array or object. If it is a primitive type, then
     // `extract_key` is called.
-    fn maybe_push_key(
-        &mut self,
-        stack_element: Option<StackElement>,
-    ) -> Result<Option<String>, Error> {
-        match stack_element {
-            Some(StackElement::Key(key)) => {
-                if self.kb.kp_segments_len() == 1 && key == "_id" {
+    fn maybe_push_key(&mut self, key: Option<&str>) -> Result<(), Error> {
+        match key {
+            Some(object_key) => {
+                if self.kb.kp_segments_len() == 1 && object_key == "_id" {
                     return Err(Error::Shred(
                         "Expected string for `_id` field, got another type".to_string(),
                     ));
                 } else {
-                    // Pop the dummy object that makes ObjectEnd happy
+                    // Pop the dummy object that makes `end_object` happy
                     // or the previous object key
                     self.kb.pop_object_key();
-                    self.kb.push_object_key(key);
+                    self.kb.push_object_key(object_key);
                     *self.object_keys_indexed.last_mut().unwrap() = true;
                 }
-                Ok(Some(key.to_string()))
+                Ok(())
             }
-            _ => Ok(None),
+            None => Ok(()),
         }
     }
 
@@ -465,91 +475,139 @@ impl Shredder {
     }
 
     pub fn shred(&mut self, json: &str) -> Result<Option<String>, Error> {
-        let mut parser = Parser::new(json.chars());
-        loop {
-            // Get the next token, so that in case of an `ObjectStart` the key is already
-            // on the stack.
-            match parser.next() {
-                Some(JsonEvent::ObjectStart) => {
-                    self.maybe_push_key(parser.stack().top())?;
-                    // Just push something to make `ObjectEnd` happy
-                    self.kb.push_object_key("");
-                    self.object_keys_indexed.push(false);
+        let mut document = SliceLexer::new(json.as_bytes());
+        document
+            .exactly_one(SliceLexer::ws_peek, |start, lexer| {
+                self.shred_value(MAX_DEPTH, None, start, lexer)
+            })
+            .map_err(|error| match error {
+                Error::Shred(message) => {
+                    let position = json.len() - document.as_slice().len();
+                    Error::Shred(format!("{} at byte {}", message, position))
                 }
-                Some(JsonEvent::ObjectEnd) => {
-                    self.kb.pop_object_key();
-                    if self.kb.kp_segments_len() > 0 && !self.object_keys_indexed.pop().unwrap() {
-                        // this means we never wrote a key because the object was empty.
-                        // So preserve the empty object by writing a special value.
-                        // but not for the root object. it will always have _id field added.
-                        self.maybe_add_value(&parser, 'o', &[])?;
-                    }
-                    if self.maybe_geometry == 2 {
-                        let encoded_bbox = KeyBuilder::encode_bbox(self.bounding_box);
-                        let _ = self.add_value('r', encoded_bbox.as_slice());
-                    }
-                    // Reset the values as it either wasn't a valid geometry, or it was already
-                    // succcessfully processed
-                    self.maybe_geometry = 0;
-                    self.bounding_box = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
-
-                    self.kb.inc_top_array_index();
-                }
-                Some(JsonEvent::ArrayStart) => {
-                    let key = self.maybe_push_key(parser.stack().top())?;
-                    if key == Some("coordinates".to_string()) {
-                        self.maybe_geometry += 1;
-                    }
-                    self.kb.push_array();
-                }
-                #[allow(clippy::branches_sharing_code)] // false positive
-                Some(JsonEvent::ArrayEnd) => {
-                    if self.kb.peek_array_index() == 0 {
-                        // this means we never wrote a value because the object was empty.
-                        // So preserve the empty array by writing a special value.
-                        self.kb.pop_array();
-                        self.maybe_add_value(&parser, 'a', &[])?;
-                    } else {
-                        self.kb.pop_array();
-                    }
-                    self.kb.inc_top_array_index();
-                }
-                Some(JsonEvent::StringValue(value)) => {
-                    self.maybe_add_value(&parser, 's', value.as_bytes())?;
-                }
-                Some(JsonEvent::BooleanValue(tf)) => {
-                    let code = if tf { 'T' } else { 'F' };
-                    self.maybe_add_value(&parser, code, &[])?;
-                }
-                Some(JsonEvent::I64Value(i)) => {
-                    let f = i as f64;
-                    self.calc_mbb(f);
-                    let bytes = f.to_le_bytes();
-                    self.maybe_add_value(&parser, 'f', &bytes[..])?;
-                }
-                Some(JsonEvent::U64Value(u)) => {
-                    let f = u as f64;
-                    self.calc_mbb(f);
-                    let bytes = f.to_le_bytes();
-                    self.maybe_add_value(&parser, 'f', &bytes[..])?;
-                }
-                Some(JsonEvent::F64Value(f)) => {
-                    self.calc_mbb(f);
-                    let bytes = f.to_le_bytes();
-                    self.maybe_add_value(&parser, 'f', &bytes[..])?;
-                }
-                Some(JsonEvent::NullValue) => {
-                    self.maybe_add_value(&parser, 'N', &[])?;
-                }
-                Some(JsonEvent::Error(error)) => {
-                    return Err(Error::Shred(error.to_string()));
-                }
-                None => {
-                    break;
-                }
-            };
-        }
+                other => other,
+            })?;
         Ok(self.doc_id.clone())
+    }
+
+    /// Shreds the value whose first byte is `start`, together with all values within it.
+    /// `depth` is the number of levels of objects and arrays that may still be opened, including
+    /// the value itself if it is one.
+    fn shred_value(
+        &mut self,
+        depth: usize,
+        key: Option<&str>,
+        start: u8,
+        lexer: &mut SliceLexer,
+    ) -> Result<(), Error> {
+        match start {
+            b'{' => {
+                let inner_depth = depth.checked_sub(1).ok_or(hifijson::Error::Depth)?;
+                self.start_object(key)?;
+                lexer
+                    .discarded()
+                    .seq(b'}', SliceLexer::ws_peek, |key_start, member_lexer| {
+                        member_lexer
+                            .expect(|_| Some(key_start), b'"')
+                            .ok_or(Expect::String)?;
+                        let member_key = member_lexer.str_string().map_err(hifijson::Error::Str)?;
+                        member_lexer
+                            .expect(SliceLexer::ws_peek, b':')
+                            .ok_or(Expect::Colon)?;
+                        let value_start = member_lexer.ws_peek().ok_or(Expect::Value)?;
+                        self.shred_value(inner_depth, Some(&member_key), value_start, member_lexer)
+                    })?;
+                self.end_object()
+            }
+            b'[' => {
+                let inner_depth = depth.checked_sub(1).ok_or(hifijson::Error::Depth)?;
+                self.start_array(key)?;
+                lexer
+                    .discarded()
+                    .seq(b']', SliceLexer::ws_peek, |value_start, member_lexer| {
+                        self.shred_value(inner_depth, None, value_start, member_lexer)
+                    })?;
+                self.end_array()
+            }
+            b'"' => {
+                let value = lexer
+                    .discarded()
+                    .str_string()
+                    .map_err(hifijson::Error::Str)?;
+                self.maybe_add_value(key, 's', value.as_bytes())
+            }
+            b'0'..=b'9' | b'-' => {
+                let (literal, _parts) = lexer
+                    .num_string()
+                    .validated()
+                    .map_err(hifijson::Error::Num)?;
+                let number = parse_number(literal)
+                    .ok_or_else(|| Error::Shred(format!("invalid number {}", literal)))?;
+                self.calc_mbb(number);
+                self.maybe_add_value(key, 'f', &number.to_le_bytes())
+            }
+            b'a'..=b'z' => {
+                let code = match lexer.null_or_bool().ok_or(Expect::Value)? {
+                    Some(true) => 'T',
+                    Some(false) => 'F',
+                    None => 'N',
+                };
+                self.maybe_add_value(key, code, &[])
+            }
+            _ => Err(Expect::Value.into()),
+        }
+    }
+
+    fn start_object(&mut self, key: Option<&str>) -> Result<(), Error> {
+        self.maybe_push_key(key)?;
+        // Just push something to make `end_object` happy
+        self.kb.push_object_key("");
+        self.object_keys_indexed.push(false);
+        Ok(())
+    }
+
+    fn start_array(&mut self, key: Option<&str>) -> Result<(), Error> {
+        if key == Some("coordinates") {
+            self.maybe_geometry += 1;
+        }
+        self.maybe_push_key(key)?;
+        self.kb.push_array();
+        Ok(())
+    }
+
+    fn end_object(&mut self) -> Result<(), Error> {
+        self.kb.pop_object_key();
+        if self.kb.kp_segments_len() > 0 && !self.object_keys_indexed.pop().unwrap() {
+            // this means we never wrote a key because the object was empty.
+            // So preserve the empty object by writing a special value.
+            // but not for the root object. it will always have _id field added.
+            self.add_value('o', &[])?;
+            self.kb.inc_top_array_index();
+        }
+        if self.maybe_geometry == 2 {
+            let encoded_bbox = KeyBuilder::encode_bbox(self.bounding_box);
+            let _ = self.add_value('r', encoded_bbox.as_slice());
+        }
+        // Reset the values as it either wasn't a valid geometry, or it was already
+        // succcessfully processed
+        self.maybe_geometry = 0;
+        self.bounding_box = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
+
+        self.kb.inc_top_array_index();
+        Ok(())
+    }
+
+    fn end_array(&mut self) -> Result<(), Error> {
+        let was_empty = self.kb.peek_array_index() == 0;
+        self.kb.pop_array();
+        if was_empty {
+            // this means we never wrote a value because the array was empty.
+            // So preserve the empty array by writing a special value.
+            self.add_value('a', &[])?;
+            self.kb.inc_top_array_index();
+        }
+        self.kb.inc_top_array_index();
+        Ok(())
     }
 }
 
@@ -715,5 +773,139 @@ mod tests {
         let result = positions_from_db(&index.db);
         let expected = vec![("W._id!foo#".to_string(), 123, vec![], vec![0])];
         assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_parse_number() {
+        let numbers = [
+            "0",
+            "1.5",
+            "-2e3",
+            "18446744073709551615",
+            "-18446744073709551615.5",
+            "1e-400",
+        ];
+        assert_eq!(
+            numbers.map(super::parse_number),
+            [
+                Some(0.0),
+                Some(1.5),
+                Some(-2000.0),
+                Some(18446744073709551615.0),
+                Some(-18446744073709551615.5),
+                Some(0.0)
+            ]
+        );
+        for negative_zero in ["-0", "-0.0", "-0e5", "-1e-400"] {
+            let number = super::parse_number(negative_zero).unwrap();
+            assert_eq!(number.to_bits(), 0.0f64.to_bits());
+        }
+        let invalid = [
+            "18446744073709551616",
+            "-18446744073709551616",
+            "18446744073709551616.5",
+            "1e400",
+            "-1e400",
+        ];
+        for literal in invalid {
+            assert_eq!(
+                super::parse_number(literal),
+                None,
+                "{:?} must not parse",
+                literal
+            );
+        }
+    }
+
+    #[test]
+    fn test_shred_invalid() {
+        let invalid = [
+            "",
+            "   ",
+            r#"{"a": 1,}"#,
+            r#"{"a" 1}"#,
+            r#"{"a": tru}"#,
+            r#"{"a": "unterminated"#,
+            r#"{"a": [01]}"#,
+            r#"{"a": [1 2]}"#,
+            r#"{"a": [}"#,
+            r#"{"a": 1e400}"#,
+            r#"{"a": 1} x"#,
+            r#"{"a": 1}{"b": 2}"#,
+            "{1: 2}",
+        ];
+        for json in invalid {
+            let result = super::Shredder::new().shred(json);
+            assert!(result.is_err(), "{:?} must not shred", json);
+        }
+    }
+
+    #[test]
+    fn test_shred_max_depth() {
+        let allowed = format!(
+            "{}{}",
+            "[".repeat(super::MAX_DEPTH),
+            "]".repeat(super::MAX_DEPTH)
+        );
+        super::Shredder::new().shred(&allowed).unwrap();
+
+        let depth = super::MAX_DEPTH + 1;
+        let too_deep = format!("{}{}", "[".repeat(depth), "]".repeat(depth));
+        let error = super::Shredder::new().shred(&too_deep).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "Shred error: maximal depth exceeded at byte {}",
+                super::MAX_DEPTH
+            )
+        );
+    }
+
+    #[test]
+    fn test_shred_error_position() {
+        let cases = [
+            // No value at all, or not a value
+            ("{", "value or end of sequence expected at byte 1"),
+            ("]", "value expected at byte 0"),
+            (r#"{"a":}"#, "value expected at byte 5"),
+            (r#"{"a": tru}"#, "value expected at byte 7"),
+            // The first member of an object or array
+            ("{1: 2}", "string expected at byte 1"),
+            (r#"{"a": [}"#, "value expected at byte 7"),
+            // A member after a comma
+            (r#"{"a": 1,}"#, "string expected at byte 8"),
+            (r#"{"a": [1,]}"#, "value expected at byte 9"),
+            // The key of a member
+            (r#"{"a" 1}"#, "colon expected at byte 5"),
+            // After a value
+            (
+                r#"{"a": [1}"#,
+                "comma or end of sequence expected at byte 8",
+            ),
+            (r#"{"a": 1"#, "comma or end of sequence expected at byte 7"),
+            (
+                r#"{"a": [01]}"#,
+                "comma or end of sequence expected at byte 8",
+            ),
+            // After the document
+            (r#"{"a": 1} x"#, "end of file expected at byte 9"),
+            (r#"{"a": 1}{"b": 2}"#, "end of file expected at byte 8"),
+            // Invalid values
+            (r#"{"a": "x"#, "unterminated string at byte 8"),
+            (r#"{"a": 1e400}"#, "invalid number 1e400 at byte 11"),
+            (
+                r#"{"_id": 1}"#,
+                "Expected string for `_id` field, got another type at byte 9",
+            ),
+        ];
+        for (json, expected) in cases {
+            let error = super::Shredder::new().shred(json).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                format!("Shred error: {}", expected),
+                "{:?}",
+                json
+            );
+        }
     }
 }

@@ -57,6 +57,18 @@ impl From<ParseFloatError> for Error {
     }
 }
 
+impl From<hifijson::Error> for Error {
+    fn from(err: hifijson::Error) -> Error {
+        Error::Shred(err.to_string())
+    }
+}
+
+impl From<hifijson::Expect> for Error {
+    fn from(err: hifijson::Expect) -> Error {
+        hifijson::Error::Token(err).into()
+    }
+}
+
 impl From<io::Error> for Error {
     fn from(err: io::Error) -> Error {
         Error::Io(err)
