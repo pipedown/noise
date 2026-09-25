@@ -1,5 +1,3 @@
-extern crate rustc_serialize;
-
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::collections::VecDeque;
@@ -8,10 +6,14 @@ use std::mem::swap;
 use std::rc::Rc;
 use std::str;
 
-use self::rustc_serialize::json::{JsonEvent, Parser as JsonParser, StackElement};
+use hifijson::token::Lex as _;
+use hifijson::value::{self, Value};
+use hifijson::SliceLexer;
+
 use crate::aggregates::{AggregateActionFun, AggregateExtractFun, AggregateFun, AggregateInitFun};
 use crate::error::Error;
 use crate::filters::QueryRuntimeFilter;
+use crate::json_shred::parse_number;
 use crate::json_value::JsonValue;
 use crate::key_builder::KeyBuilder;
 use crate::parser::Parser;
@@ -384,80 +386,50 @@ impl<S: BackendSnapshot + 'static> QueryResults<S> {
     }
 
     fn parse_parameters(params: &str) -> Result<HashMap<String, JsonValue>, Error> {
-        let mut parser = JsonParser::new(params.chars());
         let err_msg: String = "Parameterized query values must be String, Number, /
         True, False, or Null"
             .to_string();
-        if parser.next() != Some(JsonEvent::ObjectStart) {
+        let mut lexer = SliceLexer::new(params.as_bytes());
+        if lexer.ws_peek() != Some(b'{') {
             return Err(Error::Parse("Parameters must be json object".to_string()));
         }
+        // A depth of two allows for the object and its values. Values that are non-empty arrays
+        // or objects exceed it, empty ones are rejected below.
+        let parsed = lexer
+            .exactly_one(SliceLexer::ws_peek, |start, value_lexer| {
+                value::parse_bounded(2, start, value_lexer)
+            })
+            .map_err(|error| match error {
+                hifijson::Error::Depth => Error::Parse(err_msg.clone()),
+                _ => {
+                    let position = params.len() - lexer.as_slice().len();
+                    Error::Parse(format!(
+                        "Error parsing parameters: {} at byte {}",
+                        error, position
+                    ))
+                }
+            })?;
+        let Value::Object(members) = parsed else {
+            unreachable!("the parameters start with `{{`");
+        };
         let mut map: HashMap<String, JsonValue> = HashMap::new();
-        loop {
-            // Get the next token, so that in case of an `ObjectStart` the key is already
-            // on the stack.
-            match parser.next() {
-                Some(JsonEvent::ObjectStart) => return Err(Error::Parse(err_msg)),
-                Some(JsonEvent::ObjectEnd) => (),
-                Some(JsonEvent::ArrayStart) => return Err(Error::Parse(err_msg)),
-                Some(JsonEvent::ArrayEnd) => (),
-                Some(JsonEvent::StringValue(value)) => {
-                    if let Some(StackElement::Key(key)) = parser.stack().top() {
-                        map.insert(key.to_string(), JsonValue::String(value));
-                    } else {
-                        panic!("Top of stack isn't a key!");
-                    }
+        for (name, member) in members {
+            let json_value = match member {
+                Value::Null => JsonValue::Null,
+                Value::Bool(true) => JsonValue::True,
+                Value::Bool(false) => JsonValue::False,
+                Value::Number((literal, _parts)) => {
+                    JsonValue::Number(parse_number(literal).ok_or_else(|| {
+                        Error::Parse(format!(
+                            "Error parsing parameters: invalid number {}",
+                            literal
+                        ))
+                    })?)
                 }
-                Some(JsonEvent::BooleanValue(tf)) => {
-                    if let Some(StackElement::Key(key)) = parser.stack().top() {
-                        map.insert(
-                            key.to_string(),
-                            if tf {
-                                JsonValue::True
-                            } else {
-                                JsonValue::False
-                            },
-                        );
-                    } else {
-                        panic!("Top of stack isn't a key!");
-                    }
-                }
-                Some(JsonEvent::I64Value(i)) => {
-                    let f = i as f64;
-                    if let Some(StackElement::Key(key)) = parser.stack().top() {
-                        map.insert(key.to_string(), JsonValue::Number(f));
-                    } else {
-                        panic!("Top of stack isn't a key!");
-                    }
-                }
-                Some(JsonEvent::U64Value(u)) => {
-                    let f = u as f64;
-                    if let Some(StackElement::Key(key)) = parser.stack().top() {
-                        map.insert(key.to_string(), JsonValue::Number(f));
-                    } else {
-                        panic!("Top of stack isn't a key!");
-                    }
-                }
-                Some(JsonEvent::F64Value(f)) => {
-                    if let Some(StackElement::Key(key)) = parser.stack().top() {
-                        map.insert(key.to_string(), JsonValue::Number(f));
-                    } else {
-                        panic!("Top of stack isn't a key!");
-                    }
-                }
-                Some(JsonEvent::NullValue) => {
-                    if let Some(StackElement::Key(key)) = parser.stack().top() {
-                        map.insert(key.to_string(), JsonValue::Null);
-                    } else {
-                        panic!("Top of stack isn't a key!");
-                    }
-                }
-                Some(JsonEvent::Error(error)) => {
-                    return Err(Error::Parse(format!("Error parsing parameters: {}", error)));
-                }
-                None => {
-                    break;
-                }
+                Value::String(text) => JsonValue::String(text.into_owned()),
+                Value::Array(_) | Value::Object(_) => return Err(Error::Parse(err_msg)),
             };
+            map.insert(name.into_owned(), json_value);
         }
         Ok(map)
     }
@@ -795,8 +767,6 @@ pub struct OrderInfo {
 
 #[cfg(test)]
 mod tests {
-    extern crate rustc_serialize;
-
     use crate::index::{Index, OpenOptions};
     use crate::test_backend::Database;
 
@@ -836,6 +806,48 @@ mod tests {
         let mut query_results = index.query(r#"find {data: == "u"}"#, None).unwrap();
         while let Some(result) = query_results.get_next_id() {
             println!("result: {}", result);
+        }
+    }
+
+    #[test]
+    fn test_query_invalid_parameters() {
+        let dbname = "target/tests/querytestdbinvalidparameters";
+        let _ = Idx::drop(dbname);
+
+        let index = Idx::open(dbname, Some(OpenOptions::Create)).unwrap();
+        let not_scalar = "Parse error: Parameterized query values must be";
+        let not_object = "Parse error: Parameters must be json object";
+        let invalid = [
+            (
+                r#"{"a": 1,}"#,
+                "Parse error: Error parsing parameters: string expected at byte 8",
+            ),
+            (
+                r#"{"a": 1} x"#,
+                "Parse error: Error parsing parameters: end of file expected at byte 9",
+            ),
+            (
+                r#"{"a": 1e400}"#,
+                "Parse error: Error parsing parameters: invalid number 1e400",
+            ),
+            (r#"{"a": [1]}"#, not_scalar),
+            (r#"{"a": {"b": 1}}"#, not_scalar),
+            (r#"{"a": []}"#, not_scalar),
+            ("[1]", not_object),
+            ("[[1]]", not_object),
+            ("", not_object),
+        ];
+        for (params, expected) in invalid {
+            let error = index
+                .query(r#"find {hello: == @a}"#, Some(params.to_string()))
+                .err()
+                .unwrap();
+            assert!(
+                error.to_string().starts_with(expected),
+                "{:?} gave {}",
+                params,
+                error
+            );
         }
     }
 }
