@@ -192,6 +192,12 @@ return .A ;
 ["foo",1,true,false,null,{},[]]
 ]
 
+find {A:[ == "foo"]}
+return [.A[5], .A[6], .A[7]] ;
+[
+[{},[],null]
+]
+
 # returning null when missing
 
 find {A:[ == "foo"]}
