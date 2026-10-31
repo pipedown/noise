@@ -582,7 +582,6 @@ impl Shredder {
             // So preserve the empty object by writing a special value.
             // but not for the root object. it will always have _id field added.
             self.add_value('o', &[])?;
-            self.kb.inc_top_array_index();
         }
         if self.maybe_geometry == 2 {
             let encoded_bbox = KeyBuilder::encode_bbox(self.bounding_box);
@@ -604,7 +603,6 @@ impl Shredder {
             // this means we never wrote a value because the array was empty.
             // So preserve the empty array by writing a special value.
             self.add_value('a', &[])?;
-            self.kb.inc_top_array_index();
         }
         self.kb.inc_top_array_index();
         Ok(())
