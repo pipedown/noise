@@ -255,13 +255,11 @@ impl Shredder {
                 self.add_value(code, value)?;
             }
             ObjectKeyTypes::Key(object_key) => {
-                if object_key == "type" {
-                    let is_valid_type = GEOJSON_TYPES
-                        .iter()
-                        .position(|&tt| tt == unsafe { str::from_utf8_unchecked(value) });
-                    if is_valid_type.is_some() {
-                        self.maybe_geometry += 1;
-                    }
+                if object_key == "type"
+                    && code == 's'
+                    && GEOJSON_TYPES.iter().any(|tt| tt.as_bytes() == value)
+                {
+                    self.maybe_geometry += 1;
                 }
                 // Pop the dummy object that makes `end_object` happy
                 // or the previous object key
