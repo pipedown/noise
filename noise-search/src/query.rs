@@ -386,7 +386,7 @@ impl<S: BackendSnapshot + 'static> QueryResults<S> {
     }
 
     fn parse_parameters(params: &str) -> Result<HashMap<String, JsonValue>, Error> {
-        let err_msg: String = "Parameterized query values must be String, Number, /
+        let err_msg: String = "Parameterized query values must be String, Number, \
         True, False, or Null"
             .to_string();
         let mut lexer = SliceLexer::new(params.as_bytes());
@@ -815,7 +815,8 @@ mod tests {
         let _ = Idx::drop(dbname);
 
         let index = Idx::open(dbname, Some(OpenOptions::Create)).unwrap();
-        let not_scalar = "Parse error: Parameterized query values must be";
+        let not_scalar =
+            "Parse error: Parameterized query values must be String, Number, True, False, or Null";
         let not_object = "Parse error: Parameters must be json object";
         let invalid = [
             (
