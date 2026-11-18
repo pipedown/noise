@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
-use std::{self, f64, str};
+use std::{self, str};
 
 use hifijson::num::LexWrite as _;
 use hifijson::str::LexAlloc as _;

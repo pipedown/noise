@@ -1,4 +1,3 @@
-use std::f32;
 use std::str;
 
 use crate::json_value::JsonValue;
