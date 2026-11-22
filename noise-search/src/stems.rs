@@ -1,10 +1,9 @@
-extern crate stemmer;
 extern crate unicode_normalization;
 extern crate unicode_segmentation;
 
-use self::stemmer::Stemmer;
 use self::unicode_normalization::UnicodeNormalization;
 use self::unicode_segmentation::UnicodeSegmentation;
+use rust_stemmers::{Algorithm, Stemmer};
 
 pub struct Stems<'a> {
     words: unicode_segmentation::UWordBoundIndices<'a>,
@@ -24,7 +23,7 @@ impl<'a> Stems<'a> {
     pub fn new(text: &str) -> Stems<'_> {
         Stems {
             words: text.split_word_bound_indices(),
-            stemmer: Stemmer::new("english").unwrap(),
+            stemmer: Stemmer::create(Algorithm::English),
             word_position: 0,
         }
     }
@@ -44,7 +43,7 @@ impl<'a> Iterator for Stems<'a> {
                 self.word_position += 1;
                 return Some(StemmedWord {
                     word_pos: pos as u32,
-                    stemmed: self.stemmer.stem(&normalized.to_lowercase()),
+                    stemmed: self.stemmer.stem(&normalized.to_lowercase()).into_owned(),
                 });
             } else if self.word_position == 0 {
                 non_alpha.push_str(&normalized);

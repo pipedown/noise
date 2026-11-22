@@ -63,6 +63,20 @@ To check your backend against the suite every backend must pass, add
     noise_tests::noise_backend_tests!(MyBackend);
 
 
+WebAssembly
+-----------
+
+`noise_search` builds for `wasm32-unknown-unknown`. RocksDB doesn't, so use
+the in-memory backend from the `noise-storage-memory` crate there:
+
+    cargo build --target wasm32-unknown-unknown -p noise_search -p noise-storage-memory
+
+Documents added without an `_id` get a random UUID, whose random bytes come
+from the Web Crypto API through `wasm-bindgen`. So the WebAssembly build runs
+in JavaScript hosts such as browsers and Node.js, not in standalone runtimes
+like Wasmtime.
+
+
 Contributing
 ------------
 

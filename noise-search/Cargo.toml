@@ -15,11 +15,16 @@ crate-type = ["lib"]
 
 [dependencies]
 hifijson = "0.5.1"
-stemmer = "0.3.2"
+rust-stemmers = "1.2.0"
 unicode-normalization = "0.1.19"
 unicode-segmentation = "1.8.0"
 uuid = { version = "1.1.2", features = ["v4"] }
 noise-storage = { workspace = true }
+
+# wasm32-unknown-unknown has no default source of randomness. The `js` feature
+# takes it from the Web Crypto API of the JavaScript host.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+uuid = { version = "1.1.2", features = ["v4", "js"] }
 
 # Deliberately path-only: noise-storage-memory depends on this crate in turn, so
 # a version requirement here could never resolve on the first publish. Cargo
